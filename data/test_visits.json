@@ -1,0 +1,28 @@
+{
+  "visits": [
+    {
+      "visit_id": "v001",
+      "patient_name": "Іваненко Олег Петрович",
+      "patient_phone": "+380671234567",
+      "doctor_name": "Кардіолог Петренко Іван Сергійович",
+      "doctor_id": "doc_cardio_001",
+      "visit_datetime": "2026-02-19T14:00:00"
+    },
+    {
+      "visit_id": "v002",
+      "patient_name": "Мельник Оксана Василівна",
+      "patient_phone": "+380991234567",
+      "doctor_name": "Невролог Сидоренко Марія Олексіївна",
+      "doctor_id": "doc_neuro_002",
+      "visit_datetime": "2026-02-19T10:30:00"
+    },
+    {
+      "visit_id": "v003",
+      "patient_name": "Коваленко Дмитро Іванович",
+      "patient_phone": "+380501234567",
+      "doctor_name": "Терапевт Бондаренко Світлана Миколаївна",
+      "doctor_id": "doc_therapy_003",
+      "visit_datetime": "2026-02-19T16:00:00"
+    }
+  ]
+}
