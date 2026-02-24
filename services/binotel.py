@@ -186,7 +186,17 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
 
     logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
 
-    # Крок 1: Ініціюємо дзвінок через REST API
+    # Крок 1: Чекаємо поки наш SIP extension стане Online в Binotel
+    # timeout=5 — якщо за 5с не онлайн, все одно пробуємо дзвонити
+    logger.info(f"[BINOTEL] Чекаємо статус Онлайн для extension {BINOTEL_INTERNAL_NUMBER}...")
+    online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=5)
+    if not online:
+        logger.warning(
+            f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} не став онлайн. "
+            f"Спробуємо дзвонити все одно..."
+        )
+
+    # Крок 2: Ініціюємо дзвінок через REST API
     # Binotel одночасно дзвонить на наш SIP extension та на пацієнта
     try:
         general_call_id = await _rest.initiate_call(
@@ -197,14 +207,14 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
         logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
         return None
 
-    # Крок 2: Чекаємо вхідного SIP дзвінка від Binotel на наш extension
+    # Крок 3: Чекаємо вхідного SIP дзвінка від Binotel на наш extension
     sip_audio = await _sip.wait_for_call(timeout=30)
     if sip_audio is None:
         logger.warning(f"[BINOTEL] SIP extension не отримав дзвінок від Binotel")
         await _rest.hangup_call(general_call_id)
         return None
 
-    # Крок 3: Чекаємо поки пацієнт відповість (WebSocket подія + polling)
+    # Крок 4: Чекаємо поки пацієнт відповість (WebSocket подія + polling)
     # Запускаємо паралельно — хто перший
     ws_task = asyncio.create_task(
         _ws.wait_for_answered(general_call_id, timeout=60)
