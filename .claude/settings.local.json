@@ -26,7 +26,8 @@
       "Bash(ps:*)",
       "Bash(echo EXIT:$?:*)",
       "Bash(C:\\\\Users\\\\1\\\\PycharmProjects\\\\medical_centre_AI\\\\.venv\\\\Scripts\\\\python.exe:*)",
-      "Bash(cmd.exe:*)"
+      "Bash(cmd.exe:*)",
+      "Bash(tail:*)"
     ]
   }
 }

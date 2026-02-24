@@ -9,3 +9,5 @@ pyyaml
 pyVoIP
 websockets
 audioop-lts
+numpy
+scipy
