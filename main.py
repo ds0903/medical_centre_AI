@@ -3,6 +3,7 @@
 
 DEBUG mode   : одразу запускає fetch → один тестовий дзвінок через мікрофон
 PRODUCTION   : запускає APScheduler (fetch о 8:00, calls о 10:00)
+               + ініціалізує Binotel SIP та WebSocket
 
 Запуск:
     python main.py
@@ -43,10 +44,14 @@ async def run_debug() -> None:
 
 
 async def run_production() -> None:
-    """Production: планувальник працює безперервно."""
+    """Production: планувальник працює безперервно + Binotel сервіси."""
     logger.info(f"=== ЗАПУСК У PRODUCTION РЕЖИМІ ===")
 
     await init_db()
+
+    # Ініціалізуємо Binotel (SIP + WebSocket) до старту планувальника
+    from services import binotel
+    await binotel.startup()
 
     scheduler = create_scheduler()
     scheduler.start()
@@ -57,6 +62,7 @@ async def run_production() -> None:
             await asyncio.sleep(60)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+        await binotel.shutdown()
         await close_db()
         logger.info("Зупинено.")
 

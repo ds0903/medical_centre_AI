@@ -1,168 +1,232 @@
 """
-Сервіс інтеграції з Binotel API.
+Binotel сервіс — єдина точка входу для production режиму.
 
-У DEBUG режимі — заглушка, реального дзвінка немає.
-У PRODUCTION режимі — реальні запити до Binotel (TODO нижче).
+Оркеструє:
+  - REST API   (binotel_rest.py)   — ініціація, завершення, передача дзвінка
+  - WebSocket  (binotel_ws.py)     — реал-тайм події (пацієнт відповів)
+  - SIP клієнт (binotel_sip.py)    — аудіо-міст через pyVoIP
 
-========================================================================
-TODO BINOTEL — ПОВНА ІНТЕГРАЦІЯ (заповнити після отримання документації)
-========================================================================
-
-ЩО ВІДОМО (з публічних джерел):
-  - REST API base: https://api.binotel.com/api/4.0/
-  - Auth: key + secret + MD5 підпис (params sorted JSON + secret → MD5)
-  - Ініціація дзвінка: POST /calls/ext-to-phone.json
-      params: ext_number (внутр. номер бота), phone_number (пацієнт),
-              playbackWaiting (bool), limitCallTime (sec), trunkNumber
-  - Завершення: POST /calls/hangup-call.json  params: generalCallID
-  - Webhook події: receivedTheCall, answeredTheCall, hangupTheCall, apiCallCompleted
-  - Webhook payload містить: generalCallID, internalNumber, externalNumber, billsec
-  - SIP сервер: sip1.binotel.com або sip5.binotel.com, порт 5060, UDP/TCP
-  - Кодек: G.729 (між Binotel і SIP клієнтом)
-
-ЩО ТРЕБА УТОЧНИТИ У BINOTEL (support@binotel.ua):
-  1. Точний формат MD5 підпису (порядок полів, кодування)
-  2. Точний JSON формат запиту extToPhone та формат відповіді (де generalCallID?)
-  3. Чи є sandbox середовище для тестування без реальних дзвінків?
-  4. Як налаштувати webhook URL в особистому кабінеті
-  5. Caller ID — який номер клініки підставляти у trunkNumber?
-  6. Чи підтримує Binotel WebSocket аудіо стримінг? (не SIP, а HTTP/WS)
-     Якщо НІ — потрібен SIP клієнт (pjsua2/Asterisk) для аудіо моста
-
-АРХІТЕКТУРА АУДІО В PRODUCTION (коли уточнимо):
-  Варіант А (SIP): extToPhone → Binotel дзвонить на наш SIP ext → pjsua2 відповідає
-                   → SIP аудіо ↔ PCM конвертер ↔ Gemini Live API
-  Варіант Б (якщо є WS аудіо): extToPhone → webhook answered → WS аудіо ↔ Gemini
-========================================================================
+Публічний інтерфейс (використовується в scheduler та agent):
+  await startup()                          — викликати один раз при старті production
+  await shutdown()                         — викликати при зупинці
+  call = await initiate_call(phone, name)  — почати дзвінок
+  await call.send_audio(pcm_24khz)         — відправити аудіо пацієнту
+  async for chunk in call.receive_audio()  — отримати аудіо від пацієнта
+  await call.hangup()                      — завершити дзвінок
+  await call.transfer_to_operator(reason)  — передати оператору
 """
 
+import asyncio
 import logging
 from typing import AsyncGenerator, Optional
 
-from config import BINOTEL_API_KEY, BINOTEL_API_SECRET, BINOTEL_API_URL, DEBUG
+from config import (
+    BINOTEL_INTERNAL_NUMBER,
+    BINOTEL_OPERATOR_NUMBER,
+    BINOTEL_SIP_PASSWORD,
+    BINOTEL_SIP_PORT,
+    BINOTEL_SIP_SERVER,
+    BINOTEL_SIP_USERNAME,
+    DEBUG,
+)
+from services.audio_bridge import gemini_output_to_sip, reset_state, sip_to_gemini_input
+from services.binotel_rest import BinotelRestClient
+from services.binotel_sip import BinotelSipAudio, BinotelSipClient
+from services.binotel_ws import BinotelWebSocket
 
 logger = logging.getLogger(__name__)
 
+# Глобальні сервіси (ініціалізуються один раз у startup)
+_rest = BinotelRestClient()
+_ws: Optional[BinotelWebSocket] = None
+_sip: Optional[BinotelSipClient] = None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def startup() -> None:
+    """
+    Ініціалізувати Binotel сервіси.
+    Викликати один раз при старті production режиму (перед планувальником).
+    """
+    global _ws, _sip
+
+    if DEBUG:
+        return  # В debug режимі Binotel не потрібен
+
+    # SIP клієнт — реєструємось як extension
+    _sip = BinotelSipClient(
+        server=BINOTEL_SIP_SERVER,
+        port=BINOTEL_SIP_PORT,
+        username=BINOTEL_SIP_USERNAME,
+        password=BINOTEL_SIP_PASSWORD,
+    )
+    _sip.start()
+
+    # WebSocket — підписуємось на події
+    _ws = BinotelWebSocket()
+    await _ws.connect()
+
+    logger.info("[BINOTEL] Сервіси запущено (SIP + WebSocket)")
+
+
+async def shutdown() -> None:
+    """Зупинити Binotel сервіси."""
+    if _ws:
+        await _ws.disconnect()
+    if _sip:
+        _sip.stop()
+    logger.info("[BINOTEL] Сервіси зупинено")
+
+
+# ---------------------------------------------------------------------------
+# BinotelCall — активний дзвінок
+# ---------------------------------------------------------------------------
+
 
 class BinotelCall:
-    """Представляє активний дзвінок через Binotel."""
+    """
+    Представляє активний дзвінок з пацієнтом.
 
-    def __init__(self, call_id: str, phone: str):
-        self.call_id = call_id
-        self.phone = phone
+    Надає async інтерфейс аудіо для Block1Agent.run_production().
+    """
+
+    def __init__(self, general_call_id: str, sip_audio: BinotelSipAudio) -> None:
+        self.call_id = general_call_id
+        self._sip = sip_audio
         self.is_active = True
 
-    async def hangup(self) -> None:
-        """
-        Завершити дзвінок.
+    # ------------------------------------------------------------------
+    # Аудіо
+    # ------------------------------------------------------------------
 
-        TODO: POST {BINOTEL_API_URL}/calls/{call_id}/hangup  (або інший endpoint)
-        TODO: Уточнити endpoint та параметри завершення дзвінка
+    async def send_audio(self, pcm_24khz: bytes) -> None:
         """
-        self.is_active = False
-        if DEBUG:
-            logger.debug(f"[DEBUG] Binotel: hangup call_id={self.call_id}")
+        Відправити аудіо Gemini пацієнту.
+        Конвертує PCM 24kHz → PCM 8kHz і пише в SIP RTP.
+        """
+        if not self.is_active:
             return
-
-        # TODO: реальний hangup -----------------------------------------------
-        # import aiohttp
-        # async with aiohttp.ClientSession() as http:
-        #     async with http.post(
-        #         f"{BINOTEL_API_URL}/calls/{self.call_id}/hangup",
-        #         headers={"Authorization": f"Bearer {BINOTEL_API_KEY}"},
-        #     ) as resp:
-        #         resp.raise_for_status()
-        # ----------------------------------------------------------------------
-        raise NotImplementedError("TODO: реалізувати hangup")
-
-    async def send_audio(self, pcm_data: bytes) -> None:
-        """
-        Відправити аудіо (24kHz PCM) пацієнту через Binotel.
-        Конвертація PCM → G.711 виконується в audio_bridge.py.
-
-        TODO: Уточнити метод передачі аудіо (WebSocket stream? RTP?)
-        TODO: Уточнити кодек який очікує Binotel (G.711 μ-law / A-law / інший?)
-        TODO: Уточнити розмір chunks для стримінгу
-        """
-        if DEBUG:
-            return  # В debug аудіо грає через локальний динамік
-
-        # TODO: реальна відправка аудіо ----------------------------------------
-        # from services.audio_bridge import gemini_to_binotel
-        # g711_data = gemini_to_binotel(pcm_data)
-        # await self._ws.send_bytes(g711_data)   # TODO: тип з'єднання
-        # -----------------------------------------------------------------------
-        raise NotImplementedError("TODO: реалізувати send_audio")
+        pcm_8khz = gemini_output_to_sip(pcm_24khz)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._sip.write, pcm_8khz)
 
     async def receive_audio(self) -> AsyncGenerator[bytes, None]:
         """
-        Отримати аудіо від пацієнта у форматі PCM 16kHz (для Gemini).
-        Конвертація G.711 → PCM виконується в audio_bridge.py.
-
-        TODO: Уточнити метод отримання аудіо потоку від Binotel
-        TODO: Уточнити формат вхідного аудіо від Binotel
+        Отримати аудіо від пацієнта для Gemini.
+        Yields PCM 16kHz 16-bit chunks.
         """
-        if DEBUG:
-            return  # В debug аудіо береться з мікрофона
+        loop = asyncio.get_event_loop()
+        while self.is_active and self._sip.is_active:
+            pcm_8khz = await loop.run_in_executor(None, self._sip.read)
+            if pcm_8khz:
+                yield sip_to_gemini_input(pcm_8khz)
+            else:
+                await asyncio.sleep(0.01)
 
-        # TODO: реальне отримання аудіо ----------------------------------------
-        # async for chunk in self._ws:
-        #     from services.audio_bridge import binotel_to_gemini
-        #     yield binotel_to_gemini(chunk.data)
-        # -----------------------------------------------------------------------
-        raise NotImplementedError("TODO: реалізувати receive_audio")
-        # Потрібен yield щоб Python розпізнав функцію як generator
-        yield b""
+    # ------------------------------------------------------------------
+    # Управління дзвінком
+    # ------------------------------------------------------------------
+
+    async def hangup(self) -> None:
+        """Завершити дзвінок (SIP + REST)."""
+        if not self.is_active:
+            return
+        self.is_active = False
+        reset_state()
+
+        self._sip.hangup()
+        await _rest.hangup_call(self.call_id)
+        logger.info(f"[BINOTEL] Дзвінок {self.call_id} завершено")
+
+    async def transfer_to_operator(self, reason: str = "") -> None:
+        """
+        Передати дзвінок живому оператору.
+
+        Args:
+            reason: причина передачі (для логування)
+        """
+        if not self.is_active:
+            return
+        self.is_active = False
+        reset_state()
+
+        logger.info(f"[BINOTEL] Передача оператору ({BINOTEL_OPERATOR_NUMBER}): {reason}")
+        await _rest.attended_transfer(self.call_id, BINOTEL_OPERATOR_NUMBER)
+        self._sip.hangup()
+
+
+# ---------------------------------------------------------------------------
+# Ініціація дзвінка
+# ---------------------------------------------------------------------------
 
 
 async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
     """
-    Ініціювати вихідний дзвінок через Binotel.
+    Ініціювати вихідний дзвінок пацієнту через Binotel.
+
+    В DEBUG режимі повертає None — агент сам використовує мікрофон.
 
     Returns:
         BinotelCall якщо пацієнт відповів
-        None якщо не відповів / зайнято / недоступний
-
-    TODO: POST {BINOTEL_API_URL}/calls/initiate (або інший endpoint)
-          body: {"phone": phone, "caller_id": "CLINIC_NUMBER", "webhook_url": "..."}
-    TODO: Уточнити caller_id — який номер клініки підставляти
-    TODO: Уточнити як отримати call_id після ініціації
-    TODO: Уточнити як дізнатися що пацієнт ВІДПОВІВ:
-          - webhook від Binotel на наш сервер?
-          - polling статусу дзвінка?
-          - event stream?
-    TODO: Реалізувати timeout — скільки чекати відповіді (30 сек?)
-    TODO: Реалізувати retry логіку (MAX_CALL_ATTEMPTS з config.py)
+        None якщо не відповів або технічна помилка
     """
     if DEBUG:
         logger.info(f"[DEBUG] Binotel: симулюємо дзвінок → {phone} ({patient_name})")
-        logger.info(f"[DEBUG] В debug режимі дзвінок відбувається через мікрофон")
-        return BinotelCall(call_id="debug-call-001", phone=phone)
+        logger.info("[DEBUG] Аудіо через мікрофон (run_debug)")
+        return None
 
-    # TODO: реальний запит ---------------------------------------------------
-    # import aiohttp
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.post(
-    #         f"{BINOTEL_API_URL}/calls/initiate",
-    #         headers={
-    #             "Authorization": f"Bearer {BINOTEL_API_KEY}",
-    #             "Content-Type": "application/json",
-    #         },
-    #         json={
-    #             "phone": phone,
-    #             "caller_id": "CLINIC_PHONE_NUMBER",  # TODO: взяти з env
-    #             # "webhook_url": "https://our-server/binotel/webhook",  # TODO
-    #         },
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         data = await resp.json()
-    #         call_id = data["call_id"]   # TODO: уточнити поле
-    #
-    # # TODO: чекати на відповідь пацієнта (webhook або polling)
-    # # answered = await _wait_for_answer(call_id, timeout=30)
-    # # if not answered:
-    # #     return None
-    #
-    # return BinotelCall(call_id=call_id, phone=phone)
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати initiate_call")
+    if not _sip or not _ws:
+        raise RuntimeError(
+            "Binotel сервіси не ініціалізовані. Викличте binotel.startup() спочатку."
+        )
+
+    logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
+
+    # Крок 1: Ініціюємо дзвінок через REST API
+    # Binotel одночасно дзвонить на наш SIP extension та на пацієнта
+    try:
+        general_call_id = await _rest.initiate_call(
+            internal_number=BINOTEL_INTERNAL_NUMBER,
+            external_number=phone,
+        )
+    except Exception as e:
+        logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
+        return None
+
+    # Крок 2: Чекаємо вхідного SIP дзвінка від Binotel на наш extension
+    sip_audio = await _sip.wait_for_call(timeout=30)
+    if sip_audio is None:
+        logger.warning(f"[BINOTEL] SIP extension не отримав дзвінок від Binotel")
+        await _rest.hangup_call(general_call_id)
+        return None
+
+    # Крок 3: Чекаємо поки пацієнт відповість (WebSocket подія + polling)
+    # Запускаємо паралельно — хто перший
+    ws_task = asyncio.create_task(
+        _ws.wait_for_answered(general_call_id, timeout=60)
+    )
+    poll_task = asyncio.create_task(
+        _rest.wait_for_answer(general_call_id, timeout=60)
+    )
+
+    done, pending = await asyncio.wait(
+        [ws_task, poll_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for t in pending:
+        t.cancel()
+
+    answered = any(t.result() for t in done if not t.exception())
+
+    if not answered:
+        logger.warning(f"[BINOTEL] Пацієнт не відповів: {patient_name} ({phone})")
+        sip_audio.hangup()
+        await _rest.hangup_call(general_call_id)
+        return None
+
+    logger.info(f"[BINOTEL] Пацієнт відповів. Починаємо розмову: {patient_name}")
+    return BinotelCall(general_call_id, sip_audio)

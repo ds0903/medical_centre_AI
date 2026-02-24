@@ -17,10 +17,18 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://postgres:postgres@localhost:5432/medical_centre"
 )
 
-# Binotel
+# Binotel REST API
 BINOTEL_API_KEY = os.getenv("BINOTEL_API_KEY", "")
 BINOTEL_API_SECRET = os.getenv("BINOTEL_API_SECRET", "")
-BINOTEL_API_URL = os.getenv("BINOTEL_API_URL", "https://api.binotel.com")
+BINOTEL_API_BASE = "https://api.binotel.com/api/4.0"
+
+# Binotel SIP (для production аудіо-мосту)
+BINOTEL_INTERNAL_NUMBER = os.getenv("BINOTEL_INTERNAL_NUMBER", "900")   # внутрішній номер бота
+BINOTEL_SIP_SERVER = os.getenv("BINOTEL_SIP_SERVER", "sip1.binotel.com")
+BINOTEL_SIP_PORT = int(os.getenv("BINOTEL_SIP_PORT", "5075"))
+BINOTEL_SIP_USERNAME = os.getenv("BINOTEL_SIP_USERNAME", "")             # SIP auth username (не = internal number!)
+BINOTEL_SIP_PASSWORD = os.getenv("BINOTEL_SIP_PASSWORD", "")
+BINOTEL_OPERATOR_NUMBER = os.getenv("BINOTEL_OPERATOR_NUMBER", "901")    # куди передавати оператору
 
 # API клініки
 CLINIC_API_URL = os.getenv("CLINIC_API_URL", "")

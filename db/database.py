@@ -1,6 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
 
+import asyncpg
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from config import DATABASE_URL
@@ -22,8 +24,34 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+async def _ensure_database_exists() -> None:
+    """Створити базу даних якщо не існує."""
+    url = make_url(DATABASE_URL)
+    db_name = url.database
+
+    conn = await asyncpg.connect(
+        user=url.username,
+        password=url.password,
+        host=url.host or "localhost",
+        port=url.port or 5432,
+        database="postgres",
+    )
+    try:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", db_name
+        )
+        if not exists:
+            await conn.execute(f'CREATE DATABASE "{db_name}"')
+            logger.info(f"База даних '{db_name}' створена")
+        else:
+            logger.debug(f"База даних '{db_name}' вже існує")
+    finally:
+        await conn.close()
+
+
 async def init_db() -> None:
-    """Створити всі таблиці якщо не існують."""
+    """Створити БД і всі таблиці якщо не існують."""
+    await _ensure_database_exists()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("БД ініціалізовано")

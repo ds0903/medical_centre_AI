@@ -2,7 +2,7 @@
 Агент Блоку 1: Нагадування про візити.
 
 DEBUG mode   : мікрофон → Gemini Live → динамік  (ти = пацієнт)
-PRODUCTION   : Binotel аудіо ↔ Gemini Live        (TODO після документації Binotel)
+PRODUCTION   : Binotel SIP аудіо ↔ Gemini Live
 """
 
 import asyncio
@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # Аудіо константи
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-INPUT_RATE = 16000   # мікрофон / Binotel → Gemini
-OUTPUT_RATE = 24000  # Gemini → динамік / Binotel
+INPUT_RATE = 16000   # мікрофон / SIP → Gemini
+OUTPUT_RATE = 24000  # Gemini → динамік / SIP
 CHUNK = 512
 
 
@@ -37,12 +37,6 @@ class Block1Agent:
     """
 
     def __init__(self, visit: dict) -> None:
-        """
-        Args:
-            visit: dict з ключами:
-                visit_id, patient_name, patient_phone,
-                doctor_name, doctor_id, visit_datetime
-        """
         self.visit = visit
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.call_result: str | None = None
@@ -130,23 +124,18 @@ class Block1Agent:
 
                 async def _recv_and_handle() -> None:
                     async for resp in session.receive():
-                        # Аудіо відповідь
                         if resp.data:
                             output_stream.write(resp.data)
 
-                        # Tool call від Gemini
                         if resp.tool_call:
                             for fc in resp.tool_call.function_calls:
                                 args = dict(fc.args) if fc.args else {}
                                 result = await handle_tool_call(fc.name, args, self.visit)
 
-                                # end_call — завершуємо сесію
                                 if fc.name == "end_call":
                                     self.call_result = result.get("result", "no_result")
                                     logger.info(f"[AGENT] end_call → {self.call_result}")
                                     self._end_event.set()
-
-                                    # Повертаємо результат в Gemini перед виходом
                                     await session.send_tool_response(
                                         function_responses=[
                                             types.FunctionResponse(
@@ -158,7 +147,6 @@ class Block1Agent:
                                     )
                                     return
 
-                                # Інші tool calls — повертаємо результат
                                 await session.send_tool_response(
                                     function_responses=[
                                         types.FunctionResponse(
@@ -197,19 +185,133 @@ class Block1Agent:
         return result
 
     # ------------------------------------------------------------------
-    # PRODUCTION режим: Binotel ↔ Gemini
+    # PRODUCTION режим: Binotel SIP ↔ Gemini Live
     # ------------------------------------------------------------------
 
     async def run_production(self, binotel_call) -> str:
         """
-        Production режим: аудіо міст між Binotel та Gemini Live.
+        Production режим: аудіо-міст між Binotel SIP та Gemini Live.
 
-        TODO: Реалізувати після отримання документації Binotel API.
-        TODO: Уточнити як читати/писати аудіо потік Binotel (WebSocket? callback?)
-        TODO: Замінити локальні send_mic / recv_audio на binotel_call.send_audio / receive_audio
-        TODO: Реалізувати transfer_to_operator через Binotel SIP transfer
+        Args:
+            binotel_call: BinotelCall об'єкт з методами send_audio / receive_audio / hangup
         """
-        raise NotImplementedError("TODO: реалізувати production режим з Binotel")
+        logger.info("=" * 55)
+        logger.info("[PRODUCTION] Дзвінок через Binotel")
+        logger.info(f"  Пацієнт : {self.visit['patient_name']}")
+        logger.info(f"  Лікар   : {self.visit['doctor_name']}")
+        logger.info(f"  Час     : {self.visit['visit_datetime']}")
+        logger.info("=" * 55)
+
+        start = time.time()
+
+        try:
+            async with self.client.aio.live.connect(
+                model=GEMINI_MODEL,
+                config=self._build_config(),
+            ) as session:
+
+                # AI починає розмову першим — вітає пацієнта
+                await session.send_client_content(
+                    turns={"parts": [{"text": "Починай розмову — привітайся та нагадай про візит"}]},
+                    turn_complete=True,
+                )
+
+                # Отримуємо перше привітання і відправляємо пацієнту
+                async for resp in session.receive():
+                    if resp.data:
+                        await binotel_call.send_audio(resp.data)
+                    if resp.server_content and resp.server_content.turn_complete:
+                        break
+
+                # Двосторонній аудіо стрімінг
+                async def _send_patient_audio() -> None:
+                    """Читаємо голос пацієнта з SIP і відправляємо в Gemini."""
+                    async for chunk in binotel_call.receive_audio():
+                        if self._end_event.is_set():
+                            break
+                        await session.send_realtime_input(
+                            audio={"data": chunk, "mime_type": "audio/pcm"}
+                        )
+
+                async def _recv_and_handle() -> None:
+                    """Отримуємо відповідь Gemini і відправляємо пацієнту."""
+                    async for resp in session.receive():
+                        # Аудіо відповідь Gemini → пацієнт чує
+                        if resp.data:
+                            await binotel_call.send_audio(resp.data)
+
+                        # Tool call від Gemini
+                        if resp.tool_call:
+                            for fc in resp.tool_call.function_calls:
+                                args = dict(fc.args) if fc.args else {}
+
+                                # transfer_to_operator — передати живому оператору
+                                if fc.name == "transfer_to_operator":
+                                    reason = args.get("reason", "")
+                                    logger.info(f"[AGENT] transfer_to_operator: {reason}")
+                                    await binotel_call.transfer_to_operator(reason)
+                                    self.call_result = "transferred"
+                                    self._end_event.set()
+                                    await session.send_tool_response(
+                                        function_responses=[
+                                            types.FunctionResponse(
+                                                id=fc.id,
+                                                name=fc.name,
+                                                response={"success": True, "message": "Передаємо на оператора"},
+                                            )
+                                        ]
+                                    )
+                                    return
+
+                                # end_call — завершити розмову
+                                result = await handle_tool_call(fc.name, args, self.visit)
+
+                                if fc.name == "end_call":
+                                    self.call_result = result.get("result", "no_result")
+                                    logger.info(f"[AGENT] end_call → {self.call_result}")
+                                    self._end_event.set()
+                                    await session.send_tool_response(
+                                        function_responses=[
+                                            types.FunctionResponse(
+                                                id=fc.id,
+                                                name=fc.name,
+                                                response=result,
+                                            )
+                                        ]
+                                    )
+                                    return
+
+                                # Інші tool calls (confirm_visit, reschedule тощо)
+                                await session.send_tool_response(
+                                    function_responses=[
+                                        types.FunctionResponse(
+                                            id=fc.id,
+                                            name=fc.name,
+                                            response=result,
+                                        )
+                                    ]
+                                )
+
+                send_task = asyncio.create_task(_send_patient_audio())
+                recv_task = asyncio.create_task(_recv_and_handle())
+
+                try:
+                    await asyncio.wait(
+                        [send_task, recv_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    send_task.cancel()
+                    recv_task.cancel()
+                    await asyncio.gather(send_task, recv_task, return_exceptions=True)
+
+        except Exception as e:
+            logger.error(f"[AGENT] Помилка в production режимі: {e}", exc_info=True)
+
+        self.call_duration = time.time() - start
+        result = self.call_result or "no_result"
+        logger.info(f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. Результат: {result}")
+        return result
 
     # ------------------------------------------------------------------
     # Публічний інтерфейс
@@ -223,7 +325,7 @@ class Block1Agent:
             binotel_call: BinotelCall об'єкт (production) або None (debug)
 
         Returns:
-            Результат розмови: confirmed / rescheduled / cancelled / no_result
+            Результат розмови: confirmed / rescheduled / cancelled / no_result / transferred
         """
         if DEBUG:
             return await self.run_debug()
