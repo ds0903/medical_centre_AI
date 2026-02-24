@@ -7,7 +7,8 @@ Binotel SIP клієнт — аудіо-міст між Binotel та Gemini Live
   3. Binotel дзвонить на наш SIP extension → pyVoIP відповідає
   4. Binotel одночасно дзвонить пацієнту
   5. Коли обидва відповіли — аудіо тече через RTP
-  6. pyVoIP повертає PCM 8kHz 16-bit (G.711 декодується бібліотекою)
+  6. pyVoIP read/write працює з unsigned 8-bit PCM @ 8kHz
+     (G.711 µ-law кодування/декодування + unsigned bias виконуються всередині pyVoIP)
 
 Залежність: pyVoIP (pip install pyVoIP)
 """
@@ -53,7 +54,8 @@ def _get_public_ip() -> str:
 
 logger = logging.getLogger(__name__)
 
-# Розмір chunk для read_audio: 20ms @ 8kHz 16-bit = 320 bytes
+# Розмір chunk для read_audio: 40ms @ 8kHz unsigned-8bit = 320 bytes
+# (pyVoIP read_audio повертає unsigned 8-bit PCM, тому 1 байт = 1 sample)
 _CHUNK_BYTES = 320
 
 
@@ -133,9 +135,21 @@ class BinotelSipClient:
         self._expecting_call: bool = False  # True тільки коли ми чекаємо дзвінок від Binotel
         self._keepalive_running: bool = False
         self._public_ip: str = ""
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # event loop для thread-safe callback
 
     def start(self) -> None:
         """Зареєструватись як SIP extension в Binotel."""
+        # Зберігаємо event loop поки ми ще в async контексті (start() викликається з startup()).
+        # _on_incoming_call запускається з потоку pyVoIP — там asyncio.get_event_loop() не працює
+        # в Python 3.12+. Зберігаємо loop тут щоб використовувати call_soon_threadsafe пізніше.
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                self._loop = asyncio.get_event_loop()
+            except RuntimeError:
+                self._loop = None
+
         public_ip = _get_public_ip()
         self._public_ip = public_ip
         if public_ip:
@@ -301,16 +315,15 @@ class BinotelSipClient:
             return
 
         logger.info(f"[SIP] Вхідний дзвінок від {caller}")
-        # Передаємо в asyncio queue через thread-safe виклик
-        try:
-            loop = asyncio.get_event_loop()
+        # Передаємо в asyncio queue через thread-safe виклик.
+        # Використовуємо збережений loop (self._loop) — asyncio.get_event_loop() в потоці
+        # pyVoIP кидає RuntimeError у Python 3.12+, а asyncio.run() створює НОВИЙ loop,
+        # тому put() не сигналізує оригінальний get() waiters.
+        loop = self._loop
+        if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(self._pending_calls.put_nowait, call)
-        except RuntimeError:
-            # Якщо event loop ще не запущений
-            threading.Thread(
-                target=lambda: asyncio.run(self._pending_calls.put(call)),
-                daemon=True,
-            ).start()
+        else:
+            logger.warning("[SIP] Event loop недоступний — дзвінок втрачено!")
 
     async def wait_for_call(self, timeout: int = 30) -> Optional[BinotelSipAudio]:
         """
