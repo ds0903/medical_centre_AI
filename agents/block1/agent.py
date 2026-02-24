@@ -62,6 +62,9 @@ class Block1Agent:
                 parts=[types.Part(text=build_system_prompt(self.visit))]
             ),
             tools=TOOLS,
+            # Вимикаємо "thinking" — для real-time голосу паузи на "обдумування"
+            # неприйнятні: пацієнт чує мовчання, потім весь текст відразу (розмазаний звук).
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
 
     # ------------------------------------------------------------------
@@ -90,7 +93,7 @@ class Block1Agent:
 
                 # AI починає розмову першим
                 await session.send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — привітайся та нагадай про візит"}]},
+                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
 
@@ -204,106 +207,105 @@ class Block1Agent:
 
         start = time.time()
 
-        try:
-            async with self.client.aio.live.connect(
-                model=GEMINI_MODEL,
-                config=self._build_config(),
-            ) as session:
+        warmup_session = getattr(self, "_warmup_session", None)
+        warmup_cm = getattr(self, "_warmup_cm", None)
+        greeting_buffer = getattr(self, "_greeting_buffer", [])
 
-                # AI починає розмову першим — вітає пацієнта
+        async def _stream(session) -> None:
+            """Двосторонній стрімінг аудіо між Binotel SIP та Gemini."""
+
+            # Якщо greeting вже буферизований — відтворюємо одразу (нульова затримка)
+            if greeting_buffer:
+                greeting_duration = getattr(self, "_greeting_duration", 3.0)
+                logger.info(
+                    f"[AGENT] Буферизоване привітання: {len(greeting_buffer)} chunks"
+                    f" ({greeting_duration:.1f}с)"
+                )
+                for chunk in greeting_buffer:
+                    await binotel_call.send_audio(chunk)
+                # Чекаємо поки pyVoIP відтворить привітання (trans() дренує зі швидкістю 8kHz).
+                # Без цього _send_patient_audio стартує одразу, пацієнт говорить "алло"
+                # ще під час привітання, і Gemini може неправильно відреагувати.
+                logger.info(f"[AGENT] Чекаємо кінця привітання ({greeting_duration:.1f}с)...")
+                await asyncio.sleep(greeting_duration)
+            else:
+                # Холодний старт: генеруємо привітання зараз
                 await session.send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — привітайся та нагадай про візит"}]},
+                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
-
-                # Отримуємо перше привітання і відправляємо пацієнту
                 async for resp in session.receive():
                     if resp.data:
                         await binotel_call.send_audio(resp.data)
                     if resp.server_content and resp.server_content.turn_complete:
                         break
 
-                # Двосторонній аудіо стрімінг
-                async def _send_patient_audio() -> None:
-                    """Читаємо голос пацієнта з SIP і відправляємо в Gemini."""
-                    async for chunk in binotel_call.receive_audio():
-                        if self._end_event.is_set():
-                            break
-                        await session.send_realtime_input(
-                            audio={"data": chunk, "mime_type": "audio/pcm"}
-                        )
-
-                async def _recv_and_handle() -> None:
-                    """Отримуємо відповідь Gemini і відправляємо пацієнту."""
-                    async for resp in session.receive():
-                        # Аудіо відповідь Gemini → пацієнт чує
-                        if resp.data:
-                            await binotel_call.send_audio(resp.data)
-
-                        # Tool call від Gemini
-                        if resp.tool_call:
-                            for fc in resp.tool_call.function_calls:
-                                args = dict(fc.args) if fc.args else {}
-
-                                # transfer_to_operator — передати живому оператору
-                                if fc.name == "transfer_to_operator":
-                                    reason = args.get("reason", "")
-                                    logger.info(f"[AGENT] transfer_to_operator: {reason}")
-                                    await binotel_call.transfer_to_operator(reason)
-                                    self.call_result = "transferred"
-                                    self._end_event.set()
-                                    await session.send_tool_response(
-                                        function_responses=[
-                                            types.FunctionResponse(
-                                                id=fc.id,
-                                                name=fc.name,
-                                                response={"success": True, "message": "Передаємо на оператора"},
-                                            )
-                                        ]
-                                    )
-                                    return
-
-                                # end_call — завершити розмову
-                                result = await handle_tool_call(fc.name, args, self.visit)
-
-                                if fc.name == "end_call":
-                                    self.call_result = result.get("result", "no_result")
-                                    logger.info(f"[AGENT] end_call → {self.call_result}")
-                                    self._end_event.set()
-                                    await session.send_tool_response(
-                                        function_responses=[
-                                            types.FunctionResponse(
-                                                id=fc.id,
-                                                name=fc.name,
-                                                response=result,
-                                            )
-                                        ]
-                                    )
-                                    return
-
-                                # Інші tool calls (confirm_visit, reschedule тощо)
-                                await session.send_tool_response(
-                                    function_responses=[
-                                        types.FunctionResponse(
-                                            id=fc.id,
-                                            name=fc.name,
-                                            response=result,
-                                        )
-                                    ]
-                                )
-
-                send_task = asyncio.create_task(_send_patient_audio())
-                recv_task = asyncio.create_task(_recv_and_handle())
-
-                try:
-                    await asyncio.wait(
-                        [send_task, recv_task],
-                        return_when=asyncio.FIRST_COMPLETED,
+            async def _send_patient_audio() -> None:
+                async for chunk in binotel_call.receive_audio():
+                    if self._end_event.is_set():
+                        break
+                    await session.send_realtime_input(
+                        audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
+
+            async def _recv_and_handle() -> None:
+                async for resp in session.receive():
+                    if resp.data:
+                        await binotel_call.send_audio(resp.data)
+                    if resp.tool_call:
+                        for fc in resp.tool_call.function_calls:
+                            args = dict(fc.args) if fc.args else {}
+                            if fc.name == "transfer_to_operator":
+                                reason = args.get("reason", "")
+                                logger.info(f"[AGENT] transfer_to_operator: {reason}")
+                                await binotel_call.transfer_to_operator(reason)
+                                self.call_result = "transferred"
+                                self._end_event.set()
+                                await session.send_tool_response(function_responses=[
+                                    types.FunctionResponse(id=fc.id, name=fc.name,
+                                        response={"success": True, "message": "Передаємо на оператора"})
+                                ])
+                                return
+                            result = await handle_tool_call(fc.name, args, self.visit)
+                            if fc.name == "end_call":
+                                self.call_result = result.get("result", "no_result")
+                                logger.info(f"[AGENT] end_call → {self.call_result}")
+                                self._end_event.set()
+                                await session.send_tool_response(function_responses=[
+                                    types.FunctionResponse(id=fc.id, name=fc.name, response=result)
+                                ])
+                                return
+                            await session.send_tool_response(function_responses=[
+                                types.FunctionResponse(id=fc.id, name=fc.name, response=result)
+                            ])
+
+            send_task = asyncio.create_task(_send_patient_audio())
+            recv_task = asyncio.create_task(_recv_and_handle())
+            try:
+                await asyncio.wait([send_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                send_task.cancel()
+                recv_task.cancel()
+                await asyncio.gather(send_task, recv_task, return_exceptions=True)
+
+        try:
+            if warmup_session is not None:
+                # Pre-warmed шлях: сесія вже відкрита, закриваємо вручну після
+                try:
+                    await _stream(warmup_session)
                 finally:
-                    send_task.cancel()
-                    recv_task.cancel()
-                    await asyncio.gather(send_task, recv_task, return_exceptions=True)
+                    if warmup_cm is not None:
+                        try:
+                            await warmup_cm.__aexit__(None, None, None)
+                        except Exception:
+                            pass
+            else:
+                # Холодний шлях: звичайний async with
+                async with self.client.aio.live.connect(
+                    model=GEMINI_MODEL,
+                    config=self._build_config(),
+                ) as session:
+                    await _stream(session)
 
         except Exception as e:
             logger.error(f"[AGENT] Помилка в production режимі: {e}", exc_info=True)
@@ -312,6 +314,54 @@ class Block1Agent:
         result = self.call_result or "no_result"
         logger.info(f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. Результат: {result}")
         return result
+
+    # ------------------------------------------------------------------
+    # Warmup: підігрів Gemini поки пацієнт ще чує гудки
+    # ------------------------------------------------------------------
+
+    async def warmup(self) -> None:
+        """
+        Підключитись до Gemini і згенерувати перше привітання заздалегідь.
+
+        Викликається ПАРАЛЕЛЬНО з binotel.initiate_call() поки пацієнт
+        чує гудки (10-30 секунд). Буферизує greeting chunks у self._greeting_buffer.
+        Коли пацієнт відповість — run_production() одразу відіграє готовий буфер.
+        """
+        self._greeting_buffer: list[bytes] = []
+        self._greeting_duration: float = 0.0  # тривалість привітання в секундах
+        self._warmup_cm = None
+        self._warmup_session = None
+        try:
+            self._warmup_cm = self.client.aio.live.connect(
+                model=GEMINI_MODEL,
+                config=self._build_config(),
+            )
+            self._warmup_session = await self._warmup_cm.__aenter__()
+            await self._warmup_session.send_client_content(
+                turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
+                turn_complete=True,
+            )
+            async for resp in self._warmup_session.receive():
+                if resp.data:
+                    self._greeting_buffer.append(resp.data)
+                    # 24kHz 16-bit = 48000 bytes/sec → тривалість цього chunk
+                    self._greeting_duration += len(resp.data) / 48000
+                if resp.server_content and resp.server_content.turn_complete:
+                    break
+            logger.info(
+                f"[AGENT] Warmup готовий: {len(self._greeting_buffer)} chunks буферизовано"
+                f" ({self._greeting_duration:.1f}с)"
+            )
+        except Exception as e:
+            logger.warning(f"[AGENT] Warmup помилка: {e} — запустимо звичайний шлях")
+            if self._warmup_cm is not None:
+                try:
+                    await self._warmup_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            self._warmup_session = None
+            self._warmup_cm = None
+            self._greeting_buffer = []
 
     # ------------------------------------------------------------------
     # Публічний інтерфейс

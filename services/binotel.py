@@ -106,7 +106,7 @@ class BinotelCall:
     async def send_audio(self, pcm_24khz: bytes) -> None:
         """
         Відправити аудіо Gemini пацієнту.
-        Конвертує PCM 24kHz → PCM 8kHz і пише в SIP RTP.
+        Конвертує PCM 24kHz → µ-law 8kHz і пише в SIP RTP.
         """
         if not self.is_active:
             return

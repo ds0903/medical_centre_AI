@@ -2,7 +2,7 @@ import asyncio
 import pyaudio
 from google import genai
 
-API_KEY = "AIzaSyB8SoZnjdGRaSy-sCndqZHh1Cmqdl_Jm1A"
+API_KEY = "AIzaSyAMiUTk---AyaZqPmJdbUircbCNVJDa-zc"
 
 # Аудіо вихід: 24kHz 16-bit mono (формат Gemini)
 FORMAT = pyaudio.paInt16

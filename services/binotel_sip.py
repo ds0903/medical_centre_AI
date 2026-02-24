@@ -20,7 +20,13 @@ import string
 import threading
 import time
 import urllib.request
+import warnings
 from typing import Optional
+
+# Binotel інколи шле RTP пакети з OPUS payload type, хоча в SDP ми погодились
+# лише на PCMU/PCMA. pyVoIP не вміє їх декодувати і кидає UserWarning для кожного
+# такого пакету. Придушуємо цей шум — він не впливає на голос (голос іде як PCMU).
+warnings.filterwarnings("ignore", category=UserWarning, message=".*[Oo]pus.*")
 
 from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
 from pyVoIP.SIP import SIPMessageType
@@ -43,6 +49,34 @@ def _rtp_start_nat_patch(self) -> None:
 
 
 _RTPClient.start = _rtp_start_nat_patch
+
+
+# Патч encode_pcmu: audio_bridge.py тепер надає вже готові µ-law байти безпосередньо.
+# Без патчу pyVoIP робив: bias(-128) + lin2ulaw(width=1) — тобто кодував ще раз те,
+# що вже є µ-law → подвійна деградація, "розмитий" звук.
+# З патчем: просто пропускаємо байти як є (passthrough).
+_encode_pcmu_log_done = False
+
+
+def _encode_pcmu_passthrough(self, packet: bytes) -> bytes:
+    global _encode_pcmu_log_done
+    if not _encode_pcmu_log_done:
+        _encode_pcmu_log_done = True
+        pref = getattr(self, "preference", "?")
+        pref_str = str(pref)
+        # Виявляємо кодек і налаштовуємо audio_bridge відповідно.
+        # Binotel в Україні типово використовує PCMA (G.711 A-law).
+        from services.audio_bridge import set_codec_alaw
+        is_alaw = "PCMA" in pref_str
+        set_codec_alaw(is_alaw)
+        logging.getLogger(__name__).info(
+            f"[SIP] encode_pcmu PASSTHROUGH ✓ "
+            f"(codec={pref_str}, {'A-law' if is_alaw else 'µ-law'}, chunk={len(packet)}b)"
+        )
+    return packet
+
+
+_RTPClient.encode_pcmu = _encode_pcmu_passthrough
 
 
 def _get_public_ip() -> str:

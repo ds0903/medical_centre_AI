@@ -50,20 +50,31 @@ async def main() -> None:
     logger.info("SIP онлайн! Перевір в Binotel — 914 має бути Онлайн")
 
     try:
-        # Крок 2: Ініціювати дзвінок
+        # Крок 2: Паралельно — ініціюємо дзвінок + підігріваємо Gemini.
+        # Поки пацієнт чує гудки (10-30с), Gemini вже підключається і генерує привітання.
+        # Коли пацієнт підніме трубку — greeting вже готовий, затримка ≈ 0.
         logger.info(f"Дзвонимо на {TEST_VISIT['patient_phone']}...")
-        call = await binotel.initiate_call(
-            phone=TEST_VISIT["patient_phone"],
-            patient_name=TEST_VISIT["patient_name"],
+        agent = Block1Agent(TEST_VISIT)
+
+        call_task = asyncio.create_task(
+            binotel.initiate_call(
+                phone=TEST_VISIT["patient_phone"],
+                patient_name=TEST_VISIT["patient_name"],
+            )
         )
+        warmup_task = asyncio.create_task(agent.warmup())
+
+        call = await call_task
 
         if call is None:
+            warmup_task.cancel()
             logger.error("Пацієнт не відповів або технічна помилка")
             return
 
-        # Крок 3: Запустити агента
+        await warmup_task  # до цього моменту greeting вже буферизовано
+
+        # Крок 3: Запустити агента (він вже підігрітий — greeting буферизовано)
         logger.info("Пацієнт відповів! Запускаємо AI агента...")
-        agent = Block1Agent(TEST_VISIT)
         result = await agent.run(call)
         agent.cleanup()
 
