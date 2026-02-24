@@ -94,8 +94,8 @@ class BinotelCall:
     Надає async інтерфейс аудіо для Block1Agent.run_production().
     """
 
-    def __init__(self, general_call_id: str, sip_audio: BinotelSipAudio) -> None:
-        self.call_id = general_call_id
+    def __init__(self, general_call_id: Optional[str], sip_audio: BinotelSipAudio) -> None:
+        self.call_id = general_call_id  # None якщо REST API повернув error 150
         self._sip = sip_audio
         self.is_active = True
 
@@ -132,15 +132,16 @@ class BinotelCall:
     # ------------------------------------------------------------------
 
     async def hangup(self) -> None:
-        """Завершити дзвінок (SIP + REST)."""
+        """Завершити дзвінок (SIP + REST якщо є call_id)."""
         if not self.is_active:
             return
         self.is_active = False
         reset_state()
 
         self._sip.hangup()
-        await _rest.hangup_call(self.call_id)
-        logger.info(f"[BINOTEL] Дзвінок {self.call_id} завершено")
+        if self.call_id:
+            await _rest.hangup_call(self.call_id)
+        logger.info(f"[BINOTEL] Дзвінок {self.call_id or 'SIP-only'} завершено")
 
     async def transfer_to_operator(self, reason: str = "") -> None:
         """
@@ -155,7 +156,8 @@ class BinotelCall:
         reset_state()
 
         logger.info(f"[BINOTEL] Передача оператору ({BINOTEL_OPERATOR_NUMBER}): {reason}")
-        await _rest.attended_transfer(self.call_id, BINOTEL_OPERATOR_NUMBER)
+        if self.call_id:
+            await _rest.attended_transfer(self.call_id, BINOTEL_OPERATOR_NUMBER)
         self._sip.hangup()
 
 
@@ -187,55 +189,95 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
     logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
 
     # Крок 1: Чекаємо поки наш SIP extension стане Online в Binotel
-    # timeout=5 — якщо за 5с не онлайн, все одно пробуємо дзвонити
     logger.info(f"[BINOTEL] Чекаємо статус Онлайн для extension {BINOTEL_INTERNAL_NUMBER}...")
-    online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=5)
+    online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=15)
     if not online:
         logger.warning(
             f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} не став онлайн. "
             f"Спробуємо дзвонити все одно..."
         )
 
-    # Крок 2: Ініціюємо дзвінок через REST API
-    # Binotel одночасно дзвонить на наш SIP extension та на пацієнта
+    # Пауза 4с — дати час залишковим дзвінкам від попередніх сесій прийти і відхилитись
+    logger.info("[BINOTEL] Очищення залишкових дзвінків...")
+    await asyncio.sleep(4)
+
+    # Крок 2: Запускаємо INVITE listener ПАРАЛЕЛЬНО з REST API викликом.
+    # Binotel надсилає INVITE поки обробляє REST API запит.
+    # Ми маємо відповісти на INVITE ЗРАЗУ — тоді Binotel з'єднує обидві сторони.
+    _sip._expecting_call = True
+    sip_wait_task = asyncio.create_task(_sip.wait_for_call(timeout=50))
+
+    # Крок 3: Ініціюємо дзвінок через REST API
+    general_call_id: Optional[str] = None
     try:
         general_call_id = await _rest.initiate_call(
             internal_number=BINOTEL_INTERNAL_NUMBER,
             external_number=phone,
         )
+    except RuntimeError as e:
+        if "150" in str(e):
+            # Error 150 = Binotel перевіряє qualify (=0) і повертає pre-check failure,
+            # але INVITE вже надіслано або надсилається. Продовжуємо чекати INVITE.
+            logger.warning(
+                f"[BINOTEL] Error 150 (qualify=0): Binotel вже надіслав INVITE, "
+                f"чекаємо підтвердження SIP з'єднання..."
+            )
+        else:
+            sip_wait_task.cancel()
+            _sip._expecting_call = False
+            logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
+            return None
     except Exception as e:
+        sip_wait_task.cancel()
+        _sip._expecting_call = False
         logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
         return None
 
-    # Крок 3: Чекаємо вхідного SIP дзвінка від Binotel на наш extension
-    sip_audio = await _sip.wait_for_call(timeout=30)
+    # Крок 4: Чекаємо INVITE та відповідаємо на нього
+    sip_audio = await sip_wait_task
     if sip_audio is None:
         logger.warning(f"[BINOTEL] SIP extension не отримав дзвінок від Binotel")
-        await _rest.hangup_call(general_call_id)
+        if general_call_id:
+            await _rest.hangup_call(general_call_id)
         return None
 
-    # Крок 4: Чекаємо поки пацієнт відповість (WebSocket подія + polling)
-    # Запускаємо паралельно — хто перший
-    ws_task = asyncio.create_task(
-        _ws.wait_for_answered(general_call_id, timeout=60)
-    )
-    poll_task = asyncio.create_task(
-        _rest.wait_for_answer(general_call_id, timeout=60)
-    )
+    if general_call_id is None:
+        logger.warning(
+            "[BINOTEL] Немає generalCallID (error 150 від REST API). "
+            "Дзвінок встановлено через SIP, REST API керування недоступне."
+        )
 
-    done, pending = await asyncio.wait(
-        [ws_task, poll_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for t in pending:
-        t.cancel()
+    # Крок 5: Чекаємо поки пацієнт відповість (WebSocket подія + polling)
+    if general_call_id:
+        # Нормальний шлях: є generalCallID, чекаємо через WebSocket + polling
+        tasks_to_await = []
+        if _ws:
+            tasks_to_await.append(
+                asyncio.create_task(_ws.wait_for_answered(general_call_id, timeout=60))
+            )
+        tasks_to_await.append(
+            asyncio.create_task(_rest.wait_for_answer(general_call_id, timeout=60))
+        )
 
-    answered = any(t.result() for t in done if not t.exception())
+        done, pending = await asyncio.wait(
+            tasks_to_await, return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in pending:
+            t.cancel()
+        answered = any(t.result() for t in done if not t.exception())
+    else:
+        # Error 150 шлях: немає generalCallID.
+        # Якщо пацієнт дзвонить і audio активний — вважаємо що відповів.
+        # Чекаємо 30с на аудіо від пацієнта.
+        logger.info("[BINOTEL] Чекаємо audio підтвердження (немає generalCallID)...")
+        await asyncio.sleep(3)
+        answered = sip_audio.is_active
 
     if not answered:
         logger.warning(f"[BINOTEL] Пацієнт не відповів: {patient_name} ({phone})")
         sip_audio.hangup()
-        await _rest.hangup_call(general_call_id)
+        if general_call_id:
+            await _rest.hangup_call(general_call_id)
         return None
 
     logger.info(f"[BINOTEL] Пацієнт відповів. Починаємо розмову: {patient_name}")

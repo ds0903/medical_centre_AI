@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/1/PycharmProjects/medical_centre_AI/.venv/Scripts/python.exe -m pip list:*)",
+      "WebSearch",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(python:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:wire.binotel.com)",
+      "WebFetch(domain:www.binotel.ua)",
+      "WebFetch(domain:developers.binotel.ua)",
+      "WebFetch(domain:apimonster.io)",
+      "WebFetch(domain:h-profit.com)",
+      "WebFetch(domain:docs.espocrm.com)",
+      "Bash(powershell:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:web.archive.org)",
+      "Bash(curl:*)",
+      "Bash(/c/Users/1/AppData/Local/Programs/Python/Python313/python.exe:*)",
+      "Bash(\"/c/Users/1/PycharmProjects/medical_centre_AI/.venv/Scripts/python.exe\":*)",
+      "Bash(powershell.exe:*)",
+      "WebFetch(domain:prng.binotel.com)",
+      "Bash(cd:*)",
+      "Bash(pip install:*)",
+      "Bash(head:*)",
+      "Bash(ps:*)",
+      "Bash(echo EXIT:$?:*)"
+    ]
+  }
+}
