@@ -164,6 +164,16 @@ _RESULT_MAP = {
     "transferred": CallResult.transferred,
 }
 
+# Маппінг результату дзвінка → STATUS для API клініки:
+#   1 — Підтверджує, 2 — Відміняє, 3 — Не зрозумів, 4 — Не додзвонились
+_STATUS_API_MAP = {
+    "confirmed": 1,
+    "rescheduled": 1,
+    "cancelled": 2,
+    "no_result": 3,
+    "transferred": 3,
+}
+
 
 async def _save_result(task: CallTask, result_str: str, duration: float) -> None:
     async with get_session() as session:
@@ -174,6 +184,9 @@ async def _save_result(task: CallTask, result_str: str, duration: float) -> None
         db_task.completed_at = datetime.utcnow()
     logger.info(f"[CALLS] Результат збережено: {result_str} ({duration:.0f}с)")
 
+    api_status = _STATUS_API_MAP.get(result_str, 3)
+    await clinic_api.update_event_status(task.visit_id, api_status)
+
 
 async def _handle_no_answer(task: CallTask) -> None:
     async with get_session() as session:
@@ -182,6 +195,7 @@ async def _handle_no_answer(task: CallTask) -> None:
             db_task.status = CallStatus.failed
             db_task.result = CallResult.no_answer
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
+            await clinic_api.update_event_status(task.visit_id, 4)
         else:
             db_task.status = CallStatus.pending  # Спробуємо ще раз наступного разу
             logger.info(f"[CALLS] Спроба {db_task.attempts}/{MAX_CALL_ATTEMPTS} для {task.patient_name}")

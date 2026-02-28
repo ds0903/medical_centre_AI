@@ -249,9 +249,16 @@ class Block1Agent:
                     )
 
             async def _recv_and_handle() -> None:
+                _draining = False  # True після end_call — граємо прощання, не обриваємо
                 async for resp in session.receive():
                     if resp.data:
                         await binotel_call.send_audio(resp.data)
+                    if _draining:
+                        # Чекаємо поки AI договорить прощання (turn_complete)
+                        if resp.server_content and resp.server_content.turn_complete:
+                            logger.info("[AGENT] AI завершив прощання — завершуємо")
+                            return
+                        continue
                     if resp.tool_call:
                         for fc in resp.tool_call.function_calls:
                             args = dict(fc.args) if fc.args else {}
@@ -274,7 +281,8 @@ class Block1Agent:
                                 await session.send_tool_response(function_responses=[
                                     types.FunctionResponse(id=fc.id, name=fc.name, response=result)
                                 ])
-                                return
+                                _draining = True  # Не return — слухаємо прощання AI
+                                break
                             await session.send_tool_response(function_responses=[
                                 types.FunctionResponse(id=fc.id, name=fc.name, response=result)
                             ])
@@ -283,6 +291,13 @@ class Block1Agent:
             recv_task = asyncio.create_task(_recv_and_handle())
             try:
                 await asyncio.wait([send_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
+                # Якщо end_call спрацював — recv_task ще грає прощання AI.
+                # Чекаємо поки AI договорить (max 15с) перш ніж обривати дзвінок.
+                if self._end_event.is_set() and not recv_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
             finally:
                 send_task.cancel()
                 recv_task.cancel()

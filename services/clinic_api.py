@@ -48,40 +48,56 @@ def _make_headers() -> dict:
 
 async def get_upcoming_visits(target_date: date) -> list[dict]:
     """
-    Отримати список запланованих візитів на вказану дату.
+    Отримати список записів на дзвінки з API клініки.
 
-    Returns: list of dicts з ключами:
-        visit_id      : str
-        patient_name  : str
-        patient_phone : str
-        doctor_name   : str
-        doctor_id     : str
-        visit_datetime: str  ISO 8601
+    API: GET https://cabinet.mkom.ua/bridge/call/appointments
+    Повертає поля: ID, START_E, FINISH_E, CAPTION, LOCATION, MESSAGE,
+                   PATIENT, PATPHONE, EVENTSTATE, IDPOINT, NOTE, ONLINE_EVENT
 
-    ---
-    TODO: GET {CLINIC_API_URL}/visits
-          params: date=YYYY-MM-DD, status=scheduled
-    TODO: Уточнити назву параметра дати (date / appointment_date / from?)
-    TODO: Уточнити чи фільтрує по статусу автоматично або потрібен параметр
-    TODO: Додати обробку пагінації якщо відповідь містить page/total
-    TODO: Уточнити структуру відповіді (data[]? items[]? appointments[]?)
+    Returns: list of dicts з внутрішніми ключами:
+        visit_id      : str  (= str(ID))
+        patient_name  : str  (= PATIENT)
+        patient_phone : str  (= PATPHONE)
+        doctor_name   : str  (= CAPTION)
+        doctor_id     : str  (= str(IDPOINT))
+        visit_datetime: str  ISO 8601  (= START_E)
     """
     if DEBUG:
         data = _load_test_data()
-        visits = data.get("visits", [])
-        logger.debug(f"[DEBUG] Завантажено {len(visits)} візитів з test_visits.json")
+        appointments = data.get("appointments", [])
+        visits = [
+            {
+                "visit_id":       str(a["ID"]),
+                "patient_name":   a["PATIENT"],
+                "patient_phone":  a["PATPHONE"],
+                "doctor_name":    a["CAPTION"],
+                "doctor_id":      str(a["IDPOINT"]),
+                "visit_datetime": a["START_E"],
+            }
+            for a in appointments
+        ]
+        logger.debug(f"[DEBUG] Завантажено {len(visits)} записів з test_visits.json")
         return visits
 
     # TODO: реальний запит ---------------------------------------------------
     # async with aiohttp.ClientSession() as http:
     #     async with http.get(
-    #         f"{CLINIC_API_URL}/visits",
+    #         f"{CLINIC_API_URL}/bridge/call/appointments",
     #         headers=_make_headers(),
-    #         params={"date": target_date.isoformat(), "status": "scheduled"},
     #     ) as resp:
     #         resp.raise_for_status()
-    #         body = await resp.json()
-    #         return body["data"]   # TODO: уточнити ключ
+    #         appointments = await resp.json()
+    #         return [
+    #             {
+    #                 "visit_id":       str(a["ID"]),
+    #                 "patient_name":   a["PATIENT"],
+    #                 "patient_phone":  a["PATPHONE"],
+    #                 "doctor_name":    a["CAPTION"],
+    #                 "doctor_id":      str(a["IDPOINT"]),
+    #                 "visit_datetime": a["START_E"],
+    #             }
+    #             for a in appointments
+    #         ]
     # -------------------------------------------------------------------------
     raise NotImplementedError("TODO: реалізувати get_upcoming_visits")
 
@@ -242,3 +258,60 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
     #         return True
     # -------------------------------------------------------------------------
     raise NotImplementedError("TODO: реалізувати cancel_visit")
+
+
+# ---------------------------------------------------------------------------
+# Відправка результату дзвінка
+# ---------------------------------------------------------------------------
+
+async def update_event_status(event_id: str, status: int) -> None:
+    """
+    Відправити результат дзвінка назад до API клініки.
+
+    Args:
+        event_id: ID події (= ID з appointments API)
+        status:
+            1 — Підтверджує
+            2 — Відміняє
+            3 — Не зрозумів / передано оператору
+            4 — Не додзвонились
+
+    DEBUG: оновлює STATUS прямо в data/test_visits.json
+
+    ---
+    TODO: уточнити endpoint та метод (POST / PATCH / PUT)
+    TODO: уточнити формат авторизації (заголовок)
+    """
+    _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 4: "Не додзвонились"}
+    label = _STATUS_LABELS.get(status, str(status))
+
+    if DEBUG:
+        path = os.path.join(os.path.dirname(__file__), "..", "data", "test_visits.json")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        updated = False
+        for appointment in data.get("appointments", []):
+            if str(appointment["ID"]) == str(event_id):
+                appointment["STATUS"] = status
+                updated = True
+                break
+
+        if updated:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"[DEBUG] update_event_status → ID={event_id}, STATUS={status} ({label})")
+        else:
+            logger.warning(f"[DEBUG] update_event_status → ID={event_id} не знайдено в JSON")
+        return
+
+    # TODO: реальний запит ---------------------------------------------------
+    # async with aiohttp.ClientSession() as http:
+    #     async with http.post(
+    #         f"{CLINIC_API_URL}/bridge/call/appointments/status",
+    #         headers=_make_headers(),
+    #         json={"ID": int(event_id), "STATUS": status},
+    #     ) as resp:
+    #         resp.raise_for_status()
+    # -------------------------------------------------------------------------
+    raise NotImplementedError("TODO: реалізувати update_event_status")
