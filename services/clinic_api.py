@@ -69,7 +69,7 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
             {
                 "visit_id":       str(a["ID"]),
                 "patient_name":   a["PATIENT"],
-                "patient_phone":  a["PATPHONE"],
+                "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
                 "doctor_name":    a["CAPTION"],
                 "doctor_id":      str(a["IDPOINT"]),
                 "visit_datetime": a["START_E"],
@@ -91,7 +91,7 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
     #             {
     #                 "visit_id":       str(a["ID"]),
     #                 "patient_name":   a["PATIENT"],
-    #                 "patient_phone":  a["PATPHONE"],
+    #                 "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
     #                 "doctor_name":    a["CAPTION"],
     #                 "doctor_id":      str(a["IDPOINT"]),
     #                 "visit_datetime": a["START_E"],
