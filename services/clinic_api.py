@@ -73,6 +73,7 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
                 "doctor_name":    a["CAPTION"],
                 "doctor_id":      str(a["IDPOINT"]),
                 "visit_datetime": a["START_E"],
+                "message":        a.get("MESSAGE") or "",
             }
             for a in appointments
         ]

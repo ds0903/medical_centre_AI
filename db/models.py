@@ -54,6 +54,7 @@ class CallTask(Base):
     completed_at = Column(DateTime, nullable=True)
 
     # Додаткова інформація
+    message = Column(String, nullable=True)        # MESSAGE з API клініки (час/нотатки)
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)  # Причина передачі оператору
 

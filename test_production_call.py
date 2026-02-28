@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 # Тестовий візит — змінюй phone на свій номер
 TEST_VISIT = {
-    "visit_id":       "test-001",
-    "patient_name":   "Тестовий Пацієнт",
-    "patient_phone":  "0687034410",        # ← твій номер
-    "doctor_name":    "Лікар Тестовий",
-    "doctor_id":      "doc-001",
-    "visit_datetime": "2026-02-25T10:00:00",
+    "visit_id":       "1300080",
+    "patient_name":   "КОВАЛЕНКО 12 ТИЖ",
+    "patient_phone":  "0687034410",
+    "doctor_name":    "ГАЗАРОВА ЛАРИСА ВОЛОДИМИРІВНА УЗД ДІАГНОСТ, МРТ ДІАГНОСТ",
+    "doctor_id":      "1",
+    "visit_datetime": "2026-03-01 08:30:00",
+    "message":        "14:00 - 14:15. КОВАЛЕНКО 12 ТИЖ. Телефон - 073-102-2581. .",
 }
 
 
