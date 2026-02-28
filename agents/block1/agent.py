@@ -221,11 +221,10 @@ class Block1Agent:
                     f"[AGENT] Буферизоване привітання: {len(greeting_buffer)} chunks"
                     f" ({greeting_duration:.1f}с)"
                 )
+                # +1с пауза перед привітанням — пацієнт встигає підняти трубку
+                await asyncio.sleep(1.0)
                 for chunk in greeting_buffer:
                     await binotel_call.send_audio(chunk)
-                # Чекаємо поки pyVoIP відтворить привітання (trans() дренує зі швидкістю 8kHz).
-                # Без цього _send_patient_audio стартує одразу, пацієнт говорить "алло"
-                # ще під час привітання, і Gemini може неправильно відреагувати.
                 logger.info(f"[AGENT] Чекаємо кінця привітання ({greeting_duration:.1f}с)...")
                 await asyncio.sleep(greeting_duration)
             else:
@@ -256,7 +255,8 @@ class Block1Agent:
                     if _draining:
                         # Чекаємо поки AI договорить прощання (turn_complete)
                         if resp.server_content and resp.server_content.turn_complete:
-                            logger.info("[AGENT] AI завершив прощання — завершуємо")
+                            logger.info("[AGENT] AI завершив прощання — чекаємо 5с...")
+                            await asyncio.sleep(5.0)
                             return
                         continue
                     if resp.tool_call:
