@@ -126,9 +126,18 @@ class Block1Agent:
                         )
 
                 async def _recv_and_handle() -> None:
+                    _draining = False
                     async for resp in session.receive():
                         if resp.data:
                             output_stream.write(resp.data)
+
+                        # Draining: end_call отримано — не обриваємо одразу,
+                        # чекаємо поки AI договорить прощання (turn_complete)
+                        if _draining:
+                            if resp.server_content and resp.server_content.turn_complete:
+                                self._end_event.set()
+                                return
+                            continue
 
                         if resp.tool_call:
                             for fc in resp.tool_call.function_calls:
@@ -138,7 +147,6 @@ class Block1Agent:
                                 if fc.name == "end_call":
                                     self.call_result = result.get("result", "no_result")
                                     logger.info(f"[AGENT] end_call → {self.call_result}")
-                                    self._end_event.set()
                                     await session.send_tool_response(
                                         function_responses=[
                                             types.FunctionResponse(
@@ -148,7 +156,8 @@ class Block1Agent:
                                             )
                                         ]
                                     )
-                                    return
+                                    _draining = True
+                                    break
 
                                 await session.send_tool_response(
                                     function_responses=[
@@ -159,6 +168,7 @@ class Block1Agent:
                                         )
                                     ]
                                 )
+                    self._end_event.set()
 
                 send_task = asyncio.create_task(_send_mic())
                 recv_task = asyncio.create_task(_recv_and_handle())
@@ -244,8 +254,8 @@ class Block1Agent:
                             if _draining:
                                 # Чекаємо поки AI договорить прощання (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
-                                    logger.info("[AGENT] AI завершив прощання — чекаємо 5с...")
-                                    await asyncio.sleep(5.0)
+                                    logger.info("[AGENT] AI завершив прощання — чекаємо 3с...")
+                                    await asyncio.sleep(3.0)
                                     return
                                 continue
                             if resp.tool_call:
@@ -262,7 +272,11 @@ class Block1Agent:
                                                 response={"success": True, "message": "Передаємо на оператора"})
                                         ])
                                         return
-                                    result = await handle_tool_call(fc.name, args, self.visit)
+                                    try:
+                                        result = await handle_tool_call(fc.name, args, self.visit)
+                                    except Exception as tool_err:
+                                        logger.error(f"[AGENT] Tool {fc.name} помилка: {tool_err!r}")
+                                        result = {"success": False, "error": str(tool_err), "result": "no_result"}
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
