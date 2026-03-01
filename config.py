@@ -9,7 +9,7 @@ DEBUG = ENV == "debug"
 
 # Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
 
 # PostgreSQL
 DATABASE_URL = os.getenv(
