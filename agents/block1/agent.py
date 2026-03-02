@@ -165,12 +165,18 @@ class Block1Agent:
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
+                    # Поки буфер ще грає — споживаємо SIP-аудіо але НЕ пускаємо до Gemini.
+                    # Інакше Gemini отримує "алло" під час буфера, відповідає, відповідь
+                    # блокується і Gemini після буфера в плутаному стані → затримка ~6с.
+                    if not _greeting_done.is_set():
+                        continue
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
 
             async def _recv_and_handle() -> None:
-                _draining = False  # True після end_call — граємо прощання, не обриваємо
+                _draining = False       # True — чекаємо поки AI договорить перед завершенням
+                _pending_transfer = None  # str reason → transfer після фрази AI; None → end_call
                 try:
                     # session.receive() — пер-тернова: виходить після кожного turn_complete.
                     # while True перезапускає для наступного turn.
@@ -187,10 +193,14 @@ class Block1Agent:
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
                             if _draining:
-                                # Чекаємо поки AI договорить прощання (turn_complete)
+                                # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
-                                    logger.info("[AGENT] AI завершив прощання — чекаємо 3с...")
-                                    await asyncio.sleep(3.0)
+                                    if _pending_transfer is not None:
+                                        logger.info(f"[AGENT] AI завершив фразу — передаємо оператору")
+                                        await binotel_call.transfer_to_operator(_pending_transfer)
+                                    else:
+                                        logger.info("[AGENT] AI завершив прощання — чекаємо 3с...")
+                                        await asyncio.sleep(3.0)
                                     return
                                 continue
                             if resp.tool_call:
@@ -199,14 +209,16 @@ class Block1Agent:
                                     if fc.name == "transfer_to_operator":
                                         reason = args.get("reason", "")
                                         logger.info(f"[AGENT] transfer_to_operator: {reason}")
-                                        await binotel_call.transfer_to_operator(reason)
                                         self.call_result = "transferred"
                                         self._end_event.set()
                                         await session.send_tool_response(function_responses=[
                                             types.FunctionResponse(id=fc.id, name=fc.name,
                                                 response={"success": True, "message": "Передаємо на оператора"})
                                         ])
-                                        return
+                                        # Не обриваємо одразу — AI каже "передаю вас", потім transfer
+                                        _pending_transfer = reason
+                                        _draining = True
+                                        break
                                     try:
                                         result = await handle_tool_call(fc.name, args, self.visit)
                                     except Exception as tool_err:
