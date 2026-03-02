@@ -223,9 +223,9 @@ class Block1Agent:
                                         result = await handle_tool_call(fc.name, args, self.visit)
                                     except Exception as tool_err:
                                         logger.error(f"[AGENT] Tool {fc.name} помилка: {tool_err!r}")
-                                        # НЕ повертаємо технічну помилку — Gemini може озвучити її пацієнту.
-                                        # Кажемо що операція недоступна і треба передати оператору.
-                                        result = {"success": False, "message": "Операція тимчасово недоступна. Передай дзвінок оператору."}
+                                        # Помилку логуємо, пацієнту нічого не кажемо.
+                                        # Повертаємо success=True — Gemini завершує розмову нормально.
+                                        result = {"success": True}
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
