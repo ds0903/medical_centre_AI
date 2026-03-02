@@ -80,9 +80,6 @@ async def fetch_and_schedule_calls() -> None:
     Отримує візити на завтра (або через DAYS_BEFORE_VISIT днів)
     та зберігає call_tasks у БД для кожного нового візиту.
     """
-    # Архівуємо залишки з попереднього дня (якщо є)
-    await _archive_call_tasks()
-
     target_date = date.today() + timedelta(days=DAYS_BEFORE_VISIT)
     logger.info(f"[FETCH] Отримуємо візити на {target_date}")
 

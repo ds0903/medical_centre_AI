@@ -31,13 +31,18 @@ logger = logging.getLogger(__name__)
 
 async def run_debug() -> None:
     """
-    Debug: планувальник за тим самим розкладом що й production (env + Kyiv timezone).
+    Debug: одразу запускає fetch + calls, потім планувальник для наступних циклів.
     Аудіо — мікрофон/динамік. Дані — з test_visits.json. Binotel не потрібен.
     """
     logger.info("=== ЗАПУСК У DEBUG РЕЖИМІ ===")
 
     await init_db()
 
+    # Одразу запускаємо поточний цикл
+    await fetch_and_schedule_calls()
+    await process_pending_calls()
+
+    # Планувальник для наступних щоденних запусків
     scheduler = create_scheduler()
     scheduler.start()
 

@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import asyncpg
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
@@ -50,11 +51,23 @@ async def _ensure_database_exists() -> None:
 
 
 async def init_db() -> None:
-    """Створити БД і всі таблиці якщо не існують."""
+    """Створити БД і всі таблиці якщо не існують. Додати відсутні колонки."""
     await _ensure_database_exists()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate(conn)
     logger.info("БД ініціалізовано")
+
+
+async def _migrate(conn) -> None:
+    """Додати відсутні колонки до існуючих таблиць."""
+    migrations = [
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS message VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS error_message VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS operator_note VARCHAR",
+    ]
+    for sql in migrations:
+        await conn.execute(text(sql))
 
 
 async def close_db() -> None:
