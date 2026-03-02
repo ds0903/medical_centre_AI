@@ -63,3 +63,37 @@ class CallTask(Base):
             f"<CallTask visit={self.visit_id} patient={self.patient_name} "
             f"status={self.status.value} attempts={self.attempts}>"
         )
+
+
+class CallHistory(Base):
+    """Архів виконаних задач — переноситься з call_tasks після кожного робочого дня."""
+
+    __tablename__ = "call_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    visit_id = Column(String, nullable=False, index=True)
+    patient_name = Column(String, nullable=False)
+    patient_phone = Column(String, nullable=False)
+    doctor_name = Column(String, nullable=False)
+    doctor_id = Column(String, nullable=False)
+    visit_datetime = Column(DateTime, nullable=False)
+    message = Column(String, nullable=True)
+
+    status = Column(SAEnum(CallStatus), nullable=False)
+    result = Column(SAEnum(CallResult), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    call_duration = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String, nullable=True)
+    operator_note = Column(String, nullable=True)
+
+    archived_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"<CallHistory visit={self.visit_id} patient={self.patient_name} "
+            f"result={self.result}>"
+        )

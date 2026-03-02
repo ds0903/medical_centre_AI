@@ -27,11 +27,48 @@ from config import (
     SCHEDULER_FETCH_HOUR,
 )
 from db.database import get_session
-from db.models import CallResult, CallStatus, CallTask
+from db.models import CallHistory, CallResult, CallStatus, CallTask
 from services import clinic_api
 from services.binotel import initiate_call
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Архівування — перенос call_tasks → call_history
+# ---------------------------------------------------------------------------
+
+async def _archive_call_tasks() -> None:
+    """Перенести всі задачі з call_tasks в call_history і очистити чергу."""
+    async with get_session() as session:
+        result = await session.execute(select(CallTask))
+        tasks = result.scalars().all()
+
+        if not tasks:
+            return
+
+        for task in tasks:
+            session.add(CallHistory(
+                id=task.id,
+                visit_id=task.visit_id,
+                patient_name=task.patient_name,
+                patient_phone=task.patient_phone,
+                doctor_name=task.doctor_name,
+                doctor_id=task.doctor_id,
+                visit_datetime=task.visit_datetime,
+                message=task.message,
+                status=task.status,
+                result=task.result,
+                attempts=task.attempts,
+                call_duration=task.call_duration,
+                created_at=task.created_at,
+                completed_at=task.completed_at,
+                error_message=task.error_message,
+                operator_note=task.operator_note,
+            ))
+            await session.delete(task)
+
+    logger.info(f"[ARCHIVE] Перенесено {len(tasks)} задач в call_history")
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +80,9 @@ async def fetch_and_schedule_calls() -> None:
     Отримує візити на завтра (або через DAYS_BEFORE_VISIT днів)
     та зберігає call_tasks у БД для кожного нового візиту.
     """
+    # Архівуємо залишки з попереднього дня (якщо є)
+    await _archive_call_tasks()
+
     target_date = date.today() + timedelta(days=DAYS_BEFORE_VISIT)
     logger.info(f"[FETCH] Отримуємо візити на {target_date}")
 
@@ -88,36 +128,49 @@ async def fetch_and_schedule_calls() -> None:
 # ---------------------------------------------------------------------------
 
 async def process_pending_calls() -> None:
-    """Обробляє всі pending задачі — робить дзвінки пацієнтам."""
+    """Обробляє всі pending задачі — робить дзвінки пацієнтам.
+    Після основного циклу — один повторний прохід по тих хто не відповів.
+    """
     logger.info("[CALLS] Починаємо обдзвін пацієнтів")
-
-    async with get_session() as session:
-        result = await session.execute(
-            select(CallTask).where(CallTask.status == CallStatus.pending)
-        )
-        tasks = result.scalars().all()
-
-    logger.info(f"[CALLS] Задач в черзі: {len(tasks)}")
-
     _kyiv = ZoneInfo("Europe/Kyiv")
 
-    for i, task in enumerate(tasks):
-        # Перевіряємо кінець робочого часу перед кожним дзвінком
-        now_hour = datetime.now(_kyiv).hour
-        if now_hour >= SCHEDULER_CALL_END_HOUR:
-            logger.info(
-                f"[CALLS] Кінець робочого часу ({SCHEDULER_CALL_END_HOUR}:00). "
-                f"Залишилось необдзвонених: {len(tasks) - i}. Зупиняємось."
+    passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
+
+    for label in passes:
+        async with get_session() as session:
+            result = await session.execute(
+                select(CallTask).where(CallTask.status == CallStatus.pending)
             )
+            tasks = result.scalars().all()
+
+        if not tasks:
+            logger.info(f"[CALLS] {label}: немає задач — завершуємо")
             break
 
-        logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name}")
-        await _process_single_call(task)
+        logger.info(f"[CALLS] {label}: задач {len(tasks)}")
+        stopped_by_time = False
 
-        # Пауза між дзвінками щоб не спамити
-        if i < len(tasks) - 1:
-            await asyncio.sleep(PAUSE_BETWEEN_CALLS_SEC)
+        for i, task in enumerate(tasks):
+            now_hour = datetime.now(_kyiv).hour
+            if now_hour >= SCHEDULER_CALL_END_HOUR:
+                logger.info(
+                    f"[CALLS] Кінець робочого часу ({SCHEDULER_CALL_END_HOUR}:00). "
+                    f"Залишилось: {len(tasks) - i}. Зупиняємось."
+                )
+                stopped_by_time = True
+                break
 
+            logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name}")
+            await _process_single_call(task)
+
+            if i < len(tasks) - 1:
+                await asyncio.sleep(PAUSE_BETWEEN_CALLS_SEC)
+
+        if stopped_by_time:
+            break
+
+    # Архівуємо всі задачі (виконані + ті кому не встигли зателефонувати)
+    await _archive_call_tasks()
     logger.info("[CALLS] Обдзвін завершено")
 
 
