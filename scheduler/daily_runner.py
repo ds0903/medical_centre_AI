@@ -129,6 +129,11 @@ async def process_pending_calls() -> None:
     Після основного циклу — один повторний прохід по тих хто не відповів.
     """
     logger.info("[CALLS] Починаємо обдзвін пацієнтів")
+
+    if not DEBUG:
+        from services import binotel as _binotel
+        await _binotel.startup()
+
     _kyiv = ZoneInfo("Europe/Kyiv")
 
     passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
@@ -168,6 +173,11 @@ async def process_pending_calls() -> None:
 
     # Архівуємо всі задачі (виконані + ті кому не встигли зателефонувати)
     await _archive_call_tasks()
+
+    if not DEBUG:
+        from services import binotel as _binotel
+        await _binotel.shutdown()
+
     logger.info("[CALLS] Обдзвін завершено")
 
 

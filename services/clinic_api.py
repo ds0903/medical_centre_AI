@@ -34,11 +34,10 @@ def _load_test_data() -> dict:
 
 
 def _make_headers() -> dict:
-    # TODO: Уточнити формат заголовку авторизації у замовника
     return {
-        "Authorization": f"Bearer {CLINIC_API_KEY}",
-        "Content-Type": "application/json",
+        "Bearer": CLINIC_API_KEY,
         "Accept": "application/json",
+        "Content-Type": "application/json",
     }
 
 
@@ -85,15 +84,20 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/listextractor",
             headers=_make_headers(),
+            json={"fields": []},
         ) as resp:
-            resp.raise_for_status()
-            extracted = await resp.json()
-            logger.info(f"[API] listextractor → PROCESSED={extracted.get('PROCESSED', '?')}")
+            if resp.status >= 400:
+                body = await resp.text()
+                logger.warning(f"[API] listextractor HTTP {resp.status} (продовжуємо): {body[:200]}")
+            else:
+                extracted = await resp.json()
+                logger.info(f"[API] listextractor → PROCESSED={extracted.get('PROCESSED', '?')}")
 
         # Крок 2: отримати готовий список
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/appointments",
             headers=_make_headers(),
+            json={"fields": []},
         ) as resp:
             resp.raise_for_status()
             appointments = await resp.json()

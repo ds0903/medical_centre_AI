@@ -12,8 +12,10 @@ PRODUCTION   : запускає APScheduler (fetch о 8:00, calls о 10:00)
 import asyncio
 import logging
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from config import DEBUG, ENV
+from config import DEBUG, ENV, SCHEDULER_FETCH_HOUR
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
     create_scheduler,
@@ -38,9 +40,12 @@ async def run_debug() -> None:
 
     await init_db()
 
-    # Одразу запускаємо поточний цикл
-    await fetch_and_schedule_calls()
-    await process_pending_calls()
+    # Якщо вже минув час fetch — запускаємо одразу
+    now = datetime.now(ZoneInfo("Europe/Kyiv"))
+    if now.hour >= SCHEDULER_FETCH_HOUR:
+        logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
+        await fetch_and_schedule_calls()
+        await process_pending_calls()
 
     # Планувальник для наступних щоденних запусків
     scheduler = create_scheduler()
@@ -57,14 +62,16 @@ async def run_debug() -> None:
 
 
 async def run_production() -> None:
-    """Production: планувальник працює безперервно + Binotel сервіси."""
+    """Production: планувальник працює безперервно. Binotel стартує тільки під час дзвінків."""
     logger.info(f"=== ЗАПУСК У PRODUCTION РЕЖИМІ ===")
 
     await init_db()
 
-    # Ініціалізуємо Binotel (SIP + WebSocket) до старту планувальника
-    from services import binotel
-    await binotel.startup()
+    # Якщо вже минув час fetch — запускаємо одразу, інакше чекаємо розкладу
+    now = datetime.now(ZoneInfo("Europe/Kyiv"))
+    if now.hour >= SCHEDULER_FETCH_HOUR:
+        logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
+        await fetch_and_schedule_calls()
 
     scheduler = create_scheduler()
     scheduler.start()
@@ -75,7 +82,6 @@ async def run_production() -> None:
             await asyncio.sleep(60)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
-        await binotel.shutdown()
         await close_db()
         logger.info("Зупинено.")
 
