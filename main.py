@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from config import DEBUG, ENV, SCHEDULER_FETCH_HOUR
+from config import DEBUG, ENV, SCHEDULER_FETCH_HOUR, SKIP_FETCH
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
     create_scheduler,
@@ -67,11 +67,16 @@ async def run_production() -> None:
 
     await init_db()
 
-    # Якщо вже минув час fetch — запускаємо одразу, інакше чекаємо розкладу
-    now = datetime.now(ZoneInfo("Europe/Kyiv"))
-    if now.hour >= SCHEDULER_FETCH_HOUR:
-        logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
-        await fetch_and_schedule_calls()
+    if SKIP_FETCH:
+        # Пропускаємо fetch — одразу дзвонимо по тому що є в БД
+        logger.info("[MAIN] SKIP_FETCH=true — пропускаємо fetch, йдемо одразу дзвонити")
+        await process_pending_calls()
+    else:
+        # Якщо вже минув час fetch — запускаємо одразу, інакше чекаємо розкладу
+        now = datetime.now(ZoneInfo("Europe/Kyiv"))
+        if now.hour >= SCHEDULER_FETCH_HOUR:
+            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
+            await fetch_and_schedule_calls()
 
     scheduler = create_scheduler()
     scheduler.start()

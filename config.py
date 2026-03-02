@@ -35,6 +35,8 @@ CLINIC_API_URL = os.getenv("CLINIC_API_URL", "")
 CLINIC_API_KEY = os.getenv("CLINIC_API_KEY", "")
 
 # Планувальник
+SKIP_FETCH = os.getenv("SKIP_FETCH", "false").lower() == "true"
+
 SCHEDULER_FETCH_HOUR = int(os.getenv("SCHEDULER_FETCH_HOUR", "8"))
 SCHEDULER_CALL_HOUR = int(os.getenv("SCHEDULER_CALL_HOUR", "10"))
 SCHEDULER_CALL_END_HOUR = int(os.getenv("SCHEDULER_CALL_END_HOUR", "21"))
