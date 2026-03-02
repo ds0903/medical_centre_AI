@@ -91,7 +91,14 @@ class Block1Agent:
     # Конфіг сесії
     # ------------------------------------------------------------------
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self, skip_greeting: bool = False) -> types.LiveConnectConfig:
+        prompt = build_system_prompt(self.visit)
+        if skip_greeting:
+            prompt += (
+                "\n\nВАЖЛИВО: Привітання вже відтворено пацієнту автоматично. "
+                "НЕ вітайся повторно. Мовчки чекай поки пацієнт заговорить — "
+                "потім відповідай починаючи одразу з КРОКУ 2."
+            )
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
@@ -102,7 +109,7 @@ class Block1Agent:
                 )
             ),
             system_instruction=types.Content(
-                parts=[types.Part(text=build_system_prompt(self.visit))]
+                parts=[types.Part(text=prompt)]
             ),
             tools=TOOLS,
             # Вимикаємо "thinking" — для real-time голосу паузи на "обдумування"
@@ -236,8 +243,9 @@ class Block1Agent:
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
 
             if greeting_buffer:
-                # Warmup шлях: відтворюємо буферизоване привітання пацієнту.
-                # Сесія Gemini свіжа — запускається паралельно поки грає буфер (8с).
+                # Warmup шлях: відтворюємо буфер поки Session #2 вже відкрита.
+                # skip_greeting=True в system prompt → Gemini не генерує нове привітання,
+                # навіть якщо чує "алло" від пацієнта під час відтворення буфера.
                 for chunk in greeting_buffer:
                     await binotel_call.send_audio(chunk)
                 if greeting_duration > 0:
@@ -249,9 +257,8 @@ class Block1Agent:
                     turn_complete=True,
                 )
 
-            # Тепер дозволяємо recv_and_handle відправляти аудіо Gemini → SIP
             _greeting_done.set()
-            logger.info("[AGENT] Greeting завершено — починаємо двосторонній стрімінг")
+            logger.info("[AGENT] Стрімінг розпочато")
 
             try:
                 done, pending = await asyncio.wait(
@@ -287,7 +294,7 @@ class Block1Agent:
             # переданою через idle-timeout Gemini між warmup і відповіддю пацієнта.
             async with self.client.aio.live.connect(
                 model=GEMINI_MODEL,
-                config=self._build_config(),
+                config=self._build_config(skip_greeting=bool(greeting_buffer)),
             ) as session:
                 await _stream(session)
 
