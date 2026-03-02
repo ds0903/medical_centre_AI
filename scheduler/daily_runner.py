@@ -10,6 +10,8 @@ import logging
 import uuid
 from datetime import date, datetime, timedelta
 
+from zoneinfo import ZoneInfo
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
@@ -20,6 +22,7 @@ from config import (
     DEBUG,
     MAX_CALL_ATTEMPTS,
     PAUSE_BETWEEN_CALLS_SEC,
+    SCHEDULER_CALL_END_HOUR,
     SCHEDULER_CALL_HOUR,
     SCHEDULER_FETCH_HOUR,
 )
@@ -96,7 +99,18 @@ async def process_pending_calls() -> None:
 
     logger.info(f"[CALLS] Задач в черзі: {len(tasks)}")
 
+    _kyiv = ZoneInfo("Europe/Kyiv")
+
     for i, task in enumerate(tasks):
+        # Перевіряємо кінець робочого часу перед кожним дзвінком
+        now_hour = datetime.now(_kyiv).hour
+        if now_hour >= SCHEDULER_CALL_END_HOUR:
+            logger.info(
+                f"[CALLS] Кінець робочого часу ({SCHEDULER_CALL_END_HOUR}:00). "
+                f"Залишилось необдзвонених: {len(tasks) - i}. Зупиняємось."
+            )
+            break
+
         logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name}")
         await _process_single_call(task)
 

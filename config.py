@@ -37,6 +37,7 @@ CLINIC_API_KEY = os.getenv("CLINIC_API_KEY", "")
 # Планувальник
 SCHEDULER_FETCH_HOUR = int(os.getenv("SCHEDULER_FETCH_HOUR", "8"))
 SCHEDULER_CALL_HOUR = int(os.getenv("SCHEDULER_CALL_HOUR", "10"))
+SCHEDULER_CALL_END_HOUR = int(os.getenv("SCHEDULER_CALL_END_HOUR", "21"))
 DAYS_BEFORE_VISIT = int(os.getenv("DAYS_BEFORE_VISIT", "1"))
 
 # Дзвінки

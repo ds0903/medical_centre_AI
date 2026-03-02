@@ -31,16 +31,24 @@ logger = logging.getLogger(__name__)
 
 async def run_debug() -> None:
     """
-    Debug: симулюємо один цикл (fetch → дзвінок через мікрофон).
-    Всі API клініки — з test_visits.json.
-    Ти граєш роль пацієнта через мікрофон.
+    Debug: планувальник за тим самим розкладом що й production (env + Kyiv timezone).
+    Аудіо — мікрофон/динамік. Дані — з test_visits.json. Binotel не потрібен.
     """
-    logger.info(f"=== ЗАПУСК У DEBUG РЕЖИМІ ===")
+    logger.info("=== ЗАПУСК У DEBUG РЕЖИМІ ===")
 
     await init_db()
-    await fetch_and_schedule_calls()
-    await process_pending_calls()
-    await close_db()
+
+    scheduler = create_scheduler()
+    scheduler.start()
+
+    logger.info("Планувальник запущено (DEBUG). Ctrl+C для зупинки.")
+    try:
+        while True:
+            await asyncio.sleep(60)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+        await close_db()
+        logger.info("Зупинено.")
 
 
 async def run_production() -> None:

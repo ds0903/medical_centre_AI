@@ -80,27 +80,38 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
         logger.debug(f"[DEBUG] Завантажено {len(visits)} записів з test_visits.json")
         return visits
 
-    # TODO: реальний запит ---------------------------------------------------
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.get(
-    #         f"{CLINIC_API_URL}/bridge/call/appointments",
-    #         headers=_make_headers(),
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         appointments = await resp.json()
-    #         return [
-    #             {
-    #                 "visit_id":       str(a["ID"]),
-    #                 "patient_name":   a["PATIENT"],
-    #                 "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
-    #                 "doctor_name":    a["CAPTION"],
-    #                 "doctor_id":      str(a["IDPOINT"]),
-    #                 "visit_datetime": a["START_E"],
-    #             }
-    #             for a in appointments
-    #         ]
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати get_upcoming_visits")
+    async with aiohttp.ClientSession() as http:
+        # Крок 1: сформувати список на завтра
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/listextractor",
+            headers=_make_headers(),
+        ) as resp:
+            resp.raise_for_status()
+            extracted = await resp.json()
+            logger.info(f"[API] listextractor → PROCESSED={extracted.get('PROCESSED', '?')}")
+
+        # Крок 2: отримати готовий список
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/appointments",
+            headers=_make_headers(),
+        ) as resp:
+            resp.raise_for_status()
+            appointments = await resp.json()
+            if isinstance(appointments, dict):
+                appointments = appointments.get("appointments", [])
+            logger.info(f"[API] appointments → {len(appointments)} записів")
+            return [
+                {
+                    "visit_id":       str(a["ID"]),
+                    "patient_name":   a["PATIENT"],
+                    "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
+                    "doctor_name":    a["CAPTION"],
+                    "doctor_id":      str(a["IDPOINT"]),
+                    "visit_datetime": a["START_E"],
+                    "message":        a.get("MESSAGE") or "",
+                }
+                for a in appointments
+            ]
 
 
 async def get_available_slots(
@@ -306,13 +317,11 @@ async def update_event_status(event_id: str, status: int) -> None:
             logger.warning(f"[DEBUG] update_event_status → ID={event_id} не знайдено в JSON")
         return
 
-    # TODO: реальний запит ---------------------------------------------------
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.post(
-    #         f"{CLINIC_API_URL}/bridge/call/appointments/status",
-    #         headers=_make_headers(),
-    #         json={"ID": int(event_id), "STATUS": status},
-    #     ) as resp:
-    #         resp.raise_for_status()
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати update_event_status")
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            headers=_make_headers(),
+            json={"ID": int(event_id), "STATUS": status},
+        ) as resp:
+            resp.raise_for_status()
+            logger.info(f"[API] update_event_status → ID={event_id}, STATUS={status} ({label})")
