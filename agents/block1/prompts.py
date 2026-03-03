@@ -5,6 +5,7 @@
 
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -21,6 +22,15 @@ def _format_visit_date(iso_datetime: str) -> str:
     dt = datetime.fromisoformat(iso_datetime)
     month = _MONTHS_UA[dt.month - 1]
     return f"{dt.day} {month} о {dt.strftime('%H:%M')}"
+
+
+def _get_greeting() -> str:
+    hour = datetime.now(ZoneInfo("Europe/Kyiv")).hour
+    if hour < 12:
+        return "Добрий ранок"
+    if hour < 18:
+        return "Добрий день"
+    return "Добрий вечір"
 
 
 def build_system_prompt(visit: dict) -> str:
@@ -43,4 +53,5 @@ def build_system_prompt(visit: dict) -> str:
         visit_id=visit["visit_id"],
         doctor_id=visit["doctor_id"],
         message=visit.get("message", ""),
+        greeting=_get_greeting(),
     )

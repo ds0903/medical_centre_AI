@@ -104,7 +104,7 @@ class Block1Agent:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Puck"
+                        voice_name="Leda"
                     )
                 )
             ),
