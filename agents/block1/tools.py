@@ -152,7 +152,7 @@ TOOLS = [
                         "result": types.Schema(
                             type="STRING",
                             description="Підсумок розмови",
-                            enum=["confirmed", "rescheduled", "cancelled", "no_result"],
+                            enum=["confirmed", "cancelled", "no_result", "no_answer"],
                         ),
                     },
                     required=["result"],
@@ -186,32 +186,6 @@ async def handle_tool_call(
         return {
             "success": success,
             "message": "Візит підтверджено" if success else "Помилка підтвердження, спробуйте пізніше",
-        }
-
-    if function_name == "get_available_slots":
-        slots = await clinic_api.get_available_slots(
-            doctor_id=args["doctor_id"],
-            preference=args.get("preference"),
-        )
-        # Форматуємо дати для природного озвучення
-        formatted = [
-            {
-                "slot_id": s["slot_id"],
-                "display": _fmt_dt(s["datetime"]),
-                "datetime": s["datetime"],
-            }
-            for s in slots
-        ]
-        return {"slots": formatted, "count": len(formatted)}
-
-    if function_name == "reschedule_visit":
-        success = await clinic_api.reschedule_visit(
-            visit_id=args["visit_id"],
-            slot_id=args["slot_id"],
-        )
-        return {
-            "success": success,
-            "message": "Візит перенесено" if success else "Помилка переносу, спробуйте пізніше",
         }
 
     if function_name == "cancel_visit":

@@ -60,7 +60,7 @@ async def init_db() -> None:
 
 
 async def _migrate(conn) -> None:
-    """Додати відсутні колонки до існуючих таблиць."""
+    """Додати відсутні колонки та оновити enum типи."""
     migrations = [
         "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS message VARCHAR",
         "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS error_message VARCHAR",
@@ -68,6 +68,30 @@ async def _migrate(conn) -> None:
     ]
     for sql in migrations:
         await conn.execute(text(sql))
+
+    # Оновити callresult enum — прибрати rescheduled, transferred, error
+    await conn.execute(text("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_enum e
+                JOIN pg_type t ON e.enumtypid = t.oid
+                WHERE t.typname = 'callresult'
+                AND e.enumlabel IN ('rescheduled', 'transferred', 'error')
+            ) THEN
+                UPDATE call_tasks SET result = 'no_result'
+                    WHERE result::text IN ('rescheduled', 'transferred', 'error');
+                UPDATE call_history SET result = 'no_result'
+                    WHERE result::text IN ('rescheduled', 'transferred', 'error');
+                ALTER TABLE call_tasks ALTER COLUMN result TYPE text USING result::text;
+                ALTER TABLE call_history ALTER COLUMN result TYPE text USING result::text;
+                DROP TYPE callresult;
+                CREATE TYPE callresult AS ENUM ('confirmed', 'cancelled', 'no_result', 'no_answer');
+                ALTER TABLE call_tasks ALTER COLUMN result TYPE callresult USING result::callresult;
+                ALTER TABLE call_history ALTER COLUMN result TYPE callresult USING result::callresult;
+            END IF;
+        END $$;
+    """))
 
 
 async def close_db() -> None:

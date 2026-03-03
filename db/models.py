@@ -19,12 +19,10 @@ class CallStatus(enum.Enum):
 
 
 class CallResult(enum.Enum):
-    confirmed = "confirmed"       # Пацієнт підтвердив
-    rescheduled = "rescheduled"   # Перенесено
-    cancelled = "cancelled"       # Скасовано
-    no_answer = "no_answer"       # Не відповів
-    transferred = "transferred"   # Передано оператору
-    error = "error"               # Технічна помилка
+    confirmed = "confirmed"   # Пацієнт підтвердив
+    cancelled = "cancelled"   # Скасовано
+    no_result = "no_result"   # Не зрозумів / хоче перенести / не міг говорити
+    no_answer = "no_answer"   # Не відповів
 
 
 class CallTask(Base):

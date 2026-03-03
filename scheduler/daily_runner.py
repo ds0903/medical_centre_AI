@@ -25,6 +25,7 @@ from config import (
     SCHEDULER_CALL_END_HOUR,
     SCHEDULER_CALL_HOUR,
     SCHEDULER_FETCH_HOUR,
+    SKIP_SCHEDULER,
 )
 from db.database import get_session
 from db.models import CallHistory, CallResult, CallStatus, CallTask
@@ -154,7 +155,7 @@ async def process_pending_calls() -> None:
 
         for i, task in enumerate(tasks):
             now_hour = datetime.now(_kyiv).hour
-            if now_hour >= SCHEDULER_CALL_END_HOUR:
+            if not SKIP_SCHEDULER and now_hour >= SCHEDULER_CALL_END_HOUR:
                 logger.info(
                     f"[CALLS] Кінець робочого часу ({SCHEDULER_CALL_END_HOUR}:00). "
                     f"Залишилось: {len(tasks) - i}. Зупиняємось."
@@ -234,20 +235,18 @@ async def _process_single_call(task: CallTask) -> None:
 
 _RESULT_MAP = {
     "confirmed": CallResult.confirmed,
-    "rescheduled": CallResult.rescheduled,
     "cancelled": CallResult.cancelled,
-    "no_result": CallResult.no_answer,
-    "transferred": CallResult.transferred,
+    "no_result": CallResult.no_result,
+    "no_answer": CallResult.no_answer,
 }
 
 # Маппінг результату дзвінка → STATUS для API клініки:
 #   1 — Підтверджує, 2 — Відміняє, 3 — Не зрозумів, 4 — Не додзвонились
 _STATUS_API_MAP = {
     "confirmed": 1,
-    "rescheduled": 1,
     "cancelled": 2,
     "no_result": 3,
-    "transferred": 3,
+    "no_answer": 4,
 }
 
 
