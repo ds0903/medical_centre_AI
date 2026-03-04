@@ -79,13 +79,13 @@ async def _migrate(conn) -> None:
                 WHERE t.typname = 'callresult'
                 AND e.enumlabel IN ('rescheduled', 'transferred', 'error')
             ) THEN
-                UPDATE call_tasks SET result = 'no_result'
-                    WHERE result::text IN ('rescheduled', 'transferred', 'error');
-                UPDATE call_history SET result = 'no_result'
-                    WHERE result::text IN ('rescheduled', 'transferred', 'error');
                 ALTER TABLE call_tasks ALTER COLUMN result TYPE text USING result::text;
                 ALTER TABLE call_history ALTER COLUMN result TYPE text USING result::text;
                 DROP TYPE callresult;
+                UPDATE call_tasks SET result = 'no_result'
+                    WHERE result IN ('rescheduled', 'transferred', 'error');
+                UPDATE call_history SET result = 'no_result'
+                    WHERE result IN ('rescheduled', 'transferred', 'error');
                 CREATE TYPE callresult AS ENUM ('confirmed', 'cancelled', 'no_result', 'no_answer');
                 ALTER TABLE call_tasks ALTER COLUMN result TYPE callresult USING result::callresult;
                 ALTER TABLE call_history ALTER COLUMN result TYPE callresult USING result::callresult;

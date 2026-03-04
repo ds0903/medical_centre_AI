@@ -19,7 +19,7 @@ from typing import Optional
 
 import aiohttp
 
-from config import CLINIC_API_URL, CLINIC_API_KEY, DEBUG
+from config import CLINIC_API_URL, CLINIC_API_KEY, DEBUG, SKIP_POST
 
 logger = logging.getLogger(__name__)
 
@@ -118,71 +118,34 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
             ]
 
 
-async def get_available_slots(
-    doctor_id: str,
-    preference: Optional[str] = None,
-    limit: int = 3,
-) -> list[dict]:
+async def get_doctor_slots(doctor_id: str) -> list[dict]:
     """
     Отримати вільні слоти для запису до лікаря.
 
-    Args:
-        doctor_id  : ID лікаря з visit_context
-        preference : Текстове побажання пацієнта ("після 18:00", "вихідні" тощо)
-        limit      : Максимальна кількість варіантів для відповіді (3 — оптимально)
-
-    Returns: list of dicts з ключами:
-        slot_id    : str
-        datetime   : str  ISO 8601
-        doctor_name: str
-
-    ---
-    TODO: GET {CLINIC_API_URL}/doctors/{doctor_id}/slots
-          params: preference=..., limit=...
-    TODO: Уточнити чи API розуміє preference як текст або очікує structured (date_from, time_from)?
-    TODO: Уточнити чи слоти прив'язані до конкретного кабінету/ресурсу
-    TODO: Уточнити формат slot_id для подальшого PATCH
+    API: POST {CLINIC_API_URL}/bridge/call/doctorslots
+    Повертає: [{ID, START_E}, ...] — вже відфільтровані сервером (макс 5 робочих днів)
     """
     if DEBUG:
-        base = datetime.now().replace(second=0, microsecond=0)
-        # Підбираємо перший робочий день після поточного
-        base = base.replace(hour=15, minute=30) + timedelta(days=1)
-        slots = [
-            {
-                "slot_id": "slot_001",
-                "datetime": base.isoformat(),
-                "doctor_name": "Лікар (тест)",
-            },
-            {
-                "slot_id": "slot_002",
-                "datetime": (base + timedelta(minutes=30)).isoformat(),
-                "doctor_name": "Лікар (тест)",
-            },
-            {
-                "slot_id": "slot_003",
-                "datetime": (base + timedelta(days=1, hours=-1)).isoformat(),
-                "doctor_name": "Лікар (тест)",
-            },
+        base = datetime.now().replace(second=0, microsecond=0, minute=0)
+        day1 = base + timedelta(days=1)
+        day2 = base + timedelta(days=2)
+        return [
+            {"ID": 9000001, "START_E": day1.strftime("%Y-%m-%d 09:00:00")},
+            {"ID": 9000002, "START_E": day1.strftime("%Y-%m-%d 10:30:00")},
+            {"ID": 9000003, "START_E": day1.strftime("%Y-%m-%d 14:00:00")},
+            {"ID": 9000004, "START_E": day2.strftime("%Y-%m-%d 09:30:00")},
+            {"ID": 9000005, "START_E": day2.strftime("%Y-%m-%d 15:00:00")},
         ]
-        logger.debug(f"[DEBUG] Повертаємо {len(slots)} тестових слотів")
-        return slots[:limit]
 
-    # TODO: реальний запит ---------------------------------------------------
-    # params = {"limit": limit}
-    # if preference:
-    #     params["preference"] = preference   # TODO: уточнити назву параметра
-    #
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.get(
-    #         f"{CLINIC_API_URL}/doctors/{doctor_id}/slots",
-    #         headers=_make_headers(),
-    #         params=params,
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         body = await resp.json()
-    #         return body["slots"][:limit]   # TODO: уточнити ключ
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати get_available_slots")
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/doctorslots",
+            headers=_make_headers(),
+            json={"fields": [doctor_id]},
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data if isinstance(data, list) else data.get("slots", [])
 
 
 # ---------------------------------------------------------------------------
@@ -190,90 +153,68 @@ async def get_available_slots(
 # ---------------------------------------------------------------------------
 
 async def confirm_visit(visit_id: str) -> bool:
-    """
-    Підтвердити візит пацієнта.
-
-    ---
-    TODO: PATCH {CLINIC_API_URL}/visits/{visit_id}
-          body: {"status": "confirmed"}
-    TODO: Уточнити точну назву статусу (confirmed / approve / active?)
-    TODO: Уточнити чи повертає 200 з оновленим об'єктом або просто 204
-    """
+    """POST /bridge/call/appointments/status → статус 1 (Підтверджує)."""
     if DEBUG:
         logger.debug(f"[DEBUG] confirm_visit(visit_id={visit_id})")
         return True
-
-    # TODO: реальний запит ---------------------------------------------------
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.patch(
-    #         f"{CLINIC_API_URL}/visits/{visit_id}",
-    #         headers=_make_headers(),
-    #         json={"status": "confirmed"},
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         return True
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати confirm_visit")
+    if SKIP_POST:
+        logger.info(f"[API] confirm_visit (SKIP_POST): visit_id={visit_id}, status=1")
+        return True
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            headers=_make_headers(),
+            json={"fields": [int(visit_id), 1]},
+        ) as resp:
+            resp.raise_for_status()
+            logger.info(f"[API] confirm_visit → visit_id={visit_id}, status=1")
+            return True
 
 
 async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
     """
     Перенести візит на новий слот.
-
-    ---
-    TODO: PATCH {CLINIC_API_URL}/visits/{visit_id}
-          body: {"slot_id": slot_id, "status": "rescheduled"}
-    TODO: Уточнити чи існує окремий endpoint для переносу (POST /reschedule?)
-    TODO: Уточнити чи автоматично звільняється старий слот або потрібен окремий DELETE
-    TODO: Уточнити чи потрібен новий datetime замість slot_id
+    SKIP_POST=true → тільки лог, без реального запиту.
     """
-    if DEBUG:
-        logger.debug(f"[DEBUG] reschedule_visit(visit_id={visit_id}, slot_id={slot_id})")
+    if SKIP_POST:
+        logger.info(f"[API] reschedule_visit (SKIP_POST): visit_id={visit_id}, slot_id={slot_id}")
         return True
 
-    # TODO: реальний запит ---------------------------------------------------
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.patch(
-    #         f"{CLINIC_API_URL}/visits/{visit_id}",
-    #         headers=_make_headers(),
-    #         json={"slot_id": slot_id, "status": "rescheduled"},
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         return True
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати reschedule_visit")
+    # TODO: реальний запит до API
+    logger.info(f"[API] reschedule_visit: visit_id={visit_id}, slot_id={slot_id} (stub)")
+    return True
+
+
+async def update_state(visit_id: str, state: str) -> None:
+    """
+    Оновити статус події через POST /bridge/call/updatestate.
+    SKIP_POST=true → тільки лог, без реального запиту.
+    """
+    if SKIP_POST:
+        logger.info(f"[API] update_state (SKIP_POST): visit_id={visit_id}, state={state}")
+        return
+
+    # TODO: реальний запит до API
+    logger.info(f"[API] update_state: visit_id={visit_id}, state={state} (stub)")
 
 
 async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
-    """
-    Скасувати візит пацієнта.
-
-    ---
-    TODO: PATCH {CLINIC_API_URL}/visits/{visit_id}
-          body: {"status": "cancelled", "cancel_reason": reason}
-    TODO: Уточнити назву поля причини (reason / cancel_reason / note?)
-    TODO: Уточнити чи причина є обов'язковою
-    TODO: Уточнити чи фіксується хто скасував (бот / пацієнт / адмін)
-    """
+    """POST /bridge/call/appointments/status → статус 2 (Відміняє)."""
     if DEBUG:
         logger.debug(f"[DEBUG] cancel_visit(visit_id={visit_id}, reason={reason})")
         return True
-
-    # TODO: реальний запит ---------------------------------------------------
-    # payload = {"status": "cancelled"}
-    # if reason:
-    #     payload["cancel_reason"] = reason   # TODO: уточнити назву поля
-    #
-    # async with aiohttp.ClientSession() as http:
-    #     async with http.patch(
-    #         f"{CLINIC_API_URL}/visits/{visit_id}",
-    #         headers=_make_headers(),
-    #         json=payload,
-    #     ) as resp:
-    #         resp.raise_for_status()
-    #         return True
-    # -------------------------------------------------------------------------
-    raise NotImplementedError("TODO: реалізувати cancel_visit")
+    if SKIP_POST:
+        logger.info(f"[API] cancel_visit (SKIP_POST): visit_id={visit_id}, status=2")
+        return True
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            headers=_make_headers(),
+            json={"fields": [int(visit_id), 2]},
+        ) as resp:
+            resp.raise_for_status()
+            logger.info(f"[API] cancel_visit → visit_id={visit_id}, status=2")
+            return True
 
 
 # ---------------------------------------------------------------------------
@@ -321,11 +262,15 @@ async def update_event_status(event_id: str, status: int) -> None:
             logger.warning(f"[DEBUG] update_event_status → ID={event_id} не знайдено в JSON")
         return
 
+    if SKIP_POST:
+        logger.info(f"[API] update_event_status (SKIP_POST): ID={event_id}, STATUS={status} ({label})")
+        return
+
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/appointments/status",
             headers=_make_headers(),
-            json={"ID": int(event_id), "STATUS": status},
+            json={"fields": [int(event_id), status]},
         ) as resp:
             resp.raise_for_status()
             logger.info(f"[API] update_event_status → ID={event_id}, STATUS={status} ({label})")

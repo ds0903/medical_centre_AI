@@ -26,6 +26,10 @@ def _fmt_dt(iso: str) -> str:
     return f"{dt.day} {_MONTHS_UA[dt.month - 1]} о {dt.strftime('%H:%M')}"
 
 
+def _slot_half(hour: int) -> str:
+    return "перша" if hour < 13 else "друга"
+
+
 # ---------------------------------------------------------------------------
 # Визначення інструментів для Gemini
 # ---------------------------------------------------------------------------
@@ -53,10 +57,51 @@ TOOLS = [
             ),
 
             types.FunctionDeclaration(
+                name="get_available_slots",
+                description=(
+                    "Отримати вільні слоти для запису до лікаря. "
+                    "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести візит — "
+                    "ще до того як питати пацієнта про дату."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "doctor_id": types.Schema(
+                            type="STRING",
+                            description="ID лікаря з контексту дзвінка",
+                        ),
+                    },
+                    required=["doctor_id"],
+                ),
+            ),
+
+            types.FunctionDeclaration(
+                name="reschedule_visit",
+                description=(
+                    "Перенести візит на обраний пацієнтом слот. "
+                    "Викликати лише після того як пацієнт підтвердив конкретний час."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "visit_id": types.Schema(
+                            type="STRING",
+                            description="ID поточного візиту",
+                        ),
+                        "slot_id": types.Schema(
+                            type="STRING",
+                            description="ID слоту з результату get_available_slots",
+                        ),
+                    },
+                    required=["visit_id", "slot_id"],
+                ),
+            ),
+
+            types.FunctionDeclaration(
                 name="cancel_visit",
                 description=(
                     "Скасувати візит пацієнта. "
-                    "Викликати лише якщо пацієнт чітко сказав що хоче скасувати."
+                    "Викликати ЛИШЕ якщо пацієнт чітко сказав 'скасуйте', 'видаліть', 'анулюйте' запис."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
@@ -120,6 +165,44 @@ async def handle_tool_call(
         return {
             "success": success,
             "message": "Візит підтверджено" if success else "Помилка підтвердження, спробуйте пізніше",
+        }
+
+    if function_name == "get_available_slots":
+        raw = await clinic_api.get_doctor_slots(visit_context.get("doctor_name", args["doctor_id"]))
+        if not raw:
+            return {"success": False, "message": "Вільних слотів немає"}
+
+        # Формуємо структуровану відповідь для Gemini
+        slots = []
+        seen_dates = []
+        for item in raw:
+            dt = datetime.fromisoformat(item["START_E"])
+            date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
+            time_str = dt.strftime("%H:%M")
+            half = _slot_half(dt.hour)
+            slots.append({
+                "slot_id": str(item["ID"]),
+                "date": date_str,
+                "time": time_str,
+                "half": half,
+            })
+            if date_str not in seen_dates:
+                seen_dates.append(date_str)
+
+        return {
+            "success": True,
+            "available_dates": ", ".join(seen_dates),
+            "slots": slots,
+        }
+
+    if function_name == "reschedule_visit":
+        success = await clinic_api.reschedule_visit(
+            visit_id=args["visit_id"],
+            slot_id=args["slot_id"],
+        )
+        return {
+            "success": success,
+            "message": "Візит перенесено" if success else "Помилка переносу, спробуйте пізніше",
         }
 
     if function_name == "cancel_visit":
