@@ -118,7 +118,7 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
             ]
 
 
-async def get_doctor_slots(doctor_id: str) -> list[dict]:
+async def get_doctor_slots(doctor_name: str) -> list[dict]:
     """
     Отримати вільні слоти для запису до лікаря.
 
@@ -141,7 +141,7 @@ async def get_doctor_slots(doctor_id: str) -> list[dict]:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/doctorslots",
             headers=_make_headers(),
-            json={"fields": [doctor_id]},
+            json={"fields": [doctor_name]},
         ) as resp:
             resp.raise_for_status()
             data = await resp.json()

@@ -51,7 +51,6 @@ def build_system_prompt(visit: dict) -> str:
         doctor_name=visit["doctor_name"],
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
-        doctor_id=visit["doctor_id"],
         message=visit.get("message", ""),
         greeting=_get_greeting(),
     )

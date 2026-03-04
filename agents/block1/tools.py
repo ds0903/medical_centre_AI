@@ -61,17 +61,12 @@ TOOLS = [
                 description=(
                     "Отримати вільні слоти для запису до лікаря. "
                     "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести візит — "
-                    "ще до того як питати пацієнта про дату."
+                    "ще до того як питати пацієнта про дату. "
+                    "Параметрів не потрібно — лікар відомий з контексту дзвінка."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
-                    properties={
-                        "doctor_id": types.Schema(
-                            type="STRING",
-                            description="ID лікаря з контексту дзвінка",
-                        ),
-                    },
-                    required=["doctor_id"],
+                    properties={},
                 ),
             ),
 
@@ -168,7 +163,7 @@ async def handle_tool_call(
         }
 
     if function_name == "get_available_slots":
-        raw = await clinic_api.get_doctor_slots(visit_context.get("doctor_name", args["doctor_id"]))
+        raw = await clinic_api.get_doctor_slots(visit_context["doctor_name"])
         if not raw:
             return {"success": False, "message": "Вільних слотів немає"}
 
@@ -189,6 +184,9 @@ async def handle_tool_call(
             if date_str not in seen_dates:
                 seen_dates.append(date_str)
 
+        logger.info(f"[TOOL] get_available_slots → {len(slots)} слотів, дати: {', '.join(seen_dates)}")
+        for s in slots:
+            logger.debug(f"[TOOL]   slot_id={s['slot_id']} | {s['date']} {s['time']} ({s['half']} половина)")
         return {
             "success": True,
             "available_dates": ", ".join(seen_dates),

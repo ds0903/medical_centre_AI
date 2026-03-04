@@ -131,10 +131,6 @@ async def process_pending_calls() -> None:
     """
     logger.info("[CALLS] Починаємо обдзвін пацієнтів")
 
-    if not DEBUG:
-        from services import binotel as _binotel
-        await _binotel.startup()
-
     _kyiv = ZoneInfo("Europe/Kyiv")
 
     passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
@@ -174,11 +170,6 @@ async def process_pending_calls() -> None:
 
     # Архівуємо всі задачі (виконані + ті кому не встигли зателефонувати)
     await _archive_call_tasks()
-
-    if not DEBUG:
-        from services import binotel as _binotel
-        await _binotel.shutdown()
-
     logger.info("[CALLS] Обдзвін завершено")
 
 
@@ -208,30 +199,37 @@ async def _process_single_call(task: CallTask) -> None:
             call_duration = agent.call_duration
             agent.cleanup()
         else:
-            # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
-            agent = Block1Agent(visit_context)
-            call_task = asyncio.create_task(
-                initiate_call(task.patient_phone, task.patient_name)
-            )
-            warmup_task = asyncio.create_task(agent.warmup())
+            from services import binotel as _binotel
+            # Binotel (SIP + WS) стартує для кожного дзвінка окремо —
+            # щоб уникнути краху pyVoIP re-registration між дзвінками.
+            await _binotel.startup()
+            try:
+                # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
+                agent = Block1Agent(visit_context)
+                call_task = asyncio.create_task(
+                    initiate_call(task.patient_phone, task.patient_name)
+                )
+                warmup_task = asyncio.create_task(agent.warmup())
 
-            binotel_call = await call_task
+                binotel_call = await call_task
 
-            if binotel_call is None:
-                warmup_task.cancel()
-                try:
-                    await warmup_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
-                await _handle_no_answer(task)
-                return
+                if binotel_call is None:
+                    warmup_task.cancel()
+                    try:
+                        await warmup_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
+                    await _handle_no_answer(task)
+                    return
 
-            await warmup_task
-            call_result = await agent.run(binotel_call)
-            call_duration = agent.call_duration
-            agent.cleanup()
-            await binotel_call.hangup()
+                await warmup_task
+                call_result = await agent.run(binotel_call)
+                call_duration = agent.call_duration
+                agent.cleanup()
+                await binotel_call.hangup()
+            finally:
+                await _binotel.shutdown()
 
         await _save_result(task, call_result, call_duration)
 
