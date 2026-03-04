@@ -141,11 +141,15 @@ async def get_doctor_slots(doctor_name: str) -> list[dict]:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/doctorslots",
             headers=_make_headers(),
-            json={"fields": [doctor_name]},
+            json={"fields": [doctor_name.strip()]},
         ) as resp:
             resp.raise_for_status()
-            data = await resp.json()
-            return data if isinstance(data, list) else data.get("slots", [])
+            raw_text = await resp.text()
+            logger.info(f"[API] doctorslots HTTP {resp.status} → {raw_text[:300]}")
+            data = await resp.json(content_type=None)
+            slots = data if isinstance(data, list) else data.get("slots", data.get("SLOTS", data.get("data", [])))
+            logger.info(f"[API] doctorslots → {len(slots)} слотів для '{doctor_name}'")
+            return slots
 
 
 # ---------------------------------------------------------------------------
