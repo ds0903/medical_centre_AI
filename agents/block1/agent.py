@@ -95,14 +95,8 @@ class Block1Agent:
     # Конфіг сесії
     # ------------------------------------------------------------------
 
-    def _build_config(self, skip_greeting: bool = False) -> types.LiveConnectConfig:
+    def _build_config(self) -> types.LiveConnectConfig:
         prompt = build_system_prompt(self.visit)
-        if skip_greeting:
-            prompt += (
-                "\n\nВАЖЛИВО: Привітання вже відтворено пацієнту автоматично. "
-                "НЕ вітайся повторно. Мовчки чекай поки пацієнт заговорить — "
-                "потім відповідай починаючи одразу з КРОКУ 2."
-            )
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
@@ -164,6 +158,10 @@ class Block1Agent:
 
             # Прапор: greeting ще грає — не відправляємо аудіо Gemini в SIP
             _greeting_done = asyncio.Event()
+            # Warmup шлях: Session #2 генерує власне привітання (перший turn) —
+            # відкидаємо його, щоб пацієнт не чув подвійне привітання.
+            # _drop_initial[0] = False після першого turn_complete Session #2.
+            _drop_initial = [bool(greeting_buffer)]
 
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
@@ -192,10 +190,13 @@ class Block1Agent:
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
                                 continue
-                            # Поки greeting ще грає — читаємо сесію (щоб буфер не переповнився)
-                            # але НЕ відправляємо аудіо Gemini в SIP (щоб не перекривати greeting)
-                            if resp.data and _greeting_done.is_set():
+                            # Відтворюємо аудіо Gemini тільки після greeting і після першого turn
+                            if resp.data and _greeting_done.is_set() and not _drop_initial[0]:
                                 await binotel_call.send_audio(resp.data)
+                            # Відстежуємо завершення першого turn Session #2 (warmup шлях)
+                            if _drop_initial[0] and resp.server_content and resp.server_content.turn_complete:
+                                _drop_initial[0] = False
+                                logger.debug("[AGENT] Початковий turn Session #2 відкинуто — подвійне привітання пригнічено")
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
@@ -259,19 +260,22 @@ class Block1Agent:
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
 
             if greeting_buffer:
-                # Warmup шлях: відтворюємо буфер поки Session #2 вже відкрита.
-                # skip_greeting=True в system prompt → Gemini не генерує нове привітання,
-                # навіть якщо чує "алло" від пацієнта під час відтворення буфера.
+                # Warmup шлях: відтворюємо pre-buffered greeting пацієнту.
                 for chunk in greeting_buffer:
                     await binotel_call.send_audio(chunk)
-                if greeting_duration > 0:
-                    await asyncio.sleep(greeting_duration)
-            else:
-                # Холодний шлях: Gemini генерує привітання в реальному часі
-                await session.send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
-                    turn_complete=True,
-                )
+
+            # Завжди тригеримо Session #2:
+            # - Warmup шлях: Session #2 генерує своє привітання, але воно відкидається
+            #   (_drop_initial), поки пацієнт чує pre-buffered greeting.
+            # - Холодний шлях: Session #2 генерує привітання в реальному часі.
+            await session.send_client_content(
+                turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
+                turn_complete=True,
+            )
+
+            if greeting_buffer and greeting_duration > 0:
+                # Чекаємо поки пацієнт дочує pre-buffered greeting до кінця
+                await asyncio.sleep(greeting_duration)
 
             _greeting_done.set()
             logger.info("[AGENT] Стрімінг розпочато")
@@ -310,7 +314,7 @@ class Block1Agent:
             # переданою через idle-timeout Gemini між warmup і відповіддю пацієнта.
             async with self.client.aio.live.connect(
                 model=GEMINI_MODEL,
-                config=self._build_config(skip_greeting=bool(greeting_buffer)),
+                config=self._build_config(),
             ) as session:
                 await _stream(session)
 

@@ -208,15 +208,26 @@ async def _process_single_call(task: CallTask) -> None:
             call_duration = agent.call_duration
             agent.cleanup()
         else:
-            # Ініціюємо дзвінок через Binotel
-            binotel_call = await initiate_call(task.patient_phone, task.patient_name)
+            # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
+            agent = Block1Agent(visit_context)
+            call_task = asyncio.create_task(
+                initiate_call(task.patient_phone, task.patient_name)
+            )
+            warmup_task = asyncio.create_task(agent.warmup())
+
+            binotel_call = await call_task
 
             if binotel_call is None:
+                warmup_task.cancel()
+                try:
+                    await warmup_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
                 await _handle_no_answer(task)
                 return
 
-            agent = Block1Agent(visit_context)
+            await warmup_task
             call_result = await agent.run(binotel_call)
             call_duration = agent.call_duration
             agent.cleanup()
