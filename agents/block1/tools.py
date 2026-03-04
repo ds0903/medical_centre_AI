@@ -53,53 +53,6 @@ TOOLS = [
             ),
 
             types.FunctionDeclaration(
-                name="get_available_slots",
-                description=(
-                    "Отримати вільні слоти для запису до лікаря. "
-                    "Викликати коли пацієнт хоче перенести візит на інший час."
-                ),
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "doctor_id": types.Schema(
-                            type="STRING",
-                            description="ID лікаря",
-                        ),
-                        "preference": types.Schema(
-                            type="STRING",
-                            description=(
-                                "Побажання пацієнта щодо часу. "
-                                "Приклади: 'після 18:00', 'вихідні', 'п'ятниця вдень', 'наступний тиждень'"
-                            ),
-                        ),
-                    },
-                    required=["doctor_id"],
-                ),
-            ),
-
-            types.FunctionDeclaration(
-                name="reschedule_visit",
-                description=(
-                    "Перенести візит на обраний пацієнтом новий час. "
-                    "Викликати лише після того як пацієнт вибрав конкретний слот."
-                ),
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "visit_id": types.Schema(
-                            type="STRING",
-                            description="ID поточного візиту",
-                        ),
-                        "slot_id": types.Schema(
-                            type="STRING",
-                            description="ID слоту отриманого з get_available_slots",
-                        ),
-                    },
-                    required=["visit_id", "slot_id"],
-                ),
-            ),
-
-            types.FunctionDeclaration(
                 name="cancel_visit",
                 description=(
                     "Скасувати візит пацієнта. "
@@ -118,25 +71,6 @@ TOOLS = [
                         ),
                     },
                     required=["visit_id"],
-                ),
-            ),
-
-            types.FunctionDeclaration(
-                name="transfer_to_operator",
-                description=(
-                    "Передати дзвінок живому оператору. "
-                    "Викликати якщо: пацієнт просить оператора, екстрена ситуація, "
-                    "бот не може впоратися із запитом."
-                ),
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "reason": types.Schema(
-                            type="STRING",
-                            description="Причина передачі оператору",
-                        ),
-                    },
-                    required=["reason"],
                 ),
             ),
 
@@ -197,11 +131,6 @@ async def handle_tool_call(
             "success": success,
             "message": "Візит скасовано" if success else "Помилка скасування, спробуйте пізніше",
         }
-
-    if function_name == "transfer_to_operator":
-        # TODO: реалізувати передачу через Binotel після отримання документації
-        logger.warning(f"[TRANSFER] Передача оператору: {args.get('reason')}")
-        return {"success": True, "message": "Передаємо на оператора"}
 
     if function_name == "end_call":
         return {"success": True, "result": args.get("result", "no_result")}
