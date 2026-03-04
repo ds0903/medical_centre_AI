@@ -7,9 +7,18 @@ load_dotenv()
 ENV = os.getenv("ENV", "debug")
 DEBUG = ENV == "debug"
 
-# Gemini
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+# Google Cloud credentials (Vertex AI)
+_creds = os.path.join(os.path.dirname(__file__), "credentials.json")
+if os.path.exists(_creds):
+    os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", _creds)
+
+# Vertex AI
+VERTEX_PROJECT  = os.getenv("VERTEX_PROJECT_ID", "")
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
+
+# Gemini (через Vertex AI)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # не потрібен для Vertex, лишаємо для сумісності
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 
 # PostgreSQL
 DATABASE_URL = os.getenv(

@@ -15,7 +15,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_API_KEY, GEMINI_MODEL, DEBUG
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,11 @@ class Block1Agent:
 
     def __init__(self, visit: dict) -> None:
         self.visit = visit
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
+        self.client = genai.Client(
+            vertexai=True,
+            project=VERTEX_PROJECT,
+            location=VERTEX_LOCATION,
+        )
         self.call_result: str | None = None
         self.call_duration: float = 0.0
         self._pa = pyaudio.PyAudio()
