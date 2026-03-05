@@ -156,44 +156,14 @@ class Block1Agent:
         async def _stream(session) -> None:
             """Двосторонній стрімінг аудіо між Binotel SIP та Gemini."""
 
-            # Прапор: greeting ще грає — не відправляємо аудіо Gemini в SIP
             _greeting_done = asyncio.Event()
-            # Warmup шлях: Session #2 генерує власне привітання (перший turn) —
-            # відкидаємо його, щоб пацієнт не чув подвійне привітання.
-            # _drop_initial[0] = False після першого turn_complete Session #2.
-            _drop_initial = [bool(greeting_buffer)]
-            # Час останнього turn_complete від Gemini — для відстеження тиші пацієнта
-            _last_gemini_turn = [0.0]
 
             async def _send_patient_audio() -> None:
-                # Аудіо пацієнта під час greeting буферизуємо (не відкидаємо).
-                # Після greeting: якщо буфер невеликий → зливаємо Gemini (пацієнт сказав "алло").
-                # Якщо великий (>4с, пацієнт щось питав) → просимо повторити.
-                # ~100 chunks = ~4с @ 40ms/chunk (SIP 8kHz 320b → 40ms)
-                _MAX_BUF_CHUNKS = 100
-                _pre_buf: list[bytes] = []
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
                     if not _greeting_done.is_set():
-                        if len(_pre_buf) < _MAX_BUF_CHUNKS:
-                            _pre_buf.append(chunk)
                         continue
-                    # Greeting щойно закінчився — одноразово зливаємо буфер
-                    if _pre_buf:
-                        if len(_pre_buf) >= _MAX_BUF_CHUNKS:
-                            logger.info(f"[AGENT] Буфер пацієнта >{_MAX_BUF_CHUNKS} chunks — просимо повторити")
-                            await session.send_client_content(
-                                turns={"parts": [{"text": "Пацієнт щось казав під час привітання але аудіо не збереглось повністю. Скажи лише: 'Вибачте, не розчула — повторіть, будь ласка.'"}]},
-                                turn_complete=True,
-                            )
-                        else:
-                            logger.info(f"[AGENT] Зливаємо буфер пацієнта: {len(_pre_buf)} chunks")
-                            for buffered in _pre_buf:
-                                await session.send_realtime_input(
-                                    audio={"data": buffered, "mime_type": "audio/pcm;rate=16000"}
-                                )
-                        _pre_buf.clear()
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
@@ -212,16 +182,8 @@ class Block1Agent:
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
                                 continue
-                            # Відтворюємо аудіо Gemini тільки після greeting і після першого turn
-                            if resp.data and _greeting_done.is_set() and not _drop_initial[0]:
+                            if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
-                            # Відстежуємо завершення першого turn Session #2 (warmup шлях)
-                            if _drop_initial[0] and resp.server_content and resp.server_content.turn_complete:
-                                _drop_initial[0] = False
-                                logger.debug("[AGENT] Початковий turn Session #2 відкинуто — подвійне привітання пригнічено")
-                            # Оновлюємо таймер тиші — Gemini щойно сказав щось пацієнту
-                            if not _drop_initial[0] and not _draining and resp.server_content and resp.server_content.turn_complete:
-                                _last_gemini_turn[0] = time.time()
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
@@ -279,54 +241,21 @@ class Block1Agent:
                     logger.error(f"[AGENT] recv_task впав: {e!r}", exc_info=True)
                     raise
 
-            async def _silence_monitor() -> None:
-                """15с тиші → питаємо пацієнта; ще 15с → no_answer."""
-                await _greeting_done.wait()
-                # Чекаємо поки Gemini скаже перше привітання (initial turn done)
-                while _last_gemini_turn[0] == 0.0 and not self._end_event.is_set():
-                    await asyncio.sleep(0.5)
-                _warned = False
-                while not self._end_event.is_set():
-                    await asyncio.sleep(2.0)
-                    if self._end_event.is_set():
-                        break
-                    silent_for = time.time() - _last_gemini_turn[0]
-                    if not _warned and silent_for >= 15.0:
-                        _warned = True
-                        logger.info("[AGENT] Тиша ~15с — питаємо пацієнта")
-                        await session.send_client_content(
-                            turns={"parts": [{"text": "Пацієнт мовчить. Запитай: 'Вибачте, ви ще тут?'"}]},
-                            turn_complete=True,
-                        )
-                    elif _warned and silent_for >= 30.0:
-                        logger.info("[AGENT] Тиша >30с після попередження — no_answer")
-                        self.call_result = "no_answer"
-                        self._end_event.set()
-                        break
-
-            # Запускаємо ОБИДВА task-и одразу — щоб session.receive() читався
-            # і буфер Gemini не переповнився під час відтворення привітання
             send_task = asyncio.create_task(_send_patient_audio(), name="send_patient_audio")
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
-            silence_task = asyncio.create_task(_silence_monitor(), name="silence_monitor")
 
             if greeting_buffer:
-                # Warmup шлях: відтворюємо pre-buffered greeting пацієнту.
+                # Warmup шлях: та сама сесія вже привіталась — граємо буфер і чекаємо
                 for chunk in greeting_buffer:
                     await binotel_call.send_audio(chunk)
-
-            # Завжди тригеримо Session #2:
-            # - Warmup шлях: Session #2 генерує своє привітання, але воно відкидається
-            #   (_drop_initial), поки пацієнт чує pre-buffered greeting.
-            # - Холодний шлях: Session #2 генерує привітання в реальному часі.
-            await session.send_client_content(
-                turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
-                turn_complete=True,
-            )
-
-            if greeting_buffer and greeting_duration > 0:
-                # Чекаємо поки пацієнт дочує pre-buffered greeting до кінця
-                await asyncio.sleep(greeting_duration)
+                if greeting_duration > 0:
+                    await asyncio.sleep(greeting_duration)
+            else:
+                # Cold шлях: тригеримо привітання в реальному часі
+                await session.send_client_content(
+                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
+                    turn_complete=True,
+                )
 
             _greeting_done.set()
             logger.info("[AGENT] Стрімінг розпочато")
@@ -354,21 +283,33 @@ class Block1Agent:
             finally:
                 send_task.cancel()
                 recv_task.cancel()
-                silence_task.cancel()
-                results = await asyncio.gather(send_task, recv_task, silence_task, return_exceptions=True)
-                for name, r in zip(["send_task", "recv_task", "silence_task"], results):
+                results = await asyncio.gather(send_task, recv_task, return_exceptions=True)
+                for name, r in zip(["send_task", "recv_task"], results):
                     if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
 
+        warmup_session = getattr(self, '_warmup_session', None)
+        warmup_cm = getattr(self, '_warmup_cm', None)
+        self._warmup_session = None
+        self._warmup_cm = None
+
         try:
-            # Завжди відкриваємо свіжу Gemini-сесію для реального дзвінка.
-            # Warmup-сесія вже закрита після буферизації — вона не може бути
-            # переданою через idle-timeout Gemini між warmup і відповіддю пацієнта.
-            async with self.client.aio.live.connect(
-                model=GEMINI_MODEL,
-                config=self._build_config(),
-            ) as session:
-                await _stream(session)
+            if warmup_session and warmup_cm:
+                # Варіант А: реюзаємо warmup сесію — вона вже привіталась, cold start не потрібен
+                try:
+                    await _stream(warmup_session)
+                finally:
+                    try:
+                        await warmup_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+            else:
+                # Cold шлях: warmup не вдався або не запускався
+                async with self.client.aio.live.connect(
+                    model=GEMINI_MODEL,
+                    config=self._build_config(),
+                ) as session:
+                    await _stream(session)
 
         except Exception as e:
             logger.error(f"[AGENT] Помилка в production режимі: {e}", exc_info=True)
@@ -414,13 +355,17 @@ class Block1Agent:
                 f"[AGENT] Warmup готовий: {len(self._greeting_buffer)} chunks буферизовано"
                 f" ({self._greeting_duration:.1f}с)"
             )
+            # Зберігаємо сесію живою — run_production() реюзає її (Варіант А)
+            self._warmup_cm = _warmup_cm
+            self._warmup_session = warmup_session
+            _warmup_cm = None  # не закривати в finally
         except Exception as e:
             logger.warning(f"[AGENT] Warmup помилка: {e} — запустимо звичайний шлях")
             self._greeting_buffer = []
+            self._warmup_session = None
+            self._warmup_cm = None
         finally:
-            # Завжди закриваємо warmup-сесію — аудіо вже буферизовано.
-            # Реальна Gemini-сесія відкриється коли пацієнт підніме трубку.
-            if _warmup_cm is not None:
+            if _warmup_cm is not None:  # закриваємо тільки якщо не збережено
                 try:
                     await _warmup_cm.__aexit__(None, None, None)
                 except Exception:
