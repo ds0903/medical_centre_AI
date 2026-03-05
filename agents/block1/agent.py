@@ -166,14 +166,34 @@ class Block1Agent:
             _last_gemini_turn = [0.0]
 
             async def _send_patient_audio() -> None:
+                # Аудіо пацієнта під час greeting буферизуємо (не відкидаємо).
+                # Після greeting: якщо буфер невеликий → зливаємо Gemini (пацієнт сказав "алло").
+                # Якщо великий (>4с, пацієнт щось питав) → просимо повторити.
+                # ~100 chunks = ~4с @ 40ms/chunk (SIP 8kHz 320b → 40ms)
+                _MAX_BUF_CHUNKS = 100
+                _pre_buf: list[bytes] = []
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
-                    # Поки буфер ще грає — споживаємо SIP-аудіо але НЕ пускаємо до Gemini.
-                    # Інакше Gemini отримує "алло" під час буфера, відповідає, відповідь
-                    # блокується і Gemini після буфера в плутаному стані → затримка ~6с.
                     if not _greeting_done.is_set():
+                        if len(_pre_buf) < _MAX_BUF_CHUNKS:
+                            _pre_buf.append(chunk)
                         continue
+                    # Greeting щойно закінчився — одноразово зливаємо буфер
+                    if _pre_buf:
+                        if len(_pre_buf) >= _MAX_BUF_CHUNKS:
+                            logger.info(f"[AGENT] Буфер пацієнта >{_MAX_BUF_CHUNKS} chunks — просимо повторити")
+                            await session.send_client_content(
+                                turns={"parts": [{"text": "Пацієнт щось казав під час привітання але аудіо не збереглось повністю. Скажи лише: 'Вибачте, не розчула — повторіть, будь ласка.'"}]},
+                                turn_complete=True,
+                            )
+                        else:
+                            logger.info(f"[AGENT] Зливаємо буфер пацієнта: {len(_pre_buf)} chunks")
+                            for buffered in _pre_buf:
+                                await session.send_realtime_input(
+                                    audio={"data": buffered, "mime_type": "audio/pcm;rate=16000"}
+                                )
+                        _pre_buf.clear()
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
