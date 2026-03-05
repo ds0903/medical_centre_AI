@@ -139,6 +139,7 @@ async def process_pending_calls() -> None:
         async with get_session() as session:
             result = await session.execute(
                 select(CallTask).where(CallTask.status == CallStatus.pending)
+                .order_by(CallTask.visit_datetime)
             )
             tasks = result.scalars().all()
 
@@ -224,11 +225,13 @@ async def _process_single_call(task: CallTask) -> None:
                     return
 
                 await warmup_task
-                call_result = await agent.run(binotel_call)
-                call_duration = agent.call_duration
-                agent.cleanup()
-                await asyncio.sleep(2.0)  # дати час AI договорити останнє слово
-                await binotel_call.hangup()
+                try:
+                    call_result = await agent.run(binotel_call)
+                    call_duration = agent.call_duration
+                    agent.cleanup()
+                    await asyncio.sleep(2.0)
+                finally:
+                    await binotel_call.hangup()
             finally:
                 await _binotel.shutdown()
 

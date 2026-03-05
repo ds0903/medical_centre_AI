@@ -103,3 +103,12 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nЗупинено.")
+    except Exception as e:
+        logger.error(f"[MAIN] Критична помилка — завершуємо: {e}", exc_info=True)
+        # Намагаємось завершити активний дзвінок якщо він ще йде
+        try:
+            from services import binotel as _binotel
+            asyncio.run(_binotel.shutdown())
+        except Exception:
+            pass
+        sys.exit(1)
