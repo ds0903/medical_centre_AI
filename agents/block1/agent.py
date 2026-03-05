@@ -218,14 +218,19 @@ class Block1Agent:
                             turn_complete=True,
                         )
 
-            def _start_silence_timer() -> None:
+            async def _start_silence_timer() -> None:
                 nonlocal _silence_task
                 if _silence_task and not _silence_task.done():
                     _silence_task.cancel()
-                if not self._end_event.is_set():
-                    _silence_task = asyncio.create_task(
-                        _check_silence(), name="silence_monitor"
-                    )
+                if self._end_event.is_set():
+                    return
+                # Невелика пауза: даємо аудіо дограти через SIP + пацієнту зреагувати
+                await asyncio.sleep(1.5)
+                if self._end_event.is_set():
+                    return
+                _silence_task = asyncio.create_task(
+                    _check_silence(), name="silence_monitor"
+                )
 
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
@@ -314,7 +319,7 @@ class Block1Agent:
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
                         # AI закінчила говорити — запускаємо таймер тиші (тільки в активній розмові)
                         if not _draining and _greeting_done.is_set():
-                            _start_silence_timer()
+                            asyncio.create_task(_start_silence_timer(), name="silence_timer_start")
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -333,7 +338,7 @@ class Block1Agent:
                 _greeting_done.set()
                 logger.info("[AGENT] Стрімінг розпочато")
                 # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
-                _start_silence_timer()
+                asyncio.create_task(_start_silence_timer(), name="silence_timer_start")
             else:
                 # Cold шлях: тригеримо привітання в реальному часі
                 await session.send_client_content(
