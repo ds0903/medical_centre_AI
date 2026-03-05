@@ -264,6 +264,7 @@ class Block1Agent:
                     # while True перезапускає для наступного turn.
                     while True:
                         turn_had_content = False
+                        turn_had_audio = False  # True якщо в цьому турі AI говорила
                         async for resp in session.receive():
                             turn_had_content = True
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
@@ -275,10 +276,13 @@ class Block1Agent:
                                 continue
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
+                                turn_had_audio = True
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()
+                                if _silence_task and not _silence_task.done():
+                                    _silence_task.cancel()
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
@@ -332,8 +336,10 @@ class Block1Agent:
                             logger.warning("[AGENT] recv_task: session.receive() без контенту — сесія закрита")
                             return
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
-                        # AI закінчила говорити — запускаємо таймер тиші (тільки в активній розмові)
-                        if not _draining and _greeting_done.is_set():
+                        # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
+                        # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
+                        # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
+                        if not _draining and _greeting_done.is_set() and turn_had_audio:
                             _schedule_silence_timer()
                 except asyncio.CancelledError:
                     raise
