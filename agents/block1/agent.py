@@ -225,7 +225,7 @@ class Block1Agent:
                 if self._end_event.is_set():
                     return
                 # Невелика пауза: даємо аудіо дограти через SIP + пацієнту зреагувати
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.5)
                 if self._end_event.is_set():
                     return
                 _silence_task = asyncio.create_task(
