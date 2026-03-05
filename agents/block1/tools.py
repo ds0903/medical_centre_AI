@@ -6,6 +6,7 @@ Gemini викликає функції під час розмови.
 """
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -142,25 +143,49 @@ TOOLS = [
 # Обробка викликів
 # ---------------------------------------------------------------------------
 
+# Функції які можна викликати лише 1 раз за дзвінок
+_ONE_TIME_TOOLS = {"confirm_visit", "cancel_visit", "reschedule_visit", "end_call"}
+# TTL кешу для get_available_slots (секунди)
+_SLOTS_CACHE_TTL = 60
+
+
 async def handle_tool_call(
     function_name: str,
     args: dict,
     visit_context: dict,
+    call_cache: dict | None = None,
 ) -> dict[str, Any]:
     """
     Виконати tool call від Gemini та повернути результат.
+    call_cache — словник що живе протягом одного дзвінка, захищає від дублів.
 
     Returns:
         dict який Gemini отримає як відповідь функції
     """
+    if call_cache is None:
+        call_cache = {}
+
+    # Захист від дублікатів
+    if function_name in _ONE_TIME_TOOLS and function_name in call_cache:
+        logger.warning(f"[TOOL] {function_name} вже викликався — повертаємо кешований результат")
+        return call_cache[function_name]
+
+    if function_name == "get_available_slots":
+        cached = call_cache.get("get_available_slots")
+        if cached and time.monotonic() - cached["_ts"] < _SLOTS_CACHE_TTL:
+            logger.warning(f"[TOOL] get_available_slots — кеш (TTL {_SLOTS_CACHE_TTL}с)")
+            return cached["result"]
+
     logger.info(f"[TOOL] {function_name}({args})")
 
     if function_name == "confirm_visit":
         success = await clinic_api.confirm_visit(args["visit_id"])
-        return {
+        result = {
             "success": success,
             "message": "Візит підтверджено" if success else "Помилка підтвердження, спробуйте пізніше",
         }
+        call_cache["confirm_visit"] = result
+        return result
 
     if function_name == "get_available_slots":
         raw = await clinic_api.get_doctor_slots(visit_context["doctor_name"])
@@ -187,34 +212,42 @@ async def handle_tool_call(
         logger.info(f"[TOOL] get_available_slots → {len(slots)} слотів, дати: {', '.join(seen_dates)}")
         for s in slots:
             logger.debug(f"[TOOL]   slot_id={s['slot_id']} | {s['date']} {s['time']} ({s['half']} половина)")
-        return {
+        result = {
             "success": True,
             "available_dates": ", ".join(seen_dates),
             "slots": slots,
         }
+        call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
+        return result
 
     if function_name == "reschedule_visit":
         success = await clinic_api.reschedule_visit(
             visit_id=args["visit_id"],
             slot_id=args["slot_id"],
         )
-        return {
+        result = {
             "success": success,
             "message": "Візит перенесено" if success else "Помилка переносу, спробуйте пізніше",
         }
+        call_cache["reschedule_visit"] = result
+        return result
 
     if function_name == "cancel_visit":
         success = await clinic_api.cancel_visit(
             visit_id=args["visit_id"],
             reason=args.get("reason"),
         )
-        return {
+        result = {
             "success": success,
             "message": "Візит скасовано" if success else "Помилка скасування, спробуйте пізніше",
         }
+        call_cache["cancel_visit"] = result
+        return result
 
     if function_name == "end_call":
-        return {"success": True, "result": args.get("result", "no_result")}
+        result = {"success": True, "result": args.get("result", "no_result")}
+        call_cache["end_call"] = result
+        return result
 
     logger.error(f"[TOOL] Невідома функція: {function_name}")
     return {"error": f"Невідома функція: {function_name}"}

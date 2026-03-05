@@ -177,6 +177,7 @@ class Block1Agent:
             _patient_spoke = asyncio.Event()   # скидається на початку кожного silence-чеку
             _silence_count = 0
             _silence_task: asyncio.Task | None = None
+            _call_cache: dict = {}  # захист від дублікатів tool calls
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -294,7 +295,7 @@ class Block1Agent:
                                         _draining = True
                                         break
                                     try:
-                                        result = await handle_tool_call(fc.name, args, self.visit)
+                                        result = await handle_tool_call(fc.name, args, self.visit, _call_cache)
                                     except Exception as tool_err:
                                         logger.error(f"[AGENT] Tool {fc.name} помилка: {tool_err!r}")
                                         # Помилку логуємо, пацієнту нічого не кажемо.
