@@ -272,7 +272,7 @@ async def _save_result(task: CallTask, result_str: str, duration: float) -> None
         db_task.status = CallStatus.completed
         db_task.result = _RESULT_MAP.get(result_str, CallResult.no_answer)
         db_task.call_duration = duration
-        db_task.completed_at = datetime.now(timezone.utc)
+        db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     logger.info(f"[CALLS] Результат збережено: {result_str} ({duration:.0f}с)")
 
     api_status = _STATUS_API_MAP.get(result_str)
@@ -297,7 +297,7 @@ async def _save_error(task: CallTask, error_msg: str) -> None:
     async with get_session() as session:
         db_task = await session.get(CallTask, task.id)
         db_task.status = CallStatus.failed
-        db_task.result = CallResult.error
+        db_task.result = CallResult.no_result
         db_task.error_message = error_msg[:500]  # Обрізаємо щоб не переповнити поле
 
 

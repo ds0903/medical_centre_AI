@@ -48,8 +48,8 @@ class CallTask(Base):
     call_duration = Column(Float, nullable=True)   # секунди
 
     # Часові мітки
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     completed_at = Column(DateTime, nullable=True)
 
     # Додаткова інформація
@@ -89,7 +89,7 @@ class CallHistory(Base):
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)
 
-    archived_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    archived_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     def __repr__(self) -> str:
         return (
