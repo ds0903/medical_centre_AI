@@ -162,6 +162,8 @@ class Block1Agent:
             # відкидаємо його, щоб пацієнт не чув подвійне привітання.
             # _drop_initial[0] = False після першого turn_complete Session #2.
             _drop_initial = [bool(greeting_buffer)]
+            # Час останнього turn_complete від Gemini — для відстеження тиші пацієнта
+            _last_gemini_turn = [0.0]
 
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
@@ -197,6 +199,9 @@ class Block1Agent:
                             if _drop_initial[0] and resp.server_content and resp.server_content.turn_complete:
                                 _drop_initial[0] = False
                                 logger.debug("[AGENT] Початковий turn Session #2 відкинуто — подвійне привітання пригнічено")
+                            # Оновлюємо таймер тиші — Gemini щойно сказав щось пацієнту
+                            if not _drop_initial[0] and not _draining and resp.server_content and resp.server_content.turn_complete:
+                                _last_gemini_turn[0] = time.time()
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
@@ -254,10 +259,36 @@ class Block1Agent:
                     logger.error(f"[AGENT] recv_task впав: {e!r}", exc_info=True)
                     raise
 
+            async def _silence_monitor() -> None:
+                """15с тиші → питаємо пацієнта; ще 15с → no_answer."""
+                await _greeting_done.wait()
+                # Чекаємо поки Gemini скаже перше привітання (initial turn done)
+                while _last_gemini_turn[0] == 0.0 and not self._end_event.is_set():
+                    await asyncio.sleep(0.5)
+                _warned = False
+                while not self._end_event.is_set():
+                    await asyncio.sleep(2.0)
+                    if self._end_event.is_set():
+                        break
+                    silent_for = time.time() - _last_gemini_turn[0]
+                    if not _warned and silent_for >= 15.0:
+                        _warned = True
+                        logger.info("[AGENT] Тиша ~15с — питаємо пацієнта")
+                        await session.send_client_content(
+                            turns={"parts": [{"text": "Пацієнт мовчить. Запитай: 'Вибачте, ви ще тут?'"}]},
+                            turn_complete=True,
+                        )
+                    elif _warned and silent_for >= 30.0:
+                        logger.info("[AGENT] Тиша >30с після попередження — no_answer")
+                        self.call_result = "no_answer"
+                        self._end_event.set()
+                        break
+
             # Запускаємо ОБИДВА task-и одразу — щоб session.receive() читався
             # і буфер Gemini не переповнився під час відтворення привітання
             send_task = asyncio.create_task(_send_patient_audio(), name="send_patient_audio")
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
+            silence_task = asyncio.create_task(_silence_monitor(), name="silence_monitor")
 
             if greeting_buffer:
                 # Warmup шлях: відтворюємо pre-buffered greeting пацієнту.
@@ -303,9 +334,10 @@ class Block1Agent:
             finally:
                 send_task.cancel()
                 recv_task.cancel()
-                results = await asyncio.gather(send_task, recv_task, return_exceptions=True)
-                for name, r in zip(["send_task", "recv_task"], results):
-                    if isinstance(r, Exception):
+                silence_task.cancel()
+                results = await asyncio.gather(send_task, recv_task, silence_task, return_exceptions=True)
+                for name, r in zip(["send_task", "recv_task", "silence_task"], results):
+                    if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
 
         try:

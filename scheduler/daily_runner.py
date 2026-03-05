@@ -227,6 +227,7 @@ async def _process_single_call(task: CallTask) -> None:
                 call_result = await agent.run(binotel_call)
                 call_duration = agent.call_duration
                 agent.cleanup()
+                await asyncio.sleep(2.0)  # дати час AI договорити останнє слово
                 await binotel_call.hangup()
             finally:
                 await _binotel.shutdown()
