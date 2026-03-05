@@ -56,3 +56,7 @@ DAYS_BEFORE_VISIT = int(os.getenv("DAYS_BEFORE_VISIT", "1"))
 # Дзвінки
 MAX_CALL_ATTEMPTS = int(os.getenv("MAX_CALL_ATTEMPTS", "3"))
 PAUSE_BETWEEN_CALLS_SEC = int(os.getenv("PAUSE_BETWEEN_CALLS_SEC", "30"))
+
+# Silence detection
+SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "5.0"))   # секунд тиші → питаємо
+SILENCE_START_DELAY_SEC = float(os.getenv("SILENCE_START_DELAY_SEC", "2.5"))  # затримка після turn_complete

@@ -17,7 +17,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,6 @@ CHUNK = 512
 
 # Silence detection
 VAD_THRESHOLD = 300      # RMS поріг для 16-bit PCM (підбирати під лінію SIP)
-SILENCE_TIMEOUT = 5.0    # секунд тиші → питаємо "Ви ще тут?"
 MAX_SILENCE_COUNT = 3    # після 3 разів — вішаємо трубку
 
 
@@ -176,7 +175,8 @@ class Block1Agent:
             _greeting_done = asyncio.Event()
             _patient_spoke = asyncio.Event()   # скидається на початку кожного silence-чеку
             _silence_count = 0
-            _silence_task: asyncio.Task | None = None
+            _silence_task: asyncio.Task | None = None   # _check_silence task
+            _timer_task: asyncio.Task | None = None     # _start_silence_timer task
             _call_cache: dict = {}  # захист від дублікатів tool calls
 
             async def _check_silence() -> None:
@@ -184,7 +184,7 @@ class Block1Agent:
                 nonlocal _silence_count
                 _patient_spoke.clear()
                 try:
-                    await asyncio.wait_for(_patient_spoke.wait(), timeout=SILENCE_TIMEOUT)
+                    await asyncio.wait_for(_patient_spoke.wait(), timeout=SILENCE_TIMEOUT_SEC)
                     # Пацієнт заговорив — скидаємо лічильник
                     _silence_count = 0
                 except asyncio.TimeoutError:
@@ -225,13 +225,23 @@ class Block1Agent:
                     _silence_task.cancel()
                 if self._end_event.is_set():
                     return
-                # Невелика пауза: даємо аудіо дограти через SIP + пацієнту зреагувати
-                await asyncio.sleep(2.5)
+                # Пауза: даємо аудіо дограти через SIP + пацієнту зреагувати
+                await asyncio.sleep(SILENCE_START_DELAY_SEC)
                 if self._end_event.is_set():
                     return
                 _silence_task = asyncio.create_task(
                     _check_silence(), name="silence_monitor"
                 )
+
+            def _schedule_silence_timer() -> None:
+                """Скасовує попередній _start_silence_timer і запускає новий."""
+                nonlocal _timer_task
+                if _timer_task and not _timer_task.done():
+                    _timer_task.cancel()
+                if not self._end_event.is_set():
+                    _timer_task = asyncio.create_task(
+                        _start_silence_timer(), name="silence_timer_start"
+                    )
 
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
@@ -260,11 +270,15 @@ class Block1Agent:
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
                                 _patient_spoke.set()
+                                if _timer_task and not _timer_task.done():
+                                    _timer_task.cancel()
                                 continue
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
-                                # AI говорить — скидаємо таймер тиші щоб він не тік під час мови AI
+                                # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
+                                if _timer_task and not _timer_task.done():
+                                    _timer_task.cancel()
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
@@ -320,7 +334,7 @@ class Block1Agent:
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
                         # AI закінчила говорити — запускаємо таймер тиші (тільки в активній розмові)
                         if not _draining and _greeting_done.is_set():
-                            asyncio.create_task(_start_silence_timer(), name="silence_timer_start")
+                            _schedule_silence_timer()
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -339,7 +353,7 @@ class Block1Agent:
                 _greeting_done.set()
                 logger.info("[AGENT] Стрімінг розпочато")
                 # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
-                asyncio.create_task(_start_silence_timer(), name="silence_timer_start")
+                _schedule_silence_timer()
             else:
                 # Cold шлях: тригеримо привітання в реальному часі
                 await session.send_client_content(
@@ -371,6 +385,8 @@ class Block1Agent:
                     except asyncio.TimeoutError:
                         logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
             finally:
+                if _timer_task and not _timer_task.done():
+                    _timer_task.cancel()
                 if _silence_task and not _silence_task.done():
                     _silence_task.cancel()
                 send_task.cancel()

@@ -231,6 +231,27 @@ class BinotelSipClient:
             )
             self._phone.start()
 
+            # Патч: ігноруємо pyVoIP fatalCallback під час активного дзвінка.
+            # pyVoIP може фейлити re-REGISTER якщо Binotel ротував на інший SIP-сервер
+            # (наприклад sip11 замість sip1). За замовчуванням fatalCallback → stop() →
+            # намагається hangup() всі дзвінки → WinError 10038 (сокет вже закрито).
+            # Дзвінок при цьому виживає (RTP незалежний), але в логах страшні помилки.
+            # Ми самі завершуємо SIP через BinotelSipClient.stop() — fatal не потрібен.
+            # ВАЖЛИВО: треба патчити sip.fatalCallback (не phone.fatal!) —
+            # SIPClient зберігає копію посилання при ініціалізації, тому
+            # заміна phone.fatal не впливає на вже збережений fatalCallback.
+            def _safe_fatal():
+                if getattr(self._phone, 'calls', {}):
+                    logger.warning("[SIP] pyVoIP fatalCallback під час активного дзвінка — ігноруємо")
+                else:
+                    logger.warning("[SIP] pyVoIP fatalCallback — зупиняємо SIP клієнт")
+                    try:
+                        self._phone.stop()
+                    except Exception:
+                        pass
+
+            self._phone.sip.fatalCallback = _safe_fatal
+
             # Патч: відповідаємо 200 OK на OPTIONS запити від Binotel.
             # Без цього Binotel вважає extension недосяжним (error 150).
             # pyVoIP 1.6.8 не обробляє OPTIONS — відповідь не надсилається.
