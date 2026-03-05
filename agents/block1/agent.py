@@ -7,6 +7,8 @@ PRODUCTION   : Binotel SIP аудіо ↔ Gemini Live
 
 import asyncio
 import logging
+import math
+import struct
 import time
 
 import pyaudio
@@ -25,6 +27,21 @@ CHANNELS = 1
 INPUT_RATE = 16000   # мікрофон / SIP → Gemini
 OUTPUT_RATE = 24000  # Gemini → динамік / SIP
 CHUNK = 512
+
+# Silence detection
+VAD_THRESHOLD = 300      # RMS поріг для 16-bit PCM (підбирати під лінію SIP)
+SILENCE_TIMEOUT = 5.0    # секунд тиші → питаємо "Ви ще тут?"
+MAX_SILENCE_COUNT = 3    # після 3 разів — вішаємо трубку
+
+
+def _is_voice(pcm: bytes) -> bool:
+    """Проста VAD: True якщо RMS енергія чанку перевищує поріг."""
+    n = len(pcm) // 2
+    if n == 0:
+        return False
+    samples = struct.unpack(f"<{n}h", pcm[:n * 2])
+    rms = math.sqrt(sum(s * s for s in samples) / n)
+    return rms > VAD_THRESHOLD
 
 
 class _DebugCall:
@@ -157,6 +174,50 @@ class Block1Agent:
             """Двосторонній стрімінг аудіо між Binotel SIP та Gemini."""
 
             _greeting_done = asyncio.Event()
+            _patient_spoke = asyncio.Event()   # скидається на початку кожного silence-чеку
+            _silence_count = 0
+            _silence_task: asyncio.Task | None = None
+
+            async def _check_silence() -> None:
+                """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
+                nonlocal _silence_count
+                _patient_spoke.clear()
+                try:
+                    await asyncio.wait_for(_patient_spoke.wait(), timeout=SILENCE_TIMEOUT)
+                    # Пацієнт заговорив — все добре, таймер скинуто
+                except asyncio.TimeoutError:
+                    if self._end_event.is_set():
+                        return
+                    _silence_count += 1
+                    logger.info(f"[AGENT] Тиша {_silence_count}/{MAX_SILENCE_COUNT}")
+                    if _silence_count >= MAX_SILENCE_COUNT:
+                        logger.info("[AGENT] Тиша 3 рази — завершуємо дзвінок")
+                        self.call_result = "no_answer"
+                        self._end_event.set()
+                        await session.send_client_content(
+                            turns={"parts": [{"text": (
+                                "Пацієнт не відповідає вже третій раз. "
+                                "Скажи коротке ввічливе прощання і одразу виклич end_call(result='no_answer')."
+                            )}]},
+                            turn_complete=True,
+                        )
+                    else:
+                        await session.send_client_content(
+                            turns={"parts": [{"text": (
+                                "Пацієнт мовчить вже 15 секунд. "
+                                "Запитай природньо: 'Ви ще тут? Я чекаю вашої відповіді.'"
+                            )}]},
+                            turn_complete=True,
+                        )
+
+            def _start_silence_timer() -> None:
+                nonlocal _silence_task
+                if _silence_task and not _silence_task.done():
+                    _silence_task.cancel()
+                if not self._end_event.is_set():
+                    _silence_task = asyncio.create_task(
+                        _check_silence(), name="silence_monitor"
+                    )
 
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
@@ -164,11 +225,14 @@ class Block1Agent:
                         break
                     if not _greeting_done.is_set():
                         continue
+                    if _is_voice(chunk):
+                        _patient_spoke.set()
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
 
             async def _recv_and_handle() -> None:
+                nonlocal _silence_count
                 _draining = False       # True — чекаємо поки AI договорить перед завершенням
                 _pending_transfer = None  # str reason → transfer після фрази AI; None → end_call
                 try:
@@ -235,6 +299,9 @@ class Block1Agent:
                             logger.warning("[AGENT] recv_task: session.receive() без контенту — сесія закрита")
                             return
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
+                        # AI закінчила говорити — запускаємо таймер тиші (тільки в активній розмові)
+                        if not _draining and _greeting_done.is_set():
+                            _start_silence_timer()
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -250,15 +317,19 @@ class Block1Agent:
                     await binotel_call.send_audio(chunk)
                 if greeting_duration > 0:
                     await asyncio.sleep(greeting_duration)
+                _greeting_done.set()
+                logger.info("[AGENT] Стрімінг розпочато")
+                # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
+                _start_silence_timer()
             else:
                 # Cold шлях: тригеримо привітання в реальному часі
                 await session.send_client_content(
                     turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
-
-            _greeting_done.set()
-            logger.info("[AGENT] Стрімінг розпочато")
+                _greeting_done.set()
+                logger.info("[AGENT] Стрімінг розпочато")
+                # Таймер стартує після turn_complete в _recv_and_handle
 
             try:
                 done, pending = await asyncio.wait(
@@ -281,6 +352,8 @@ class Block1Agent:
                     except asyncio.TimeoutError:
                         logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
             finally:
+                if _silence_task and not _silence_task.done():
+                    _silence_task.cancel()
                 send_task.cancel()
                 recv_task.cancel()
                 results = await asyncio.gather(send_task, recv_task, return_exceptions=True)
