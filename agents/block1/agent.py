@@ -201,11 +201,18 @@ class Block1Agent:
                             )}]},
                             turn_complete=True,
                         )
+                    elif _silence_count == 1:
+                        await session.send_client_content(
+                            turns={"parts": [{"text": (
+                                "Пацієнт мовчить. Запитай тепло і невимушено, наприклад: "
+                                "'Алло, чуєте мене?' або 'Я тут, слухаю вас.'"
+                            )}]},
+                            turn_complete=True,
+                        )
                     else:
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "Пацієнт мовчить вже 15 секунд. "
-                                "Запитай природньо: 'Ви ще тут? Я чекаю вашої відповіді.'"
+                                "Пацієнт знову мовчить. Скажи: 'Я все ще чекаю вашої відповіді.'"
                             )}]},
                             turn_complete=True,
                         )
@@ -248,6 +255,8 @@ class Block1Agent:
                                 continue
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
+                                # AI говорить — скидаємо таймер тиші щоб він не тік під час мови AI
+                                _patient_spoke.set()
                             if _draining:
                                 # Чекаємо поки AI договорить фразу (turn_complete)
                                 if resp.server_content and resp.server_content.turn_complete:
