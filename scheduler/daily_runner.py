@@ -8,7 +8,7 @@ PRODUCTION : APScheduler — fetch о 08:00, calls о 10:00
 import asyncio
 import logging
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from zoneinfo import ZoneInfo
 
@@ -247,14 +247,17 @@ async def _process_single_call(task: CallTask) -> None:
 # ---------------------------------------------------------------------------
 
 _RESULT_MAP = {
-    "confirmed": CallResult.confirmed,
-    "cancelled": CallResult.cancelled,
-    "no_result": CallResult.no_result,
-    "no_answer": CallResult.no_answer,
+    "confirmed":   CallResult.confirmed,
+    "cancelled":   CallResult.cancelled,
+    "rescheduled": CallResult.rescheduled,
+    "no_result":   CallResult.no_result,
+    "no_answer":   CallResult.no_answer,
 }
 
 # Маппінг результату дзвінка → STATUS для API клініки:
 #   1 — Підтверджує, 2 — Відміняє, 3 — Не зрозумів, 4 — Не додзвонились
+# "rescheduled" відсутній — reschedule_visit() вже передає слот до API,
+# окремого update_event_status не потрібно.
 _STATUS_API_MAP = {
     "confirmed": 1,
     "cancelled": 2,
@@ -269,11 +272,12 @@ async def _save_result(task: CallTask, result_str: str, duration: float) -> None
         db_task.status = CallStatus.completed
         db_task.result = _RESULT_MAP.get(result_str, CallResult.no_answer)
         db_task.call_duration = duration
-        db_task.completed_at = datetime.utcnow()
+        db_task.completed_at = datetime.now(timezone.utc)
     logger.info(f"[CALLS] Результат збережено: {result_str} ({duration:.0f}с)")
 
-    api_status = _STATUS_API_MAP.get(result_str, 3)
-    await clinic_api.update_event_status(task.visit_id, api_status)
+    api_status = _STATUS_API_MAP.get(result_str)
+    if api_status is not None:
+        await clinic_api.update_event_status(task.visit_id, api_status)
 
 
 async def _handle_no_answer(task: CallTask) -> None:

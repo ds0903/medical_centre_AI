@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, Integer, Float, DateTime, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
@@ -19,10 +19,11 @@ class CallStatus(enum.Enum):
 
 
 class CallResult(enum.Enum):
-    confirmed = "confirmed"   # Пацієнт підтвердив
-    cancelled = "cancelled"   # Скасовано
-    no_result = "no_result"   # Не зрозумів / хоче перенести / не міг говорити
-    no_answer = "no_answer"   # Не відповів
+    confirmed = "confirmed"     # Пацієнт підтвердив
+    cancelled = "cancelled"     # Скасовано
+    rescheduled = "rescheduled" # Перенесено на інший час
+    no_result = "no_result"     # Не зрозумів / не міг говорити
+    no_answer = "no_answer"     # Не відповів
 
 
 class CallTask(Base):
@@ -47,8 +48,8 @@ class CallTask(Base):
     call_duration = Column(Float, nullable=True)   # секунди
 
     # Часові мітки
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 
     # Додаткова інформація
@@ -88,7 +89,7 @@ class CallHistory(Base):
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)
 
-    archived_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    archived_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     def __repr__(self) -> str:
         return (

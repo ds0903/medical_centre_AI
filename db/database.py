@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 import asyncpg
@@ -69,35 +71,30 @@ async def _migrate(conn) -> None:
     for sql in migrations:
         await conn.execute(text(sql))
 
-    # Оновити callresult enum — прибрати rescheduled, transferred, error
-    await conn.execute(text("""
-        DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1 FROM pg_enum e
-                JOIN pg_type t ON e.enumtypid = t.oid
-                WHERE t.typname = 'callresult'
-                AND e.enumlabel IN ('rescheduled', 'transferred', 'error')
-            ) THEN
-                ALTER TABLE call_tasks ALTER COLUMN result TYPE text USING result::text;
-                ALTER TABLE call_history ALTER COLUMN result TYPE text USING result::text;
-                DROP TYPE callresult;
-                UPDATE call_tasks SET result = 'no_result'
-                    WHERE result IN ('rescheduled', 'transferred', 'error');
-                UPDATE call_history SET result = 'no_result'
-                    WHERE result IN ('rescheduled', 'transferred', 'error');
-                CREATE TYPE callresult AS ENUM ('confirmed', 'cancelled', 'no_result', 'no_answer');
-                ALTER TABLE call_tasks ALTER COLUMN result TYPE callresult USING result::callresult;
-                ALTER TABLE call_history ALTER COLUMN result TYPE callresult USING result::callresult;
-            END IF;
-        END $$;
-    """))
+    # Додати rescheduled до callresult enum якщо відсутній
+    await conn.execute(text(
+        "ALTER TYPE callresult ADD VALUE IF NOT EXISTS 'rescheduled'"
+    ))
 
 
 async def close_db() -> None:
     """Закрити з'єднання з БД."""
     await engine.dispose()
     logger.info("З'єднання з БД закрито")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+    async def _run() -> None:
+        await init_db()
+        await close_db()
+
+    asyncio.run(_run())
 
 
 @asynccontextmanager
