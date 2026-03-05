@@ -184,7 +184,8 @@ class Block1Agent:
                 _patient_spoke.clear()
                 try:
                     await asyncio.wait_for(_patient_spoke.wait(), timeout=SILENCE_TIMEOUT)
-                    # Пацієнт заговорив — все добре, таймер скинуто
+                    # Пацієнт заговорив — скидаємо лічильник
+                    _silence_count = 0
                 except asyncio.TimeoutError:
                     if self._end_event.is_set():
                         return
@@ -252,6 +253,7 @@ class Block1Agent:
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
+                                _patient_spoke.set()
                                 continue
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
@@ -269,6 +271,8 @@ class Block1Agent:
                                     return
                                 continue
                             if resp.tool_call:
+                                # AI думає / викликає інструмент — скидаємо таймер тиші
+                                _patient_spoke.set()
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
                                     if fc.name == "transfer_to_operator":
