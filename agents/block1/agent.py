@@ -328,9 +328,10 @@ class Block1Agent:
                                     return
                                 continue
                             if resp.tool_call:
-                                # AI думає / викликає інструмент — скидаємо таймер тиші
+                                # AI викликає інструмент — Gemini активно обробляє, скидаємо таймер
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
+                                _schedule_silence_timer(audio_delay=0.0)
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
                                     if fc.name == "transfer_to_operator":
