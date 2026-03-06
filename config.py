@@ -60,3 +60,6 @@ PAUSE_BETWEEN_CALLS_SEC = int(os.getenv("PAUSE_BETWEEN_CALLS_SEC", "30"))
 # Silence detection
 SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "5.0"))   # секунд тиші → питаємо
 SILENCE_START_DELAY_SEC = float(os.getenv("SILENCE_START_DELAY_SEC", "2.5"))  # затримка після turn_complete
+
+# Watchdog: максимальна бездіяльність (ні аудіо, ні tool calls, ні VAD) перед re-inject prompt
+WATCHDOG_TIMEOUT_SEC = float(os.getenv("WATCHDOG_TIMEOUT_SEC", "20.0"))

@@ -17,7 +17,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,7 @@ class Block1Agent:
             _silence_task: asyncio.Task | None = None   # _check_silence task
             _timer_task: asyncio.Task | None = None     # _start_silence_timer task
             _call_cache: dict = {}  # захист від дублікатів tool calls
+            _activity = [time.time()]  # [0] = час останньої активності (для watchdog)
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -243,6 +244,34 @@ class Block1Agent:
                         _start_silence_timer(audio_delay), name="silence_timer_start"
                     )
 
+            async def _watchdog() -> None:
+                """Фоновий watchdog: якщо жодної активності за WATCHDOG_TIMEOUT_SEC — re-inject або hangup."""
+                _injected = 0
+                while not self._end_event.is_set():
+                    await asyncio.sleep(5)
+                    if self._end_event.is_set():
+                        break
+                    idle = time.time() - _activity[0]
+                    if idle < WATCHDOG_TIMEOUT_SEC:
+                        continue
+                    _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
+                    _injected += 1
+                    if _injected >= 2:
+                        logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — завершуємо дзвінок")
+                        self.call_result = "no_answer"
+                        self._end_event.set()
+                        return
+                    logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — re-inject prompt")
+                    try:
+                        await session.send_client_content(
+                            turns={"parts": [{"text": "Здається розмова зависла або пацієнт не чує. Скажи 'Алло, ви ще там?' і чекай відповіді."}]},
+                            turn_complete=True,
+                        )
+                    except Exception as e:
+                        logger.error(f"[AGENT] Watchdog помилка send_client_content: {e!r}")
+                        self._end_event.set()
+                        return
+
             async def _send_patient_audio() -> None:
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
@@ -251,6 +280,7 @@ class Block1Agent:
                         continue
                     if _is_voice(chunk):
                         _patient_spoke.set()
+                        _activity[0] = time.time()
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
@@ -279,6 +309,7 @@ class Block1Agent:
                                 await binotel_call.send_audio(resp.data)
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
+                                _activity[0] = time.time()
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
@@ -299,6 +330,7 @@ class Block1Agent:
                             if resp.tool_call:
                                 # AI думає / викликає інструмент — скидаємо таймер тиші
                                 _patient_spoke.set()
+                                _activity[0] = time.time()
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
                                     if fc.name == "transfer_to_operator":
@@ -353,6 +385,7 @@ class Block1Agent:
 
             send_task = asyncio.create_task(_send_patient_audio(), name="send_patient_audio")
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
+            watchdog_task = asyncio.create_task(_watchdog(), name="watchdog")
 
             if greeting_buffer:
                 # Warmup шлях: та сама сесія вже привіталась — граємо буфер і чекаємо
@@ -376,7 +409,7 @@ class Block1Agent:
 
             try:
                 done, pending = await asyncio.wait(
-                    [send_task, recv_task], return_when=asyncio.FIRST_COMPLETED
+                    [send_task, recv_task, watchdog_task], return_when=asyncio.FIRST_COMPLETED
                 )
                 for t in done:
                     if t.cancelled():
@@ -399,10 +432,11 @@ class Block1Agent:
                     _timer_task.cancel()
                 if _silence_task and not _silence_task.done():
                     _silence_task.cancel()
+                watchdog_task.cancel()
                 send_task.cancel()
                 recv_task.cancel()
-                results = await asyncio.gather(send_task, recv_task, return_exceptions=True)
-                for name, r in zip(["send_task", "recv_task"], results):
+                results = await asyncio.gather(send_task, recv_task, watchdog_task, return_exceptions=True)
+                for name, r in zip(["send_task", "recv_task", "watchdog_task"], results):
                     if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
 
