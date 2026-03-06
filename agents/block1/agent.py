@@ -219,28 +219,28 @@ class Block1Agent:
                             turn_complete=True,
                         )
 
-            async def _start_silence_timer() -> None:
+            async def _start_silence_timer(audio_delay: float = 0.0) -> None:
                 nonlocal _silence_task
                 if _silence_task and not _silence_task.done():
                     _silence_task.cancel()
                 if self._end_event.is_set():
                     return
-                # Пауза: даємо аудіо дограти через SIP + пацієнту зреагувати
-                await asyncio.sleep(SILENCE_START_DELAY_SEC)
+                # Чекаємо поки аудіо відіграє через SIP + даємо пацієнту зреагувати
+                await asyncio.sleep(audio_delay + SILENCE_START_DELAY_SEC)
                 if self._end_event.is_set():
                     return
                 _silence_task = asyncio.create_task(
                     _check_silence(), name="silence_monitor"
                 )
 
-            def _schedule_silence_timer() -> None:
+            def _schedule_silence_timer(audio_delay: float = 0.0) -> None:
                 """Скасовує попередній _start_silence_timer і запускає новий."""
                 nonlocal _timer_task
                 if _timer_task and not _timer_task.done():
                     _timer_task.cancel()
                 if not self._end_event.is_set():
                     _timer_task = asyncio.create_task(
-                        _start_silence_timer(), name="silence_timer_start"
+                        _start_silence_timer(audio_delay), name="silence_timer_start"
                     )
 
             async def _send_patient_audio() -> None:
@@ -265,6 +265,7 @@ class Block1Agent:
                     while True:
                         turn_had_content = False
                         turn_had_audio = False  # True якщо в цьому турі AI говорила
+                        turn_audio_bytes = 0    # байти аудіо в цьому турі → для розрахунку затримки
                         async for resp in session.receive():
                             turn_had_content = True
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
@@ -277,6 +278,7 @@ class Block1Agent:
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
                                 turn_had_audio = True
+                                turn_audio_bytes += len(resp.data)
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
@@ -340,7 +342,9 @@ class Block1Agent:
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            _schedule_silence_timer()
+                            # 24kHz 16-bit = 48000 bytes/sec → скільки секунд аудіо ще грає в SIP-буфері
+                            audio_duration = turn_audio_bytes / 48000.0
+                            _schedule_silence_timer(audio_delay=audio_duration)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
