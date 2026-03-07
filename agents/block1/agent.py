@@ -460,16 +460,27 @@ class Block1Agent:
                     await _stream(warmup_session)
                 finally:
                     try:
-                        await warmup_cm.__aexit__(None, None, None)
-                    except Exception:
+                        await asyncio.wait_for(
+                            warmup_cm.__aexit__(None, None, None), timeout=3.0
+                        )
+                    except (asyncio.TimeoutError, Exception):
                         pass
             else:
                 # Cold шлях: warmup не вдався або не запускався
-                async with self.client.aio.live.connect(
+                _cm = self.client.aio.live.connect(
                     model=GEMINI_MODEL,
                     config=self._build_config(),
-                ) as session:
+                )
+                session = await _cm.__aenter__()
+                try:
                     await _stream(session)
+                finally:
+                    try:
+                        await asyncio.wait_for(
+                            _cm.__aexit__(None, None, None), timeout=3.0
+                        )
+                    except (asyncio.TimeoutError, Exception):
+                        pass
 
         except Exception as e:
             logger.error(f"[AGENT] Помилка в production режимі: {e}", exc_info=True)
