@@ -17,7 +17,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ class Block1Agent:
             _timer_task: asyncio.Task | None = None     # _start_silence_timer task
             _call_cache: dict = {}  # захист від дублікатів tool calls
             _activity = [time.time()]  # [0] = час останньої активності (для watchdog)
+            _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -278,6 +279,9 @@ class Block1Agent:
                         break
                     if not _greeting_done.is_set():
                         continue
+                    # Ехо-гейт: після interrupted ігноруємо аудіо поки не розсіється відлуння
+                    if time.time() < _interrupted_pause_until[0]:
+                        continue
                     if _is_voice(chunk):
                         _patient_spoke.set()
                         _activity[0] = time.time()
@@ -301,6 +305,7 @@ class Block1Agent:
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
+                                _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()

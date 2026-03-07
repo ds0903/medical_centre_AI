@@ -63,3 +63,7 @@ SILENCE_START_DELAY_SEC = float(os.getenv("SILENCE_START_DELAY_SEC", "2.5"))  # 
 
 # Watchdog: максимальна бездіяльність (ні аудіо, ні tool calls, ні VAD) перед re-inject prompt
 WATCHDOG_TIMEOUT_SEC = float(os.getenv("WATCHDOG_TIMEOUT_SEC", "20.0"))
+
+# Echo gate: скільки секунд НЕ передавати аудіо пацієнта в Gemini після interrupted події
+# (щоб відлуння від SIP-лінії не викликало хибний повторний interrupted)
+INTERRUPTED_PAUSE_SEC = float(os.getenv("INTERRUPTED_PAUSE_SEC", "0.8"))
