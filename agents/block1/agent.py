@@ -382,11 +382,11 @@ class Block1Agent:
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # 24kHz 16-bit = 48000 bytes/sec → скільки секунд аудіо ще грає в SIP-буфері
-                            audio_duration = turn_audio_bytes / 48000.0
-                            # Ехо-гейт: після завершення мови AI блокуємо SIP-ехо власного голосу
-                            _interrupted_pause_until[0] = time.time() + audio_duration + INTERRUPTED_PAUSE_SEC
-                            _schedule_silence_timer(audio_delay=audio_duration)
+                            # Ехо-гейт: після завершення мови AI блокуємо SIP-ехо власного голосу.
+                            # Gemini стримить аудіо в реальному часі → до turn_complete воно вже відіграно.
+                            # Тому gate = лише INTERRUPTED_PAUSE_SEC, без audio_duration.
+                            _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                            _schedule_silence_timer(audio_delay=0.0)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
