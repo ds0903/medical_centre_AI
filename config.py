@@ -66,4 +66,4 @@ WATCHDOG_TIMEOUT_SEC = float(os.getenv("WATCHDOG_TIMEOUT_SEC", "20.0"))
 
 # Echo gate: скільки секунд НЕ передавати аудіо пацієнта в Gemini після interrupted події
 # (щоб відлуння від SIP-лінії не викликало хибний повторний interrupted)
-INTERRUPTED_PAUSE_SEC = float(os.getenv("INTERRUPTED_PAUSE_SEC", "0.8"))
+INTERRUPTED_PAUSE_SEC = float(os.getenv("INTERRUPTED_PAUSE_SEC", "1.5"))
