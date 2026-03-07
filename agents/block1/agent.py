@@ -200,6 +200,7 @@ class Block1Agent:
                         self._end_event.set()
                         await session.send_client_content(
                             turns={"parts": [{"text": (
+                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
                                 "Пацієнт не відповідає вже третій раз. "
                                 "Скажи коротке ввічливе прощання і одразу виклич end_call(result='no_answer')."
                             )}]},
@@ -208,14 +209,15 @@ class Block1Agent:
                     elif _silence_count == 1:
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "Пацієнт мовчить. Запитай тепло і невимушено, наприклад: "
-                                "'Алло, чуєте мене?' або 'Я тут, слухаю вас.'"
+                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
+                                "Пацієнт мовчить. Запитай тепло і невимушено: 'Алло, чуєте мене?'"
                             )}]},
                             turn_complete=True,
                         )
                     else:
                         await session.send_client_content(
                             turns={"parts": [{"text": (
+                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
                                 "Пацієнт знову мовчить. Скажи: 'Я все ще чекаю вашої відповіді.'"
                             )}]},
                             turn_complete=True,
@@ -265,7 +267,7 @@ class Block1Agent:
                     logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — re-inject prompt")
                     try:
                         await session.send_client_content(
-                            turns={"parts": [{"text": "Здається розмова зависла або пацієнт не чує. Скажи 'Алло, ви ще там?' і чекай відповіді."}]},
+                            turns={"parts": [{"text": "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: Пацієнт мовчить. Скажи лише: 'Алло, ви мене чуєте?' — і мовчки чекай відповіді. Не роби жодних дій до відповіді пацієнта."}]},
                             turn_complete=True,
                         )
                     except Exception as e:
@@ -382,6 +384,8 @@ class Block1Agent:
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             # 24kHz 16-bit = 48000 bytes/sec → скільки секунд аудіо ще грає в SIP-буфері
                             audio_duration = turn_audio_bytes / 48000.0
+                            # Ехо-гейт: після завершення мови AI блокуємо SIP-ехо власного голосу
+                            _interrupted_pause_until[0] = time.time() + audio_duration + INTERRUPTED_PAUSE_SEC
                             _schedule_silence_timer(audio_delay=audio_duration)
                 except asyncio.CancelledError:
                     raise
