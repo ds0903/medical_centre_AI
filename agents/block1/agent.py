@@ -323,8 +323,8 @@ class Block1Agent:
                                         logger.info(f"[AGENT] AI завершив фразу — передаємо оператору")
                                         await binotel_call.transfer_to_operator(_pending_transfer)
                                     else:
-                                        logger.info("[AGENT] AI завершив прощання — чекаємо 3с...")
-                                        await asyncio.sleep(3.0)
+                                        logger.info("[AGENT] AI завершив прощання — чекаємо 2с...")
+                                        await asyncio.sleep(2.0)
                                     return
                                 continue
                             if resp.tool_call:
