@@ -91,7 +91,8 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
                 logger.warning(f"[API] listextractor HTTP {resp.status} (продовжуємо): {body[:200]}")
             else:
                 extracted = await resp.json()
-                logger.info(f"[API] listextractor → PROCESSED={extracted.get('PROCESSED', '?')}")
+                processed = extracted.get('PROCESSED', '?') if isinstance(extracted, dict) else extracted
+                logger.info(f"[API] listextractor → {processed}")
 
         # Крок 2: отримати готовий список
         async with http.post(
