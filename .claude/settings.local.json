@@ -27,7 +27,15 @@
       "Bash(echo EXIT:$?:*)",
       "Bash(C:\\\\Users\\\\1\\\\PycharmProjects\\\\medical_centre_AI\\\\.venv\\\\Scripts\\\\python.exe:*)",
       "Bash(cmd.exe:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "WebFetch(domain:googleapis.github.io)",
+      "WebFetch(domain:docs.cloud.google.com)",
+      "WebFetch(domain:firebase.google.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.pipecat.ai)",
+      "WebFetch(domain:reference-server.pipecat.ai)",
+      "Bash(pip show:*)",
+      "Bash(.venv/Scripts/pip show:*)"
     ]
   }
 }
