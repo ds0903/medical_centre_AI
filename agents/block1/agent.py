@@ -395,6 +395,7 @@ class Block1Agent:
                 if greeting_duration > 0:
                     await asyncio.sleep(greeting_duration)
                 _greeting_done.set()
+                _activity[0] = time.time()  # watchdog рахує тільки після привітання
                 logger.info("[AGENT] Стрімінг розпочато")
                 # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
                 _schedule_silence_timer()
@@ -405,6 +406,7 @@ class Block1Agent:
                     turn_complete=True,
                 )
                 _greeting_done.set()
+                _activity[0] = time.time()  # watchdog рахує тільки після привітання
                 logger.info("[AGENT] Стрімінг розпочато")
                 # Таймер стартує після turn_complete в _recv_and_handle
 
