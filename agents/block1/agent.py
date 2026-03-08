@@ -182,6 +182,10 @@ class Block1Agent:
             _call_cache: dict = {}  # захист від дублікатів tool calls
             _activity = [time.time()]  # [0] = час останньої активності (для watchdog)
             _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
+            # Фільтр дублікатних турів: Gemini Live іноді генерує 2 тури на одну подію.
+            # Після кожного AI туру піднімаємо прапор — наступний тур не відтворюємо в SIP.
+            # Прапор знімається коли пацієнт заговорив, tool call, або система інжектує текст.
+            _suppress_next_audio = [False]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -200,6 +204,7 @@ class Block1Agent:
                         logger.info("[AGENT] Тиша 3 рази — завершуємо дзвінок")
                         self.call_result = "no_answer"
                         self._end_event.set()
+                        _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
                                 "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
@@ -209,6 +214,7 @@ class Block1Agent:
                             turn_complete=True,
                         )
                     elif _silence_count == 1:
+                        _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
                                 "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
@@ -217,6 +223,7 @@ class Block1Agent:
                             turn_complete=True,
                         )
                     else:
+                        _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
                                 "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
@@ -268,6 +275,7 @@ class Block1Agent:
                         return
                     logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — re-inject prompt")
                     try:
+                        _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: Пацієнт мовчить. Скажи лише: 'Алло, ви мене чуєте?' — і мовчки чекай відповіді. Не роби жодних дій до відповіді пацієнта."}]},
                             turn_complete=True,
@@ -289,6 +297,7 @@ class Block1Agent:
                     if _is_voice(chunk):
                         _patient_spoke.set()
                         _activity[0] = time.time()
+                        _suppress_next_audio[0] = False
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
@@ -320,11 +329,14 @@ class Block1Agent:
                                 sc = resp.server_content
                                 if sc.output_transcription and sc.output_transcription.text:
                                     _ai_buf.append(sc.output_transcription.text)
-                                if sc.turn_complete and _ai_buf:
-                                    if GEMINI_LOGS:
+                                if sc.turn_complete:
+                                    if _ai_buf and GEMINI_LOGS:
                                         logger.info(f"[AI] {''.join(_ai_buf)}")
+                                    if not _draining:
+                                        break  # явний вихід — suppress піднімається ДО наступного туру
                             if resp.data and _greeting_done.is_set():
-                                await binotel_call.send_audio(resp.data)
+                                if not _suppress_next_audio[0]:
+                                    await binotel_call.send_audio(resp.data)
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
@@ -346,10 +358,18 @@ class Block1Agent:
                                     return
                                 continue
                             if resp.tool_call:
-                                # AI викликає інструмент — Gemini активно обробляє, скидаємо таймер
+                                # Знімаємо suppress ТІЛЬКИ для patient_said — це реальна мова пацієнта.
+                                # get_available_slots та інші — AI-ініційовані, suppress не знімаємо.
+                                if any(fc.name == "patient_said" for fc in resp.tool_call.function_calls):
+                                    _suppress_next_audio[0] = False
+                                _interrupted_pause_until[0] = time.time() + 10.0
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
                                 _schedule_silence_timer(audio_delay=0.0)
+                                # Збираємо всі відповіді в батч — надсилаємо одним send_tool_response,
+                                # щоб Gemini не генерував проміжні turn-и між tool calls.
+                                _batch: list[types.FunctionResponse] = []
+                                _after_batch = None  # ("end_call"|"transfer", ...) — виконати після відправки
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
                                     if fc.name == "transfer_to_operator":
@@ -357,33 +377,30 @@ class Block1Agent:
                                         logger.info(f"[AGENT] transfer_to_operator: {reason}")
                                         self.call_result = "transferred"
                                         self._end_event.set()
-                                        await session.send_tool_response(function_responses=[
-                                            types.FunctionResponse(id=fc.id, name=fc.name,
-                                                response={"success": True, "message": "Передаємо на оператора"})
-                                        ])
-                                        # Не обриваємо одразу — AI каже "передаю вас", потім transfer
-                                        _pending_transfer = reason
-                                        _draining = True
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"success": True, "message": "Передаємо на оператора"},
+                                        ))
+                                        _after_batch = ("transfer", reason)
                                         break
                                     try:
                                         result = await handle_tool_call(fc.name, args, self.visit, _call_cache)
                                     except Exception as tool_err:
                                         logger.error(f"[AGENT] Tool {fc.name} помилка: {tool_err!r}")
-                                        # Помилку логуємо, пацієнту нічого не кажемо.
-                                        # Повертаємо success=True — Gemini завершує розмову нормально.
                                         result = {"success": True}
+                                    _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
                                         self._end_event.set()
-                                        await session.send_tool_response(function_responses=[
-                                            types.FunctionResponse(id=fc.id, name=fc.name, response=result)
-                                        ])
-                                        _draining = True  # Не return — слухаємо прощання AI
+                                        _after_batch = ("end_call",)
                                         break
-                                    await session.send_tool_response(function_responses=[
-                                        types.FunctionResponse(id=fc.id, name=fc.name, response=result)
-                                    ])
+                                if _batch:
+                                    await session.send_tool_response(function_responses=_batch)
+                                if _after_batch:
+                                    if _after_batch[0] == "transfer":
+                                        _pending_transfer = _after_batch[1]
+                                    _draining = True
                         # session.receive() вийшов (turn_complete або сесія закрита)
                         if not turn_had_content:
                             logger.warning("[AGENT] recv_task: session.receive() без контенту — сесія закрита")
@@ -394,10 +411,11 @@ class Block1Agent:
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             # Ехо-гейт: після завершення мови AI блокуємо SIP-ехо власного голосу.
-                            # Gemini стримить аудіо в реальному часі → до turn_complete воно вже відіграно.
-                            # Тому gate = лише INTERRUPTED_PAUSE_SEC, без audio_duration.
                             _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
                             _schedule_silence_timer(audio_delay=0.0)
+                            # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
+                            # пацієнта — це дублікат, не відтворювати в SIP.
+                            _suppress_next_audio[0] = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

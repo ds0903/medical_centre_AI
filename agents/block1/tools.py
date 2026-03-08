@@ -266,8 +266,9 @@ async def handle_tool_call(
         return result
 
     if function_name == "patient_said":
-        if GEMINI_LOGS:
-            logger.info(f"[ПАЦІЄНТ] {args.get('text', '')}")
+        text = args.get("text", "")
+        if GEMINI_LOGS and "[ІНСТРУКЦІЯ" not in text:
+            logger.info(f"[ПАЦІЄНТ] {text}")
         return {"success": True}
 
     if function_name == "end_call":
