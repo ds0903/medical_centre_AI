@@ -184,8 +184,11 @@ class Block1Agent:
             _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
             # Фільтр дублікатних турів: Gemini Live іноді генерує 2 тури на одну подію.
             # Після кожного AI туру піднімаємо прапор — наступний тур не відтворюємо в SIP.
-            # Прапор знімається коли пацієнт заговорив, tool call, або система інжектує текст.
+            # Прапор знімається ТІЛЬКИ коли patient_said приносить НОВИЙ текст пацієнта.
+            # Gemini викликає patient_said перед кожним туром → дедуплікація по тексту запобігає
+            # тому що ghost тури скидають suppress повторним викликом того самого тексту.
             _suppress_next_audio = [False]
+            _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -297,7 +300,9 @@ class Block1Agent:
                     if _is_voice(chunk):
                         _patient_spoke.set()
                         _activity[0] = time.time()
-                        _suppress_next_audio[0] = False
+                        # НЕ скидаємо _suppress_next_audio тут — тільки patient_said tool call скидає.
+                        # Інакше VAD скидає suppress раніше ніж приходить patient_said,
+                        # і ghost Turn 2 вважається "реальним" туром.
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                     )
@@ -314,6 +319,7 @@ class Block1Agent:
                         turn_had_content = False
                         turn_had_audio = False  # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0    # байти аудіо в цьому турі → для розрахунку затримки
+                        _had_patient_said = False  # True якщо в поточному inner-loop був patient_said
                         _ai_buf.clear()
                         async for resp in session.receive():
                             turn_had_content = True
@@ -331,9 +337,34 @@ class Block1Agent:
                                     _ai_buf.append(sc.output_transcription.text)
                                 if sc.turn_complete:
                                     if _ai_buf and GEMINI_LOGS:
-                                        logger.info(f"[AI] {''.join(_ai_buf)}")
-                                    if not _draining:
-                                        break  # явний вихід — suppress піднімається ДО наступного туру
+                                        _is_ghost_log = _suppress_next_audio[0] and not _had_patient_said
+                                        _tag = "[AI GHOST]" if _is_ghost_log else "[AI]"
+                                        logger.info(f"{_tag} {''.join(_ai_buf)}")
+                                    _ai_buf.clear()
+                                    if _draining:
+                                        # Чекаємо поки AI договорить перед завершенням/передачею
+                                        if turn_had_audio:
+                                            if _pending_transfer is not None:
+                                                logger.info("[AGENT] AI завершив фразу — передаємо оператору")
+                                                await binotel_call.transfer_to_operator(_pending_transfer)
+                                            else:
+                                                logger.info("[AGENT] AI завершив прощання — чекаємо 2с...")
+                                                await asyncio.sleep(2.0)
+                                            return
+                                        continue
+                                    # Реальний тур: suppress вимкнений АБО в цьому inner-loop був patient_said.
+                                    # Ghost/дублікатний тур: suppress=True і patient_said не було.
+                                    if (not _suppress_next_audio[0]) or _had_patient_said:
+                                        break
+                                    # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
+                                    logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
+                                    if turn_had_audio and _greeting_done.is_set():
+                                        _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                                        _schedule_silence_timer(audio_delay=0.0)
+                                        _suppress_next_audio[0] = True
+                                    turn_had_audio = False
+                                    turn_audio_bytes = 0
+                                    _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
                                 if not _suppress_next_audio[0]:
                                     await binotel_call.send_audio(resp.data)
@@ -347,21 +378,21 @@ class Block1Agent:
                                 if _silence_task and not _silence_task.done():
                                     _silence_task.cancel()
                             if _draining:
-                                # Чекаємо поки AI договорить фразу (turn_complete)
-                                if resp.server_content and resp.server_content.turn_complete:
-                                    if _pending_transfer is not None:
-                                        logger.info(f"[AGENT] AI завершив фразу — передаємо оператору")
-                                        await binotel_call.transfer_to_operator(_pending_transfer)
-                                    else:
-                                        logger.info("[AGENT] AI завершив прощання — чекаємо 2с...")
-                                        await asyncio.sleep(2.0)
-                                    return
-                                continue
+                                continue  # пропускаємо tool_call поки AI договорить
                             if resp.tool_call:
-                                # Знімаємо suppress ТІЛЬКИ для patient_said — це реальна мова пацієнта.
-                                # get_available_slots та інші — AI-ініційовані, suppress не знімаємо.
-                                if any(fc.name == "patient_said" for fc in resp.tool_call.function_calls):
-                                    _suppress_next_audio[0] = False
+                                # Знімаємо suppress ТІЛЬКИ якщо patient_said приносить НОВИЙ текст.
+                                # Gemini викликає patient_said перед кожним туром який генерує —
+                                # ghost тури передають той самий текст → дедупліація захищає suppress.
+                                for fc in resp.tool_call.function_calls:
+                                    if fc.name == "patient_said":
+                                        _ps_text = (dict(fc.args) if fc.args else {}).get("text", "")
+                                        _is_injection = "[ІНСТРУКЦІЯ" in _ps_text or "Пацієнт мовчить" in _ps_text
+                                        _is_new = _ps_text and _ps_text != _last_patient_said_text[0]
+                                        if _is_new and not _is_injection:
+                                            _suppress_next_audio[0] = False
+                                            _had_patient_said = True
+                                            _last_patient_said_text[0] = _ps_text
+                                        break
                                 _interrupted_pause_until[0] = time.time() + 10.0
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
