@@ -326,7 +326,8 @@ class Block1Agent:
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
-                                _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                                # НЕ ставимо гейт — пацієнт ЗАРАЗ говорить, не можна блокувати його аудіо.
+                                # Луна від обрізаного слова AI мінімальна і Gemini її сам ігнорує.
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()
@@ -368,12 +369,12 @@ class Block1Agent:
                             if resp.data and _greeting_done.is_set():
                                 if not _suppress_next_audio[0]:
                                     await binotel_call.send_audio(resp.data)
+                                    # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
+                                    # Ghost тури не грають → луни немає → гейт не потрібен.
+                                    _interrupted_pause_until[0] = time.time() + 2.0
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
-                                # Поки AI надсилає аудіо — тримаємо ехо-гейт активним.
-                                # Без цього SIP-луна власного голосу AI тригерить хибний interrupted.
-                                _interrupted_pause_until[0] = time.time() + 2.0
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
