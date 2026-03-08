@@ -371,6 +371,9 @@ class Block1Agent:
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
+                                # Поки AI надсилає аудіо — тримаємо ехо-гейт активним.
+                                # Без цього SIP-луна власного голосу AI тригерить хибний interrupted.
+                                _interrupted_pause_until[0] = time.time() + 2.0
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():

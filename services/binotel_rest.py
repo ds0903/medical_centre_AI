@@ -129,6 +129,9 @@ class BinotelRestClient:
         ok = result.get("status") == "success"
         if ok:
             logger.info(f"[BINOTEL REST] Дзвінок {general_call_id} завершено")
+        elif result.get("code") == 104:
+            # 104 = дзвінок вже закрився (пацієнт поклав трубку або SIP завершив раніше) — це норма
+            logger.info(f"[BINOTEL REST] Дзвінок {general_call_id} вже завершено (SIP closed earlier)")
         else:
             logger.warning(
                 f"[BINOTEL REST] Не вдалося завершити {general_call_id}: "
