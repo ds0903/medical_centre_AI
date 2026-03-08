@@ -12,6 +12,7 @@ from typing import Any
 
 from google.genai import types
 
+from config import GEMINI_LOGS
 from services import clinic_api
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,26 @@ TOOLS = [
                         ),
                     },
                     required=["visit_id"],
+                ),
+            ),
+
+            types.FunctionDeclaration(
+                name="patient_said",
+                description=(
+                    "Внутрішній інструмент логування. "
+                    "Викликати МОВЧКИ перед кожною відповіддю пацієнту — "
+                    "передати текст того що пацієнт сказав або мав на увазі. "
+                    "Пацієнт цього не чує. Не впливає на розмову."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "text": types.Schema(
+                            type="STRING",
+                            description="Що сказав або мав на увазі пацієнт (українською)",
+                        ),
+                    },
+                    required=["text"],
                 ),
             ),
 
@@ -243,6 +264,11 @@ async def handle_tool_call(
         }
         call_cache["cancel_visit"] = result
         return result
+
+    if function_name == "patient_said":
+        if GEMINI_LOGS:
+            logger.info(f"[ПАЦІЄНТ] {args.get('text', '')}")
+        return {"success": True}
 
     if function_name == "end_call":
         result = {"success": True, "result": args.get("result", "no_result")}

@@ -17,7 +17,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,8 @@ class Block1Agent:
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
                         voice_name="Leda"
                     )
-                )
+                ),
+                language_code="uk-UA",
             ),
             system_instruction=types.Content(
                 parts=[types.Part(text=prompt)]
@@ -129,6 +130,7 @@ class Block1Agent:
             # Вимикаємо "thinking" — для real-time голосу паузи на "обдумування"
             # неприйнятні: пацієнт чує мовчання, потім весь текст відразу (розмазаний звук).
             thinking_config=types.ThinkingConfig(thinking_budget=0),
+            output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
         )
 
     # ------------------------------------------------------------------
@@ -295,6 +297,7 @@ class Block1Agent:
                 nonlocal _silence_count
                 _draining = False       # True — чекаємо поки AI договорить перед завершенням
                 _pending_transfer = None  # str reason → transfer після фрази AI; None → end_call
+                _ai_buf: list[str] = []        # накопичуємо транскрипцію AI за тур
                 try:
                     # session.receive() — пер-тернова: виходить після кожного turn_complete.
                     # while True перезапускає для наступного turn.
@@ -302,6 +305,7 @@ class Block1Agent:
                         turn_had_content = False
                         turn_had_audio = False  # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0    # байти аудіо в цьому турі → для розрахунку затримки
+                        _ai_buf.clear()
                         async for resp in session.receive():
                             turn_had_content = True
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
@@ -312,6 +316,13 @@ class Block1Agent:
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()
                                 continue
+                            if resp.server_content:
+                                sc = resp.server_content
+                                if sc.output_transcription and sc.output_transcription.text:
+                                    _ai_buf.append(sc.output_transcription.text)
+                                if sc.turn_complete and _ai_buf:
+                                    if GEMINI_LOGS:
+                                        logger.info(f"[AI] {''.join(_ai_buf)}")
                             if resp.data and _greeting_done.is_set():
                                 await binotel_call.send_audio(resp.data)
                                 turn_had_audio = True
