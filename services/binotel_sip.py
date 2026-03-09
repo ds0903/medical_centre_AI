@@ -124,7 +124,7 @@ def _parse_opus(self, msg) -> None:
     from services.opus_codec import decode as opus_decode
     try:
         pcm_u8 = opus_decode(msg.payload)
-        self.pmin.write(msg.timestamp // 6, pcm_u8)
+        self.pmin.write(msg.timestamp // 3, pcm_u8)  # 48kHz → 16kHz
     except Exception as e:
         logging.getLogger(__name__).debug(f"[OPUS] decode error: {e}")
 

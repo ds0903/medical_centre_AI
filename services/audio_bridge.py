@@ -79,22 +79,43 @@ _use_alaw:  bool = False
 _use_opus:  bool = False   # True → Gemini output кодується через opus_codec, не G.711
 
 
-def sip_to_gemini_input(pcm_8khz_u8: bytes) -> bytes:
-    """
-    PCM unsigned 8-bit 8 kHz (pyVoIP) → PCM signed 16-bit 16 kHz (Gemini вхід).
+_sip_input_log_done = False  # лог лише один раз про режим вхідного аудіо
 
-    Pipeline:
-      1. unsigned-8bit → signed-16bit
-      2. resample_poly 8→16kHz (поліфазна фільтрація — краще ніж audioop.ratecv)
-      3. Smooth AGC (плавно підтягує тихих пацієнтів, ігнорує тишу)
+
+def sip_to_gemini_input(pcm_u8: bytes) -> bytes:
     """
-    # Крок 1: unsigned-8bit → signed-8bit (прибираємо bias +128) → signed-16bit
-    s8  = audioop.bias(pcm_8khz_u8, 1, -128)
+    PCM unsigned 8-bit (pyVoIP) → PCM signed 16-bit 16 kHz (Gemini вхід).
+
+    G.711 mode (8kHz): unsigned-8bit 8kHz → resample 8→16kHz → AGC → NR
+    Opus mode (16kHz): unsigned-8bit 16kHz → без ресемплу → AGC → NR
+      libopus декодує напряму в 16kHz → вдвічі ширший спектр (0-8kHz vs 0-4kHz).
+    """
+    global _sip_input_log_done
+
+    # Крок 1: unsigned-8bit → signed-8bit → signed-16bit
+    s8  = audioop.bias(pcm_u8, 1, -128)
     s16 = audioop.lin2lin(s8, 1, 2)
 
-    # Крок 2: resample_poly 8→16kHz (поліфазний FIR ресемплер)
-    arr      = np.frombuffer(s16, dtype="<i2").astype(np.float64)
-    resampled = resample_poly(arr, up=2, down=1)
+    arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
+
+    if _use_opus:
+        # Opus: вже 16kHz — ресемпл не потрібен
+        if not _sip_input_log_done:
+            _sip_input_log_done = True
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "[BRIDGE] SIP→Gemini: 16kHz Opus (без ресемплу, спектр 0-8kHz)"
+            )
+        resampled = arr
+    else:
+        # G.711: 8kHz → resample_poly 8→16kHz
+        if not _sip_input_log_done:
+            _sip_input_log_done = True
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "[BRIDGE] SIP→Gemini: 8kHz G.711 → resample→16kHz (спектр 0-4kHz)"
+            )
+        resampled = resample_poly(arr, up=2, down=1)
 
     # Крок 3: Smooth AGC
     rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) else 0.0
@@ -192,7 +213,7 @@ def set_codec_opus(enabled: bool) -> None:
 
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw
+    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done
     _zi_gemini_to_sip = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
@@ -201,3 +222,4 @@ def reset_state() -> None:
     _nr_profile = None
     _use_opus  = False
     _use_alaw  = False
+    _sip_input_log_done = False
