@@ -24,7 +24,22 @@ import warnings
 from typing import Optional
 
 from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
-from pyVoIP.SIP import SIPMessageType
+from pyVoIP.SIP import SIPMessageType, SIPClient as _SIPClientEarly
+
+# ---------------------------------------------------------------------------
+# Патч pyVoIP SIPClient.recv: баг на Windows — при ConnectionResetError (UDP ICMP)
+# змінна `raw` не ініціалізована, але except-блок намагається її логувати →
+# UnboundLocalError обвалює SIP Receive thread. Патч перехоплює це тихо.
+# ---------------------------------------------------------------------------
+_orig_sip_recv = _SIPClientEarly.recv
+
+def _sip_recv_patched(self):
+    try:
+        _orig_sip_recv(self)
+    except UnboundLocalError:
+        pass  # pyVoIP bug: raw not set when recv() itself throws
+
+_SIPClientEarly.recv = _sip_recv_patched
 from pyVoIP.RTP import RTPClient as _RTPClient, PayloadType as _PayloadType
 
 # ---------------------------------------------------------------------------
