@@ -23,14 +23,25 @@ import urllib.request
 import warnings
 from typing import Optional
 
-# Binotel інколи шле RTP пакети з OPUS payload type, хоча в SDP ми погодились
-# лише на PCMU/PCMA. pyVoIP не вміє їх декодувати і кидає UserWarning для кожного
-# такого пакету. Придушуємо цей шум — він не впливає на голос (голос іде як PCMU).
-warnings.filterwarnings("ignore", category=UserWarning, message=".*[Oo]pus.*")
-
 from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
 from pyVoIP.SIP import SIPMessageType
-from pyVoIP.RTP import RTPClient as _RTPClient
+from pyVoIP.RTP import RTPClient as _RTPClient, PayloadType as _PayloadType
+
+# ---------------------------------------------------------------------------
+# Monkey-patch: додаємо PayloadType.OPUS (dynamic pt=111) до pyVoIP enum.
+# pyVoIP 1.6.8 не знає про Opus → UNKNOWN для pt=111 → RTPParseError.
+# ---------------------------------------------------------------------------
+if 111 not in _PayloadType._value2member_map_:
+    _opus_member = object.__new__(_PayloadType)
+    _opus_member._name_        = "OPUS"
+    _opus_member._value_       = 111
+    _opus_member._rate         = 48000
+    _opus_member._channel      = 2
+    _opus_member._description  = "opus"
+    _PayloadType._value2member_map_[111] = _opus_member
+    _PayloadType._member_map_["OPUS"]    = _opus_member
+    # Обходимо enum __setattr__ через type.__setattr__ → зберігаємо як атрибут класу
+    type.__setattr__(_PayloadType, "OPUS", _opus_member)
 
 # NAT fix для RTP: pyVoIP намагається bind RTP сокет до публічного IP
 # (WinError 10049 — неможливо bind до зовнішнього IP на Windows).
@@ -77,6 +88,219 @@ def _encode_pcmu_passthrough(self, packet: bytes) -> bytes:
 
 
 _RTPClient.encode_pcmu = _encode_pcmu_passthrough
+
+
+# ---------------------------------------------------------------------------
+# Патч parse_packet: додаємо обробку Opus (pt=111).
+# ---------------------------------------------------------------------------
+_orig_parse_packet = _RTPClient.parse_packet
+
+
+def _parse_packet_with_opus(self, packet: bytes) -> None:
+    # Перевіряємо тип пакету по raw byte — не через RTPMessage щоб не ризикувати
+    # виключенням яке б заглушило _orig_parse_packet для PCMA пакетів.
+    if len(packet) > 1 and (packet[1] & 0x7f) == 111:
+        # Opus пакет
+        try:
+            from pyVoIP.RTP import RTPMessage
+            msg = RTPMessage(packet, self.assoc)
+            _parse_opus(self, msg)
+            return
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"[OPUS] parse_packet error: {e}")
+    # PCMA/PCMU або будь-який інший кодек → оригінальний handler
+    _orig_parse_packet(self, packet)
+
+
+def _parse_opus(self, msg) -> None:
+    """Decode Opus RTP payload → unsigned 8-bit PCM @ 8kHz → pyVoIP pmin buffer.
+
+    Opus RTP timestamps: 48kHz clock (960 per 20ms frame).
+    pmin BytesIO buffer: byte-addressed (8kHz → 160 bytes per 20ms frame).
+    Без конвертації: між пакетами 800-байтна діра нулів у BytesIO →
+    read(320) повертає нулі замість аудіо → Gemini чує тишу.
+    Фікс: ділимо timestamp на 6 (48kHz → 8kHz).
+    """
+    from services.opus_codec import decode as opus_decode
+    try:
+        pcm_u8 = opus_decode(msg.payload)
+        self.pmin.write(msg.timestamp // 6, pcm_u8)
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"[OPUS] decode error: {e}")
+
+
+_RTPClient.parse_packet = _parse_packet_with_opus
+_RTPClient.parse_opus   = _parse_opus
+
+
+# ---------------------------------------------------------------------------
+# Патч encode_packet: додаємо обробку Opus preference.
+# ---------------------------------------------------------------------------
+_orig_encode_packet = _RTPClient.encode_packet
+
+
+def _encode_packet_with_opus(self, payload: bytes) -> bytes:
+    if self.preference == _PayloadType.OPUS:
+        return _encode_opus_passthrough(self, payload)
+    return _orig_encode_packet(self, payload)
+
+
+_encode_opus_log_done = False
+
+
+def _encode_opus_passthrough(self, packet: bytes) -> bytes:
+    """Opus: audio_bridge вже надає готові Opus байти — просто передаємо їх далі."""
+    global _encode_opus_log_done
+    if not _encode_opus_log_done:
+        _encode_opus_log_done = True
+        from services.audio_bridge import set_codec_opus
+        set_codec_opus(True)
+        logging.getLogger(__name__).info(
+            f"[SIP] encode_opus PASSTHROUGH ✓ (chunk={len(packet)}b)"
+        )
+    return packet
+
+
+_RTPClient.encode_packet = _encode_packet_with_opus
+_RTPClient.encode_opus   = _encode_opus_passthrough
+
+
+# ---------------------------------------------------------------------------
+# Патч gen_answer: ін'єктуємо Opus як перший кодек у SDP 200 OK.
+# Binotel вибирає перший кодек з нашого SDP → Opus матиме найвищий пріоритет.
+# ---------------------------------------------------------------------------
+import re as _re
+
+
+def _inject_opus_sdp(sip_msg: str) -> str:
+    """Додає Opus (pt=111) першим кодеком у SDP тіло SIP повідомлення."""
+    if "m=audio" not in sip_msg or "111" in sip_msg:
+        return sip_msg  # вже є або немає аудіо
+    if "\r\n\r\n" not in sip_msg:
+        return sip_msg
+
+    headers, body = sip_msg.split("\r\n\r\n", 1)
+
+    # Додаємо 111 першим у m=audio рядку: "m=audio PORT RTP/AVP 0 8" → "... 111 0 8"
+    body = _re.sub(r"(m=audio \d+ RTP/AVP)", r"\1 111", body)
+
+    # Вставляємо opus rtpmap перед першим існуючим a=rtpmap
+    opus_lines = (
+        "a=rtpmap:111 opus/48000/2\r\n"
+        "a=fmtp:111 minptime=20;useinbandfec=1\r\n"
+    )
+    body = body.replace("a=rtpmap:", opus_lines + "a=rtpmap:", 1)
+
+    # Оновлюємо Content-Length
+    new_len = len(body.encode("utf-8"))
+    headers = _re.sub(r"Content-Length: \d+", f"Content-Length: {new_len}", headers)
+
+    return headers + "\r\n\r\n" + body
+
+
+from pyVoIP.SIP import SIPClient as _SIPClient
+_orig_gen_answer = _SIPClient.gen_answer
+
+# Прапор: gen_answer успішно ін'єктував Opus → trans() має використати Opus
+# навіть якщо pyVoIP виставив preference=PCMA з INVITE Binotel.
+_next_call_use_opus: bool = False
+
+
+def _gen_answer_with_opus(self, request, sess_id, ms, sendtype) -> str:
+    global _next_call_use_opus
+    result = _orig_gen_answer(self, request, sess_id, ms, sendtype)
+    injected = _inject_opus_sdp(result)
+    if injected != result:
+        _next_call_use_opus = True
+        logging.getLogger(__name__).info("[SIP] Opus ін'єктовано в SDP → trans() використає Opus")
+    return injected
+
+
+_SIPClient.gen_answer = _gen_answer_with_opus
+
+
+# ---------------------------------------------------------------------------
+# Патч trans(): Opus output loop замість pmout+G.711.
+#
+# pyVoIP's trans() читає 160 байт з pmout і кодує як G.711.
+# Для Opus потрібні повні фрейми (960 семплів @ 48kHz = ~20-200 байт encoded).
+# Замінюємо на queue-based підхід: binotel.py кладе готові Opus фрейми в чергу,
+# trans() бере по одному і відправляє з правильними RTP таймінгами.
+#
+# ВАЖЛИВО: pyVoIP встановлює preference=PCMA з INVITE Binotel (перший кодек у списку).
+# Ми ін'єктуємо Opus у наш 200 OK → Binotel надсилає Opus пакети до нас.
+# Але preference залишається PCMA → trans() не перемикається автоматично.
+# Рішення: _next_call_use_opus прапор з gen_answer → форсуємо Opus у trans().
+# ---------------------------------------------------------------------------
+import queue as _queue
+import time as _time_mod
+
+_orig_trans = _RTPClient.trans
+
+
+def _ensure_opus_queue(rtp_client) -> "_queue.Queue":
+    if not hasattr(rtp_client, "_opus_send_queue"):
+        rtp_client._opus_send_queue = _queue.Queue(maxsize=300)
+    return rtp_client._opus_send_queue
+
+
+def _trans_opus_aware(self) -> None:
+    global _next_call_use_opus
+    use_opus = (self.preference == _PayloadType.OPUS) or _next_call_use_opus
+    if not use_opus:
+        _orig_trans(self)
+        return
+
+    _next_call_use_opus = False  # скидаємо — цей trans() вже взяв прапор
+
+    # Opus mode
+    _ensure_opus_queue(self)
+    from services.audio_bridge import set_codec_opus, _use_opus
+    if not _use_opus:
+        set_codec_opus(True)
+    logging.getLogger(__name__).info("[OPUS] trans() Opus mode active")
+
+    while self.NSD:
+        last_sent = _time_mod.monotonic_ns()
+        try:
+            payload = self._opus_send_queue.get(timeout=0.025)
+        except _queue.Empty:
+            continue
+
+        # Будуємо RTP пакет вручну (RFC 3550)
+        try:
+            seq_b = self.outSequence.to_bytes(2, byteorder="big")
+        except OverflowError:
+            self.outSequence = 0
+            seq_b = b"\x00\x00"
+        try:
+            ts_b = self.outTimestamp.to_bytes(4, byteorder="big")
+        except OverflowError:
+            self.outTimestamp = 0
+            ts_b = b"\x00\x00\x00\x00"
+
+        packet = (
+            b"\x80"              # V=2, P=0, X=0, CC=0
+            + bytes([111])       # M=0, PT=111 Opus
+            + seq_b
+            + ts_b
+            + self.outSSRC.to_bytes(4, byteorder="big")
+            + payload
+        )
+        try:
+            self.sout.sendto(packet, (self.outIP, self.outPort))
+        except OSError:
+            pass
+
+        self.outSequence += 1
+        self.outTimestamp += 960   # 20мс @ 48kHz
+
+        elapsed = (_time_mod.monotonic_ns() - last_sent) / 1e9
+        sleep_time = max(0.0, 0.020 - elapsed)
+        _time_mod.sleep(sleep_time / self.trans_delay_reduction)
+
+
+_RTPClient.trans = _trans_opus_aware
 
 
 def _get_public_ip() -> str:
@@ -400,6 +624,11 @@ class BinotelSipClient:
             return None
         finally:
             self._expecting_call = False
+
+        # Pre-set Opus flag ПЕРЕД call.answer() — бо call.answer() стартує RTP/trans() threads,
+        # які одразу перевіряють _next_call_use_opus. Якщо ставити після — race condition.
+        global _next_call_use_opus
+        _next_call_use_opus = True
 
         call.answer()
         caller = getattr(call, 'phoneNumber', None) or getattr(call, 'phone_number', 'unknown')

@@ -30,6 +30,7 @@ from config import (
     DEBUG,
 )
 from services.audio_bridge import gemini_output_to_sip, reset_state, sip_to_gemini_input
+from services import opus_codec as _opus_codec
 from services.binotel_rest import BinotelRestClient
 from services.binotel_sip import BinotelSipAudio, BinotelSipClient
 from services.binotel_ws import BinotelWebSocket
@@ -106,13 +107,25 @@ class BinotelCall:
     async def send_audio(self, pcm_24khz: bytes) -> None:
         """
         Відправити аудіо Gemini пацієнту.
-        Конвертує PCM 24kHz → µ-law 8kHz і пише в SIP RTP.
+        Opus mode: encode + кладемо фрейми в RTPClient._opus_send_queue.
+        G.711 mode: конвертуємо PCM 24kHz → G.711 8kHz і пишемо в SIP RTP.
         """
         if not self.is_active:
             return
-        pcm_8khz = gemini_output_to_sip(pcm_24khz)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._sip.write, pcm_8khz)
+        from services.audio_bridge import _use_opus
+        if _use_opus:
+            frames = _opus_codec.encode(pcm_24khz)
+            for frame in frames:
+                for rtp in getattr(getattr(self._sip, "_call", None), "RTPClients", []):
+                    from services.binotel_sip import _ensure_opus_queue
+                    try:
+                        _ensure_opus_queue(rtp).put_nowait(frame)
+                    except Exception:
+                        pass
+        else:
+            pcm_g711 = gemini_output_to_sip(pcm_24khz)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._sip.write, pcm_g711)
 
     async def receive_audio(self) -> AsyncGenerator[bytes, None]:
         """
@@ -148,6 +161,7 @@ class BinotelCall:
             return
         self.is_active = False
         reset_state()
+        _opus_codec.reset()
 
         self._sip.hangup()
         if self.call_id:

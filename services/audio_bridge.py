@@ -75,7 +75,8 @@ _nr_profile_buf: list[np.ndarray] = []
 _nr_profile: np.ndarray | None = None  # конкатенований noise profile
 
 # Кодек: встановлюється з binotel_sip.py після SIP-узгодження
-_use_alaw: bool = False
+_use_alaw:  bool = False
+_use_opus:  bool = False   # True → Gemini output кодується через opus_codec, не G.711
 
 
 def sip_to_gemini_input(pcm_8khz_u8: bytes) -> bytes:
@@ -181,12 +182,22 @@ def set_codec_alaw(is_alaw: bool) -> None:
     _use_alaw = is_alaw
 
 
+def set_codec_opus(enabled: bool) -> None:
+    """Увімкнути/вимкнути Opus режим (output через opus_codec замість G.711)."""
+    global _use_opus
+    _use_opus = enabled
+    import logging
+    logging.getLogger(__name__).info(f"[BRIDGE] Codec → {'Opus' if enabled else 'G.711'}")
+
+
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf
+    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw
     _zi_gemini_to_sip = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
     _nr_chunk_count = 0
     _nr_profile_buf.clear()
     _nr_profile = None
+    _use_opus  = False
+    _use_alaw  = False

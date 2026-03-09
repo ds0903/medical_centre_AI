@@ -509,11 +509,18 @@ class Block1Agent:
             watchdog_task = asyncio.create_task(_watchdog(), name="watchdog")
 
             if greeting_buffer:
-                # Warmup шлях: та сама сесія вже привіталась — граємо буфер і чекаємо
+                # Warmup шлях: граємо буфер з реал-тайм рейтом.
+                # Без rate-limit всі chunks летять в Opus чергу миттєво →
+                # черга (maxsize=300) переповнюється → кінець привітання дропається.
+                # 24kHz 16-bit = 48000 bytes/sec → тривалість chunk = len/48000 с.
+                _play_start = time.monotonic()
+                _played_dur = 0.0
                 for chunk in greeting_buffer:
                     await binotel_call.send_audio(chunk)
-                if greeting_duration > 0:
-                    await asyncio.sleep(greeting_duration)
+                    _played_dur += len(chunk) / 48000
+                    _slack = (_play_start + _played_dur) - time.monotonic()
+                    if _slack > 0.01:
+                        await asyncio.sleep(_slack)
                 _greeting_done.set()
                 _activity[0] = time.time()  # watchdog рахує тільки після привітання
                 logger.info("[AGENT] Стрімінг розпочато")
