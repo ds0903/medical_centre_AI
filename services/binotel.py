@@ -155,6 +155,10 @@ class BinotelCall:
     # Управління дзвінком
     # ------------------------------------------------------------------
 
+    def flush_audio(self) -> None:
+        """Очистити Opus чергу виводу — AI замовкає миттєво при перериванні."""
+        self._sip.flush_audio()
+
     async def hangup(self) -> None:
         """Завершити дзвінок (SIP + REST якщо є call_id)."""
         if not self.is_active:

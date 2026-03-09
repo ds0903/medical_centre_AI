@@ -377,6 +377,14 @@ class BinotelSipAudio:
             logger.debug(f"[SIP] read_audio error: {e}")
             return b""
 
+    def flush_audio(self) -> None:
+        """Очистити Opus чергу виводу — AI замовкає миттєво при перериванні пацієнтом."""
+        for rtp in getattr(self._call, "RTPClients", []):
+            q = getattr(rtp, "_opus_send_queue", None)
+            if q is not None:
+                with q.mutex:
+                    q.queue.clear()
+
     def hangup(self) -> None:
         """Завершити SIP дзвінок."""
         self._active = False

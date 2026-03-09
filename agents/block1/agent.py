@@ -80,6 +80,9 @@ class _DebugCall:
             )
             yield data
 
+    def flush_audio(self) -> None:
+        pass  # debug: PyAudio output має власний буфер, flush не потрібен
+
     async def hangup(self) -> None:
         self.is_active = False
         logger.info("[DEBUG] Дзвінок завершено")
@@ -359,6 +362,9 @@ class Block1Agent:
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
+                                # Flush Opus черги: trans() ще тримав буферизовані фрейми →
+                                # без flush AI говорить ~0.5-1с після того як Gemini вже зупинився.
+                                binotel_call.flush_audio()
                                 # НЕ ставимо гейт — пацієнт ЗАРАЗ говорить, не можна блокувати його аудіо.
                                 # Луна від обрізаного слова AI мінімальна і Gemini її сам ігнорує.
                                 _patient_spoke.set()
