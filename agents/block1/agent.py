@@ -11,6 +11,14 @@ import math
 import struct
 import time
 
+try:
+    import webrtcvad as _webrtcvad
+    _VAD = _webrtcvad.Vad(2)   # aggressiveness 0-3: 2 = збалансований
+    _VAD_AVAILABLE = True
+except ImportError:
+    _VAD = None
+    _VAD_AVAILABLE = False
+
 import pyaudio
 from google import genai
 from google.genai import types
@@ -29,12 +37,13 @@ OUTPUT_RATE = 24000  # Gemini → динамік / SIP
 CHUNK = 512
 
 # Silence detection
-VAD_THRESHOLD = 300      # RMS поріг для 16-bit PCM (підбирати під лінію SIP)
+VAD_THRESHOLD = 300      # RMS поріг для 16-bit PCM (fallback якщо webrtcvad недоступний)
 MAX_SILENCE_COUNT = 3    # після 3 разів — вішаємо трубку
+_VAD_FRAME_BYTES = 320   # 10мс @ 16kHz 16-bit mono = 160 семплів × 2 байти
 
 
-def _is_voice(pcm: bytes) -> bool:
-    """Проста VAD: True якщо RMS енергія чанку перевищує поріг."""
+def _is_voice_rms(pcm: bytes) -> bool:
+    """Fallback RMS VAD."""
     n = len(pcm) // 2
     if n == 0:
         return False
@@ -131,6 +140,15 @@ class Block1Agent:
             # неприйнятні: пацієнт чує мовчання, потім весь текст відразу (розмазаний звук).
             thinking_config=types.ThinkingConfig(thinking_budget=0),
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
+            # VAD на стороні Gemini: повільніше реагує на кінець мови → менше обрізань пацієнта.
+            # end_of_speech_sensitivity=LOW → довша пауза перш ніж Gemini вважає що пацієнт замовк.
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    silence_duration_ms=800,
+                )
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -289,6 +307,7 @@ class Block1Agent:
                         return
 
             async def _send_patient_audio() -> None:
+                _vad_buf = bytearray()  # буфер webrtcvad (потребує фіксовані 10мс = 320 байт)
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
@@ -297,7 +316,21 @@ class Block1Agent:
                     # Ехо-гейт: після interrupted ігноруємо аудіо поки не розсіється відлуння
                     if time.time() < _interrupted_pause_until[0]:
                         continue
-                    if _is_voice(chunk):
+                    # VAD: визначаємо чи є голос у chunk
+                    if _VAD_AVAILABLE:
+                        _vad_buf.extend(chunk)
+                        _has_voice = False
+                        while len(_vad_buf) >= _VAD_FRAME_BYTES:
+                            frame = bytes(_vad_buf[:_VAD_FRAME_BYTES])
+                            del _vad_buf[:_VAD_FRAME_BYTES]
+                            try:
+                                if _VAD.is_speech(frame, 16000):
+                                    _has_voice = True
+                            except Exception:
+                                pass
+                    else:
+                        _has_voice = _is_voice_rms(chunk)
+                    if _has_voice:
                         _patient_spoke.set()
                         _activity[0] = time.time()
                         # НЕ скидаємо _suppress_next_audio тут — тільки patient_said tool call скидає.
