@@ -403,8 +403,9 @@ class Block1Agent:
                                 if not _suppress_next_audio[0]:
                                     await binotel_call.send_audio(resp.data)
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
+                                    # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
-                                    _interrupted_pause_until[0] = time.time() + 2.0
+                                    _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
@@ -490,8 +491,9 @@ class Block1Agent:
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт: після завершення мови AI блокуємо SIP-ехо власного голосу.
-                            _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                            # Ехо-гейт: AI вже замовкла — скорочуємо гейт до 300мс (луна розсіялась).
+                            # Під час мови AI гейт вже тримався per-chunk (INTERRUPTED_PAUSE_SEC).
+                            _interrupted_pause_until[0] = time.time() + 0.3
                             _schedule_silence_timer(audio_delay=0.0)
                             # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
                             # пацієнта — це дублікат, не відтворювати в SIP.

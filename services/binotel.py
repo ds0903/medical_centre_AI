@@ -118,14 +118,25 @@ class BinotelCall:
         """
         Отримати аудіо від пацієнта для Gemini.
         Yields PCM 16kHz 16-bit chunks.
+
+        Jitter buffer на 2 пакети (~40мс): вирівнює нерівномірне надходження
+        RTP-пакетів по мережі без помітної затримки для пацієнта.
         """
         loop = asyncio.get_event_loop()
+        _jbuf: list[bytes] = []
+        _JITTER_TARGET = 2  # пакети (~40мс при 20мс/пакет)
         while self.is_active and self._sip.is_active:
             pcm_8khz = await loop.run_in_executor(None, self._sip.read)
             if pcm_8khz:
-                yield sip_to_gemini_input(pcm_8khz)
+                _jbuf.append(sip_to_gemini_input(pcm_8khz))
+                if len(_jbuf) >= _JITTER_TARGET:
+                    yield _jbuf.pop(0)
             else:
-                await asyncio.sleep(0.01)
+                # Немає нового пакету — зливаємо буфер щоб не накопичувати
+                if _jbuf:
+                    yield _jbuf.pop(0)
+                else:
+                    await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
     # Управління дзвінком
