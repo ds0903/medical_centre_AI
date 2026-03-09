@@ -11,3 +11,7 @@ websockets
 audioop-lts
 numpy
 scipy
+webrtcvad-wheels
+noisereduce
+pyogg
+

@@ -112,19 +112,25 @@ def _parse_packet_with_opus(self, packet: bytes) -> None:
     _orig_parse_packet(self, packet)
 
 
-def _parse_opus(self, msg) -> None:
-    """Decode Opus RTP payload → unsigned 8-bit PCM @ 8kHz → pyVoIP pmin buffer.
+def _ensure_opus_recv_queue(rtp_client) -> "_queue.Queue":
+    """Окрема черга для Opus receive — bypass pmin, пряма s16 16kHz."""
+    if not hasattr(rtp_client, "_opus_recv_queue"):
+        rtp_client._opus_recv_queue = _queue.Queue(maxsize=50)
+    return rtp_client._opus_recv_queue
 
-    Opus RTP timestamps: 48kHz clock (960 per 20ms frame).
-    pmin BytesIO buffer: byte-addressed (8kHz → 160 bytes per 20ms frame).
-    Без конвертації: між пакетами 800-байтна діра нулів у BytesIO →
-    read(320) повертає нулі замість аудіо → Gemini чує тишу.
-    Фікс: ділимо timestamp на 6 (48kHz → 8kHz).
+
+def _parse_opus(self, msg) -> None:
+    """Decode Opus RTP payload → PCM signed 16-bit 16kHz → _opus_recv_queue.
+
+    Bypass pmin: немає timestamp проблем, немає u8↔s16 деградації.
+    s16 16kHz → напряму в sip_to_gemini_input → Gemini.
     """
     from services.opus_codec import decode as opus_decode
     try:
-        pcm_u8 = opus_decode(msg.payload)
-        self.pmin.write(msg.timestamp // 3, pcm_u8)  # 48kHz → 16kHz
+        pcm_s16 = opus_decode(msg.payload)
+        _ensure_opus_recv_queue(self).put_nowait(pcm_s16)
+    except _queue.Full:
+        pass  # черга повна — дропаємо найстаріший пакет
     except Exception as e:
         logging.getLogger(__name__).debug(f"[OPUS] decode error: {e}")
 
@@ -345,17 +351,31 @@ class BinotelSipAudio:
             logger.debug(f"[SIP] write_audio error: {e}")
 
     def read(self, size: int = _CHUNK_BYTES) -> bytes:
-        """Прочитати PCM 8kHz 16-bit з дзвінка (голос пацієнта)."""
+        """Прочитати аудіо з дзвінка (голос пацієнта).
+
+        Opus mode: читає PCM s16 16kHz з _opus_recv_queue (bypass pmin).
+        G.711 mode: читає unsigned 8-bit 8kHz через pyVoIP read_audio (pmin).
+        Повертає b"" якщо немає даних (receive_audio() перейде у sleep 10ms).
+        """
         if not self.is_active:
-            return b"\x00" * size
+            return b""
+        # Opus bypass: пряма черга s16 16kHz → без u8↔s16 деградації
+        for rtp in getattr(self._call, "RTPClients", []):
+            q = getattr(rtp, "_opus_recv_queue", None)
+            if q is not None:
+                try:
+                    return q.get(timeout=0.05)
+                except _queue.Empty:
+                    return b""
+        # G.711 fallback: pyVoIP pmin (blocking)
         try:
             return self._call.read_audio(size)
         except InvalidStateError:
             self._active = False
-            return b"\x00" * size
+            return b""
         except Exception as e:
             logger.debug(f"[SIP] read_audio error: {e}")
-            return b"\x00" * size
+            return b""
 
     def hangup(self) -> None:
         """Завершити SIP дзвінок."""

@@ -82,39 +82,37 @@ _use_opus:  bool = False   # True → Gemini output кодується чере�
 _sip_input_log_done = False  # лог лише один раз про режим вхідного аудіо
 
 
-def sip_to_gemini_input(pcm_u8: bytes) -> bytes:
+def sip_to_gemini_input(pcm: bytes) -> bytes:
     """
-    PCM unsigned 8-bit (pyVoIP) → PCM signed 16-bit 16 kHz (Gemini вхід).
+    Аудіо від пацієнта → PCM signed 16-bit 16 kHz (Gemini вхід).
 
-    G.711 mode (8kHz): unsigned-8bit 8kHz → resample 8→16kHz → AGC → NR
-    Opus mode (16kHz): unsigned-8bit 16kHz → без ресемплу → AGC → NR
-      libopus декодує напряму в 16kHz → вдвічі ширший спектр (0-8kHz vs 0-4kHz).
+    Opus mode: вхід s16 16kHz (з _opus_recv_queue, bypass pmin) → AGC → NR.
+      Без u8↔s16 конвертації — пряма передача без деградації.
+    G.711 mode: вхід u8 8kHz (з pmin) → bias+lin2lin → resample 8→16kHz → AGC → NR.
     """
     global _sip_input_log_done
 
-    # Крок 1: unsigned-8bit → signed-8bit → signed-16bit
-    s8  = audioop.bias(pcm_u8, 1, -128)
-    s16 = audioop.lin2lin(s8, 1, 2)
-
-    arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
-
     if _use_opus:
-        # Opus: вже 16kHz — ресемпл не потрібен
+        # Opus: вхід вже s16 16kHz — пропускаємо bias/lin2lin/resample
         if not _sip_input_log_done:
             _sip_input_log_done = True
             import logging as _logging
             _logging.getLogger(__name__).info(
-                "[BRIDGE] SIP→Gemini: 16kHz Opus (без ресемплу, спектр 0-8kHz)"
+                "[BRIDGE] SIP→Gemini: s16 16kHz Opus direct (без u8 деградації, спектр 0-8kHz)"
             )
+        arr = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
         resampled = arr
     else:
-        # G.711: 8kHz → resample_poly 8→16kHz
+        # G.711: u8 8kHz → s16 → resample 8→16kHz
         if not _sip_input_log_done:
             _sip_input_log_done = True
             import logging as _logging
             _logging.getLogger(__name__).info(
                 "[BRIDGE] SIP→Gemini: 8kHz G.711 → resample→16kHz (спектр 0-4kHz)"
             )
+        s8  = audioop.bias(pcm, 1, -128)
+        s16 = audioop.lin2lin(s8, 1, 2)
+        arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
         resampled = resample_poly(arr, up=2, down=1)
 
     # Крок 3: Smooth AGC
