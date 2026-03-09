@@ -20,10 +20,14 @@ scipy + numpy: pip install scipy numpy
 """
 
 import audioop
+import logging
 
 import noisereduce as nr
 import numpy as np
+import webrtcvad
 from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Gemini → SIP: LP фільтр (anti-aliasing перед децимацією)
@@ -63,16 +67,20 @@ _output_gain = [1.0]   # поточний gain нормалізації вихо
 # ---------------------------------------------------------------------------
 # Noise reduction: профіль шуму лінії
 #
-# Перші _NR_PROFILE_CHUNKS чанків (~640мс) — пацієнт ще слухає привітання,
-# на лінії тільки фоновий шум без голосу. Збираємо їх як noise profile.
+# Перші _NR_PROFILE_CHUNKS чанків (~640мс) — збираємо тільки тихі фрейми
+# (VAD-перевірка). Якщо пацієнт відповів одразу — його голос не потрапить
+# до профілю і NR не буде гасити мову.
 # Після збору — застосовуємо stationary noise reduction до кожного чанку.
 # ---------------------------------------------------------------------------
-_NR_PROFILE_CHUNKS = 40      # ~640мс при 512-byte chunk @ 16kHz 16-bit
+_NR_PROFILE_CHUNKS = 40      # вікно збору: ~640мс (час-лічильник, не кількість тихих)
 _NR_PROP_DECREASE  = 0.75    # наскільки придушувати шум (0.0–1.0)
 
 _nr_chunk_count: int = 0
 _nr_profile_buf: list[np.ndarray] = []
 _nr_profile: np.ndarray | None = None  # конкатенований noise profile
+
+# VAD для фільтрації профілю: агресивність 2 (достатньо для відокремлення голосу від шуму)
+_profile_vad = webrtcvad.Vad(2)
 
 # Кодек: встановлюється з binotel_sip.py після SIP-узгодження
 _use_alaw:  bool = False
@@ -130,10 +138,29 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
     # Noise reduction: stationary spectral gating по профілю шуму лінії
     global _nr_chunk_count, _nr_profile, _nr_profile_buf
     if _nr_chunk_count < _NR_PROFILE_CHUNKS:
-        _nr_profile_buf.append(result.copy())
         _nr_chunk_count += 1
+
+        # VAD-фільтр: додаємо до профілю тільки тихі фрейми.
+        # Якщо пацієнт відповів одразу — його голос не псує профіль.
+        # webrtcvad потребує рівно 20мс @ 16kHz = 640 байт s16.
+        pcm_s16 = np.clip(result, -32768, 32767).astype("<i2").tobytes()
+        if len(pcm_s16) == 640:
+            try:
+                if not _profile_vad.is_speech(pcm_s16, 16000):
+                    _nr_profile_buf.append(result.copy())
+            except Exception:
+                _nr_profile_buf.append(result.copy())  # fallback: додаємо як є
+        else:
+            _nr_profile_buf.append(result.copy())  # нестандартний розмір: додаємо без VAD
+
         if _nr_chunk_count == _NR_PROFILE_CHUNKS:
-            _nr_profile = np.concatenate(_nr_profile_buf)
+            if _nr_profile_buf:
+                _nr_profile = np.concatenate(_nr_profile_buf)
+                _log.debug(
+                    f"[BRIDGE] NR profile: {len(_nr_profile_buf)}/{_NR_PROFILE_CHUNKS} тихих фреймів"
+                )
+            else:
+                _log.warning("[BRIDGE] NR profile: 0 тихих фреймів — NR вимкнено для цього дзвінка")
             _nr_profile_buf.clear()
     elif _nr_profile is not None:
         try:
