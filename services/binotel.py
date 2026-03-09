@@ -132,20 +132,36 @@ class BinotelCall:
         Отримати аудіо від пацієнта для Gemini.
         Yields PCM 16kHz 16-bit chunks.
 
-        Jitter buffer на 2 пакети (~40мс): вирівнює нерівномірне надходження
-        RTP-пакетів по мережі без помітної затримки для пацієнта.
+        Адаптивний jitter buffer (2–4 пакети):
+          - Стабільна мережа: target=2 (~40мс затримки)
+          - Нестабільна (gaps): target росте до 4 (~80мс) → менше stutter
+          - Після 50 стабільних пакетів підряд — target знижується назад
         """
         loop = asyncio.get_event_loop()
         _jbuf: list[bytes] = []
-        _JITTER_TARGET = 2  # пакети (~40мс при 20мс/пакет)
+        _jitter_target = 2   # поточний розмір буфера (адаптивний 2..4)
+        _gap_streak = 0      # скільки пустих reads підряд
+        _good_streak = 0     # скільки пакетів з даними підряд без gaps
         while self.is_active and self._sip.is_active:
             pcm_8khz = await loop.run_in_executor(None, self._sip.read)
             if pcm_8khz:
+                _gap_streak = 0
+                _good_streak += 1
+                # Стабільна мережа → поступово зменшуємо буфер
+                if _good_streak >= 50 and _jitter_target > 2:
+                    _jitter_target -= 1
+                    _good_streak = 0
                 _jbuf.append(sip_to_gemini_input(pcm_8khz))
-                if len(_jbuf) >= _JITTER_TARGET:
+                if len(_jbuf) >= _jitter_target:
                     yield _jbuf.pop(0)
             else:
-                # Немає нового пакету — зливаємо буфер щоб не накопичувати
+                _good_streak = 0
+                _gap_streak += 1
+                # Нестабільна мережа → збільшуємо буфер (max 4)
+                if _gap_streak >= 3 and _jitter_target < 4:
+                    _jitter_target += 1
+                    _gap_streak = 0
+                # Зливаємо буфер щоб не накопичувати
                 if _jbuf:
                     yield _jbuf.pop(0)
                 else:
