@@ -21,6 +21,7 @@ scipy + numpy: pip install scipy numpy
 
 import audioop
 
+import noisereduce as nr
 import numpy as np
 from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly
 
@@ -59,6 +60,20 @@ _zi_gemini_to_sip: np.ndarray | None = None  # стан LP фільтра
 _input_gain  = [1.0]   # поточний gain AGC (список для mutable closure)
 _output_gain = [1.0]   # поточний gain нормалізації виходу
 
+# ---------------------------------------------------------------------------
+# Noise reduction: профіль шуму лінії
+#
+# Перші _NR_PROFILE_CHUNKS чанків (~640мс) — пацієнт ще слухає привітання,
+# на лінії тільки фоновий шум без голосу. Збираємо їх як noise profile.
+# Після збору — застосовуємо stationary noise reduction до кожного чанку.
+# ---------------------------------------------------------------------------
+_NR_PROFILE_CHUNKS = 40      # ~640мс при 512-byte chunk @ 16kHz 16-bit
+_NR_PROP_DECREASE  = 0.75    # наскільки придушувати шум (0.0–1.0)
+
+_nr_chunk_count: int = 0
+_nr_profile_buf: list[np.ndarray] = []
+_nr_profile: np.ndarray | None = None  # конкатенований noise profile
+
 # Кодек: встановлюється з binotel_sip.py після SIP-узгодження
 _use_alaw: bool = False
 
@@ -91,6 +106,27 @@ def sip_to_gemini_input(pcm_8khz_u8: bytes) -> bytes:
         _input_gain[0] = (1.0 - _AGC_ALPHA) * _input_gain[0] + _AGC_ALPHA * 1.0
 
     result = resampled * _input_gain[0]
+
+    # Noise reduction: stationary spectral gating по профілю шуму лінії
+    global _nr_chunk_count, _nr_profile, _nr_profile_buf
+    if _nr_chunk_count < _NR_PROFILE_CHUNKS:
+        _nr_profile_buf.append(result.copy())
+        _nr_chunk_count += 1
+        if _nr_chunk_count == _NR_PROFILE_CHUNKS:
+            _nr_profile = np.concatenate(_nr_profile_buf)
+            _nr_profile_buf.clear()
+    elif _nr_profile is not None:
+        try:
+            result = nr.reduce_noise(
+                y=result.astype(np.float32),
+                sr=16000,
+                y_noise=_nr_profile.astype(np.float32),
+                stationary=True,
+                prop_decrease=_NR_PROP_DECREASE,
+            )
+        except Exception:
+            pass  # fallback: без шумопоглинання
+
     return np.clip(result, -32768, 32767).astype("<i2").tobytes()
 
 
@@ -146,8 +182,11 @@ def set_codec_alaw(is_alaw: bool) -> None:
 
 
 def reset_state() -> None:
-    """Скинути стан ресемплерів та фільтрів між дзвінками."""
-    global _zi_gemini_to_sip
+    """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
+    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf
     _zi_gemini_to_sip = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
+    _nr_chunk_count = 0
+    _nr_profile_buf.clear()
+    _nr_profile = None
