@@ -235,7 +235,10 @@ async def handle_tool_call(
             logger.debug(f"[TOOL]   slot_id={s['slot_id']} | {s['date']} {s['time']} ({s['half']} половина)")
         result = {
             "success": True,
-            "available_dates": ", ".join(seen_dates),
+            "available_dates": seen_dates,          # список дат (не рядок) — Gemini точніше рахує
+            "total_dates": len(seen_dates),         # скільки дат існує — захист від галюцинації меж
+            "first_date": seen_dates[0],            # перша дата
+            "last_date": seen_dates[-1],            # остання дата — заборонено виходити за неї
             "slots": slots,
         }
         call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}

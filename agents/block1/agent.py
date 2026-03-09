@@ -189,9 +189,6 @@ class Block1Agent:
             # тому що ghost тури скидають suppress повторним викликом того самого тексту.
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
-            # Turn 1 після get_available_slots генерується швидко і галюцинує дати/часи.
-            # Цей прапор примусово пропускає Turn 1 — пацієнт чує Turn 2 з правильними даними.
-            _force_suppress_turn1 = [False]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -341,12 +338,8 @@ class Block1Agent:
                                     _ai_buf.append(sc.output_transcription.text)
                                 if sc.turn_complete:
                                     if _ai_buf and GEMINI_LOGS:
-                                        if _force_suppress_turn1[0]:
-                                            _tag = "[AI TURN1-SKIP]"
-                                        elif _suppress_next_audio[0] and not _had_patient_said:
-                                            _tag = "[AI GHOST]"
-                                        else:
-                                            _tag = "[AI]"
+                                        _is_ghost_log = _suppress_next_audio[0] and not _had_patient_said
+                                        _tag = "[AI GHOST]" if _is_ghost_log else "[AI]"
                                         logger.info(f"{_tag} {''.join(_ai_buf)}")
                                     _ai_buf.clear()
                                     if _draining:
@@ -360,19 +353,6 @@ class Block1Agent:
                                                 await asyncio.sleep(2.0)
                                             return
                                         continue
-                                    # Turn 1 після get_available_slots пропускаємо — галюцинує дати.
-                                    # Turn 2 генерується з правильними даними і грає замість нього.
-                                    # ВАЖЛИВО: скидаємо прапор ТІЛЬКИ якщо цей тур мав аудіо.
-                                    # Між tool_call батчами Gemini може слати порожні turn_complete
-                                    # (без аудіо) — вони НЕ повинні скидати прапор передчасно.
-                                    if _force_suppress_turn1[0]:
-                                        if turn_had_audio:
-                                            logger.debug("[AGENT] Slots Turn 1 пропущено — чекаємо Turn 2 з реальними даними")
-                                            _force_suppress_turn1[0] = False
-                                            turn_had_audio = False
-                                            turn_audio_bytes = 0
-                                            _had_patient_said = False
-                                        continue  # порожній або аудіо тур — в обох випадках продовжуємо
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був patient_said.
                                     # Ghost/дублікатний тур: suppress=True і patient_said не було.
                                     if (not _suppress_next_audio[0]) or _had_patient_said:
@@ -387,7 +367,7 @@ class Block1Agent:
                                     turn_audio_bytes = 0
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                if not _suppress_next_audio[0] and not _force_suppress_turn1[0]:
+                                if not _suppress_next_audio[0]:
                                     await binotel_call.send_audio(resp.data)
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
@@ -416,9 +396,6 @@ class Block1Agent:
                                             _suppress_next_audio[0] = False
                                             _had_patient_said = True
                                             _last_patient_said_text[0] = _ps_text
-                                            # Нова репліка пацієнта скидає force-suppress:
-                                            # контекст слотів вже пройшов, прапор більше не актуальний.
-                                            _force_suppress_turn1[0] = False
                                         break
                                 _interrupted_pause_until[0] = time.time() + 10.0
                                 _patient_spoke.set()
@@ -428,6 +405,7 @@ class Block1Agent:
                                 # щоб Gemini не генерував проміжні turn-и між tool calls.
                                 _batch: list[types.FunctionResponse] = []
                                 _after_batch = None  # ("end_call"|"transfer", ...) — виконати після відправки
+                                _slots_fetched = False  # True якщо get_available_slots успішно виконано в цьому батчі
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
                                     if fc.name == "transfer_to_operator":
@@ -441,6 +419,15 @@ class Block1Agent:
                                         ))
                                         _after_batch = ("transfer", reason)
                                         break
+                                    # end_call в одному батчі з get_available_slots = галюцинація:
+                                    # Gemini не бачив слоти, але вже вирішив завершити дзвінок.
+                                    # Ігноруємо — надсилаємо відповідь Gemini, але дзвінок не закриваємо.
+                                    if fc.name == "end_call" and _slots_fetched:
+                                        logger.warning("[AGENT] end_call проігноровано — викликано в одному батчі з get_available_slots (галюцинація)")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name, response={"success": True}
+                                        ))
+                                        continue
                                     try:
                                         result = await handle_tool_call(fc.name, args, self.visit, _call_cache)
                                     except Exception as tool_err:
@@ -448,16 +435,7 @@ class Block1Agent:
                                         result = {"success": True}
                                     _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
                                     if fc.name == "get_available_slots" and result.get("success"):
-                                        # Turn 1 після slots галюцинує дати — примусово пропускаємо,
-                                        # чекаємо Turn 2 який генерується з реальними даними зі слотів.
-                                        _force_suppress_turn1[0] = True
-                                        # Gemini генерує Turn 1 до 10с — таймер тиші за цей час
-                                        # встигає спрацювати і ін'єктує "Алло, чуєте мене?".
-                                        # Скасовуємо — таймер перезапуститься після Turn 2.
-                                        if _timer_task and not _timer_task.done():
-                                            _timer_task.cancel()
-                                        if _silence_task and not _silence_task.done():
-                                            _silence_task.cancel()
+                                        _slots_fetched = True
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
