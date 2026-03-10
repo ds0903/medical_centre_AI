@@ -510,6 +510,23 @@ class Block1Agent:
                                         ))
                                         _after_batch = ("transfer", reason)
                                         break
+                                    # reschedule_visit в одному батчі з patient_said = без підтвердження:
+                                    # Gemini не запитав "Все вірно?" перед переносом.
+                                    # Блокуємо — Gemini має спершу озвучити дату+час і дочекатися "так".
+                                    if fc.name == "reschedule_visit" and _had_patient_said:
+                                        logger.warning("[AGENT] reschedule_visit заблоковано — немає фінального підтвердження від пацієнта")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={
+                                                "success": False,
+                                                "message": (
+                                                    "ЗАБОРОНЕНО переносити без підтвердження. "
+                                                    "Спершу скажи пацієнту: 'Отже, переносимо на [дата] о [час]. Все вірно?' "
+                                                    "і ЧЕКАЙ відповідь. Тільки після явного 'так' — виклич reschedule_visit."
+                                                ),
+                                            },
+                                        ))
+                                        continue
                                     # end_call в одному батчі з get_available_slots = галюцинація:
                                     # Gemini не бачив слоти, але вже вирішив завершити дзвінок.
                                     # Ігноруємо — надсилаємо відповідь Gemini, але дзвінок не закриваємо.
