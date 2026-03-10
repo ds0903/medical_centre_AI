@@ -459,7 +459,12 @@ class Block1Agent:
                                     # Ghost/дублікатний тур: suppress=True і patient_said не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
                                     if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0]:
-                                        _allow_next_turn[0] = False  # використали одноразово
+                                        # Скидаємо _allow_next_turn ТІЛЬКИ коли він був вирішальним
+                                        # (ghost bypass: suppress=True і пацієнт не говорив).
+                                        # Якщо вийшли через _had_patient_said або suppress=False —
+                                        # зберігаємо True щоб ghost з датами міг зіграти далі.
+                                        if _suppress_next_audio[0] and not _had_patient_said:
+                                            _allow_next_turn[0] = False  # ghost bypass використано
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
@@ -471,9 +476,10 @@ class Block1Agent:
                                     turn_audio_bytes = 0
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                if _suppress_slots_turn:
-                                    pass  # Turn 1 галюцинація з get_available_slots → drop аудіо
-                                elif not _suppress_next_audio[0]:
+                                if _suppress_slots_turn and not _allow_next_turn[0]:
+                                    pass  # Turn 1 галюцинація (без bypass) → drop аудіо
+                                elif not _suppress_next_audio[0] or _allow_next_turn[0]:
+                                    # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     await binotel_call.send_audio(resp.data)
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
                                     # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
@@ -503,6 +509,9 @@ class Block1Agent:
                                             _suppress_next_audio[0] = False
                                             _had_patient_said = True
                                             _last_patient_said_text[0] = _ps_text
+                                            # Пацієнт заговорив → скидаємо ghost bypass (щоб не накопичувався
+                                            # якщо ghost з датами не прийшов або вже не потрібен)
+                                            _allow_next_turn[0] = False
                                             # Пацієнт відповів після блокування reschedule → дозволяємо
                                             if _reschedule_state[0] == 1:
                                                 _reschedule_state[0] = 2
@@ -639,26 +648,26 @@ class Block1Agent:
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
-                        if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            if _suppress_slots_turn:
-                                # Turn 1 аудіо було dropped (галюцинація get_available_slots).
-                                # НЕ ставимо suppress → Turn 2 (ghost) зіграє правильний вміст.
-                                # НЕ ставимо echo gate і таймер тиші — пацієнт ще нічого не чув.
-                                _allow_next_turn[0] = True   # Turn 2 проривається крізь ghost-guard
-                                _suppress_next_audio[0] = False
-                                logger.debug("[AGENT] Slots Turn 1 dropped → allow Turn 2 (ghost) to play")
-                            else:
-                                # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
-                                # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
-                                # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
-                                _interrupted_pause_until[0] = max(
-                                    _interrupted_pause_until[0],
-                                    time.time() + INTERRUPTED_PAUSE_SEC,
-                                )
-                                _schedule_silence_timer(audio_delay=0.0)
-                                # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
-                                # пацієнта — це дублікат, не відтворювати в SIP.
-                                _suppress_next_audio[0] = True
+                        # _suppress_slots_turn перевіряємо БЕЗ turn_had_audio:
+                        # tool calls і аудіо можуть бути в РІЗНИХ ітераціях outer while True.
+                        # Якщо tools прийшли без аудіо (turn_had_audio=False) — allow_next_turn
+                        # все одно треба встановити щоб ghost з датами зіграв у наступній ітерації.
+                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
+                            _allow_next_turn[0] = True   # ghost з датами проривається крізь guard
+                            _suppress_next_audio[0] = False
+                            logger.debug("[AGENT] get_available_slots turn → allow ghost with dates to play")
+                        if not _draining and _greeting_done.is_set() and turn_had_audio and not _suppress_slots_turn:
+                            # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
+                            # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
+                            # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
+                            _interrupted_pause_until[0] = max(
+                                _interrupted_pause_until[0],
+                                time.time() + INTERRUPTED_PAUSE_SEC,
+                            )
+                            _schedule_silence_timer(audio_delay=0.0)
+                            # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
+                            # пацієнта — це дублікат, не відтворювати в SIP.
+                            _suppress_next_audio[0] = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
