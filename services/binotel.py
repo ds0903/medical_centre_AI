@@ -293,10 +293,20 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
     logger.info(f"[BINOTEL] Чекаємо статус Онлайн для extension {BINOTEL_INTERNAL_NUMBER}...")
     online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=15)
     if not online:
+        # SIP реєстрація "впала" з боку Binotel — перепідключаємо і чекаємо знову.
         logger.warning(
-            f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} не став онлайн. "
-            f"Спробуємо дзвонити все одно..."
+            f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} офлайн — перепідключаємо SIP..."
         )
+        await shutdown()
+        await startup()
+        online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=10)
+        if not online:
+            logger.error(
+                f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} все ще офлайн після перепідключення — "
+                f"пропускаємо дзвінок, спробуємо пізніше."
+            )
+            return None
+        logger.info(f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} знову онлайн ✓")
 
     # Пауза 4с — дати час залишковим дзвінкам від попередніх сесій прийти і відхилитись
     logger.info("[BINOTEL] Очищення залишкових дзвінків...")
