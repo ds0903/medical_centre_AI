@@ -572,9 +572,13 @@ class Block1Agent:
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт: AI вже замовкла — скорочуємо гейт до 300мс (луна розсіялась).
-                            # Під час мови AI гейт вже тримався per-chunk (INTERRUPTED_PAUSE_SEC).
-                            _interrupted_pause_until[0] = time.time() + 0.3
+                            # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
+                            # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
+                            # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
+                            _interrupted_pause_until[0] = max(
+                                _interrupted_pause_until[0],
+                                time.time() + INTERRUPTED_PAUSE_SEC,
+                            )
                             _schedule_silence_timer(audio_delay=0.0)
                             # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
                             # пацієнта — це дублікат, не відтворювати в SIP.
