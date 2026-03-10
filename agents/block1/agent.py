@@ -495,6 +495,18 @@ class Block1Agent:
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
                                 _schedule_silence_timer(audio_delay=0.0)
+                                # Ghost tool call: suppress=True і patient_said не мав нового тексту.
+                                # Надсилаємо порожні відповіді щоб сесія не зависла,
+                                # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
+                                if _suppress_next_audio[0] and not _had_patient_said:
+                                    logger.debug("[AGENT] Ghost tool batch — пропускаємо")
+                                    await session.send_tool_response(function_responses=[
+                                        types.FunctionResponse(
+                                            id=fc.id, name=fc.name, response={"success": True}
+                                        )
+                                        for fc in resp.tool_call.function_calls
+                                    ])
+                                    continue
                                 # Збираємо всі відповіді в батч — надсилаємо одним send_tool_response,
                                 # щоб Gemini не генерував проміжні turn-и між tool calls.
                                 _batch: list[types.FunctionResponse] = []
