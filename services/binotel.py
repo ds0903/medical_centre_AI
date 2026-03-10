@@ -29,7 +29,7 @@ from config import (
     BINOTEL_SIP_USERNAME,
     DEBUG,
 )
-from services.audio_bridge import gemini_output_to_sip, reset_state, sip_to_gemini_input
+from services.audio_bridge import apply_plc_decay, gemini_output_to_sip, reset_state, sip_to_gemini_input
 from services import opus_codec as _opus_codec
 from services.binotel_rest import BinotelRestClient
 from services.binotel_sip import BinotelSipAudio, BinotelSipClient
@@ -142,16 +142,23 @@ class BinotelCall:
         _jitter_target = 2   # поточний розмір буфера (адаптивний 2..4)
         _gap_streak = 0      # скільки пустих reads підряд
         _good_streak = 0     # скільки пакетів з даними підряд без gaps
+        _last_good: bytes = b""  # PLC: останній хороший chunk (після конвертації)
+        _plc_count = 0           # PLC: поточна кількість повторів
+        _PLC_MAX = 3             # PLC: максимум повторів перед тишею
+        _PLC_DECAY = 0.7         # PLC: згасання амплітуди за кожен повтор
         while self.is_active and self._sip.is_active:
             pcm_8khz = await loop.run_in_executor(None, self._sip.read)
             if pcm_8khz:
                 _gap_streak = 0
                 _good_streak += 1
+                _plc_count = 0
                 # Стабільна мережа → поступово зменшуємо буфер
                 if _good_streak >= 50 and _jitter_target > 2:
                     _jitter_target -= 1
                     _good_streak = 0
-                _jbuf.append(sip_to_gemini_input(pcm_8khz))
+                converted = sip_to_gemini_input(pcm_8khz)
+                _last_good = converted
+                _jbuf.append(converted)
                 if len(_jbuf) >= _jitter_target:
                     yield _jbuf.pop(0)
             else:
@@ -161,7 +168,11 @@ class BinotelCall:
                 if _gap_streak >= 3 and _jitter_target < 4:
                     _jitter_target += 1
                     _gap_streak = 0
-                # Зливаємо буфер щоб не накопичувати
+                # PLC: повторюємо останній chunk зі згасанням замість тиші
+                if _last_good and _plc_count < _PLC_MAX:
+                    _plc_count += 1
+                    _jbuf.append(apply_plc_decay(_last_good, _PLC_DECAY ** _plc_count))
+                # Зливаємо буфер
                 if _jbuf:
                     yield _jbuf.pop(0)
                 else:

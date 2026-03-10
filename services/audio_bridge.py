@@ -10,7 +10,7 @@ Gemini вхід:   signed 16-bit PCM, 16 kHz, mono
 Gemini вихід:  signed 16-bit PCM, 24 kHz, mono
 
 SIP → Gemini:
-  unsigned-8bit → signed-16bit → resample_poly 8→16kHz → Smooth AGC
+  unsigned-8bit → signed-16bit → resample_poly 8→16kHz → HP 80Hz → Noise gate → AGC → NR + comfort noise
 
 Gemini → SIP:
   Butterworth LP (anti-alias) → decimate 24→8kHz → Smooth norm → G.711 A/µ-law
@@ -36,6 +36,13 @@ _log = logging.getLogger(__name__)
 _LP_SOS = butter(8, 3400 / (24000 / 2), btype="low", output="sos")
 
 # ---------------------------------------------------------------------------
+# SIP → Gemini: HP фільтр (DC offset + мережевий гул 50 Гц)
+# Butterworth 4-го порядку, зріз 80 Hz @ 16kHz.
+# Видаляє DC зсув та гармоніки мережі (50/100 Гц), не чіпає голос (>300 Гц).
+# ---------------------------------------------------------------------------
+_HP_SOS = butter(4, 80 / (16000 / 2), btype="high", output="sos")
+
+# ---------------------------------------------------------------------------
 # SIP → Gemini: Smooth AGC
 #
 # Підтягує тихих пацієнтів до цільового RMS.
@@ -47,6 +54,7 @@ _TARGET_RMS_IN   = 3000   # цільовий RMS на вході (16-bit signed,
 _MAX_GAIN_IN     = 5.0    # захист від надмірного підсилення шуму (знижено з 8.0)
 _AGC_ALPHA       = 0.05   # швидкість адаптації (0 = ніколи, 1 = миттєво)
 _NOISE_GATE_RMS  = 250    # soft noise gate: нижче цього — плавне згасання (не підсилюємо фон)
+_COMFORT_NOISE_RMS = 40   # RMS comfort noise після NR (запобігає мертвій тиші)
 
 # ---------------------------------------------------------------------------
 # Gemini → SIP: Smooth нормалізація виходу
@@ -62,6 +70,7 @@ _OUT_ALPHA       = 0.1    # швидкість адаптації виходу
 # Стан між chunk-ами (stateful потокова обробка)
 # ---------------------------------------------------------------------------
 _zi_gemini_to_sip: np.ndarray | None = None  # стан LP фільтра
+_zi_hp_input: np.ndarray | None = None       # стан HP фільтра (SIP→Gemini)
 _input_gain  = [1.0]   # поточний gain AGC (список для mutable closure)
 _output_gain = [1.0]   # поточний gain нормалізації виходу
 
@@ -100,7 +109,7 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
       Без u8↔s16 конвертації — пряма передача без деградації.
     G.711 mode: вхід u8 8kHz (з pmin) → bias+lin2lin → resample 8→16kHz → AGC → NR.
     """
-    global _sip_input_log_done
+    global _sip_input_log_done, _zi_hp_input
 
     if _use_opus:
         # Opus: вхід вже s16 16kHz — пропускаємо bias/lin2lin/resample
@@ -124,6 +133,12 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
         s16 = audioop.lin2lin(s8, 1, 2)
         arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
         resampled = resample_poly(arr, up=2, down=1)
+
+    # Крок 2.5: HP фільтр — DC offset + гул мережі 50 Гц
+    if len(resampled) > 0:
+        if _zi_hp_input is None:
+            _zi_hp_input = sosfilt_zi(_HP_SOS) * resampled[0]
+        resampled, _zi_hp_input = sosfilt(_HP_SOS, resampled, zi=_zi_hp_input)
 
     # Крок 3: Noise gate + Smooth AGC
     rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) else 0.0
@@ -184,6 +199,12 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
             )
         except Exception:
             pass  # fallback: без шумопоглинання
+
+    # Comfort noise: тихий шум після NR щоб лінія не була мертвою.
+    # RMS 40 повністю маскується голосом (RMS 3000+) але заповнює тишу.
+    if _nr_profile is not None:
+        result = np.asarray(result, dtype=np.float64)
+        result += np.random.randn(len(result)) * _COMFORT_NOISE_RMS
 
     return np.clip(result, -32768, 32767).astype("<i2").tobytes()
 
@@ -247,6 +268,12 @@ def set_codec_opus(enabled: bool) -> None:
     logging.getLogger(__name__).info(f"[BRIDGE] Codec → {'Opus' if enabled else 'G.711'}")
 
 
+def apply_plc_decay(chunk: bytes, decay: float) -> bytes:
+    """Повторити PCM chunk зі зменшеною амплітудою (PLC при втраті пакетів)."""
+    arr = np.frombuffer(chunk, dtype="<i2").astype(np.float64) * decay
+    return np.clip(arr, -32768, 32767).astype("<i2").tobytes()
+
+
 def enable_noise_profiling() -> None:
     """Увімкнути збір шумового профілю (викликати після greeting)."""
     global _nr_collect_enabled
@@ -256,8 +283,9 @@ def enable_noise_profiling() -> None:
 
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled
+    global _zi_gemini_to_sip, _zi_hp_input, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled
     _zi_gemini_to_sip = None
+    _zi_hp_input = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
     _nr_chunk_count = 0
