@@ -270,13 +270,21 @@ async def handle_tool_call(
                     "message": f"На {requested_date} вільних слотів немає. "
                                f"Доступні дати: {', '.join(dates_map.keys())}",
                 }
-            times_list = ", ".join(s["time"] for s in matched_slots[:10])
-            if len(matched_slots) > 10:
-                times_list += f" та ще {len(matched_slots) - 10} часів"
+            times_list = ", ".join(s["time"] for s in matched_slots[:20])
+            if len(matched_slots) > 20:
+                times_list += f" та ще {len(matched_slots) - 20} часів"
+            last_time = matched_slots[-1]["time"]
             logger.info(f"[TOOL] get_available_slots(date={requested_date}) → {len(matched_slots)} слотів")
             result = {
                 "success": True,
-                "message": f"На {requested_date} є {len(matched_slots)} вільних часів: {times_list}. Запитай пацієнта який час зручніше.",
+                "message": (
+                    f"На {requested_date} є {len(matched_slots)} вільних часів: {times_list}. "
+                    f"Останній доступний час: {last_time}. "
+                    f"ВАЖЛИВО: НЕ кажи часовий діапазон ('з X до Y' або 'до Y') — "
+                    f"перерахуй пацієнту ТОЧНІ часи зі списку. НЕ округляй останній час вгору. "
+                    f"Якщо пацієнт хоче час якого немає в списку — скажи що такого немає і назви найближчий з available_times. "
+                    f"Запитай пацієнта який час зручніше."
+                ),
                 "date": requested_date,
                 "slots": matched_slots,
                 "total_slots": len(matched_slots),
