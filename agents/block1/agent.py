@@ -562,9 +562,8 @@ class Block1Agent:
                                     # Gemini не запитав "Все вірно?" перед переносом.
                                     # Блокуємо — Gemini має спершу озвучити дату+час і дочекатися "так".
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
-                                        if _had_patient_said and _date_slots_fetched[0]:
-                                            # Пацієнт підтвердив ("так/да") після повного вибору дати і часу
-                                            # → одразу дозволяємо, без зайвого блокування
+                                        if _had_patient_said:
+                                            # Пацієнт щойно сказав щось нове → дозволяємо reschedule
                                             _reschedule_state[0] = 2
                                         else:
                                             # Передчасний reschedule: або без відповіді пацієнта,
