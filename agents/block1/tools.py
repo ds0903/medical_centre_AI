@@ -283,11 +283,14 @@ async def handle_tool_call(
         logger.info(
             f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
         )
+        numbered = " ".join(f"{i + 1}) {d['date']}" for i, d in enumerate(date_summaries))
         result = {
             "success": True,
             "message": (
-                f"Є вільні дати для переносу: {dates_list}. "
-                f"Запитай пацієнта на яку дату зручніше. "
+                f"УВАГА: є рівно {len(date_summaries)} вільних дат. "
+                f"У своїй відповіді ОБОВ'ЯЗКОВО назви ВСІ {len(date_summaries)} дат одразу — "
+                f"не скорочуй, не пропускай жодної, не поспішай: {numbered}. "
+                f"Перерахуй їх пацієнту повністю, потім запитай на яку дату зручніше. "
                 f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
             ),
             "available_dates": date_summaries,
