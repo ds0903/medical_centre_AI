@@ -407,9 +407,10 @@ class Block1Agent:
                     # while True перезапускає для наступного turn.
                     while True:
                         turn_had_content = False
-                        turn_had_audio = False  # True якщо в цьому турі AI говорила
-                        turn_audio_bytes = 0    # байти аудіо в цьому турі → для розрахунку затримки
-                        _had_patient_said = False  # True якщо в поточному inner-loop був patient_said
+                        turn_had_audio = False       # True якщо в цьому турі AI говорила
+                        turn_audio_bytes = 0         # байти аудіо в цьому турі → для розрахунку затримки
+                        _turn_audio_played = False   # True якщо аудіо реально відправлено пацієнту (не dropped)
+                        _had_patient_said = False    # True якщо в поточному inner-loop був patient_said
                         # True якщо в цьому турі є get_available_slots(no date) з успішним результатом.
                         # Turn 1 з цим tool call часто галюцинує ("вільних слотів немає").
                         # Глушимо Turn 1 аудіо і дозволяємо Turn 2 (ghost) грати — він правильний.
@@ -435,8 +436,8 @@ class Block1Agent:
                                     _ai_buf.append(sc.output_transcription.text)
                                 if sc.turn_complete:
                                     if _ai_buf:
-                                        # _allow_next_turn: Turn 1 мав get_available_slots → Turn 2 є реальним
-                                        _is_ghost = (_suppress_next_audio[0] and not _had_patient_said) and not _allow_next_turn[0]
+                                        # Ghost = аудіо так і не дійшло до пацієнта в цьому турі
+                                        _is_ghost = not _turn_audio_played
                                         if GEMINI_LOGS:
                                             _tag = "[AI GHOST]" if _is_ghost else "[AI]"
                                             logger.info(f"{_tag} {''.join(_ai_buf)}")
@@ -474,13 +475,15 @@ class Block1Agent:
                                         _suppress_next_audio[0] = True
                                     turn_had_audio = False
                                     turn_audio_bytes = 0
+                                    _turn_audio_played = False  # скидаємо для наступного ghost-туру
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                if _suppress_slots_turn and not _allow_next_turn[0] and not _had_patient_said:
-                                    pass  # Turn 1 галюцинація (без реального мовлення пацієнта) → drop аудіо
+                                if _suppress_slots_turn and not _allow_next_turn[0]:
+                                    pass  # Turn 1 після get_available_slots(no date) → завжди drop, Turn 2 грає замість
                                 elif not _suppress_next_audio[0] or _allow_next_turn[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     await binotel_call.send_audio(resp.data)
+                                    _turn_audio_played = True   # аудіо реально дійшло до пацієнта
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
                                     # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
@@ -649,17 +652,13 @@ class Block1Agent:
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
-                        # _suppress_slots_turn + НЕ _had_patient_said = галюцинаційний тур:
-                        # пацієнт не говорив, але AI автоматично викликав get_available_slots і
-                        # паралельно згенерував аудіо. Глушимо і дозволяємо ghost з датами зіграти.
-                        # Якщо _had_patient_said=True — пацієнт справді говорив і Turn 1 аудіо валідне
-                        # (напр. "Бажаєте перенести?"). Не дозволяємо ghost — він може казати будь-що.
-                        # tools і аудіо можуть бути в РІЗНИХ ітераціях outer while True:
-                        # якщо tools прийшли без аудіо (turn_had_audio=False) → allow_next_turn теж встановлюємо.
-                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn and not _had_patient_said:
-                            _allow_next_turn[0] = True   # ghost з датами проривається крізь guard
-                            _suppress_next_audio[0] = False
-                            logger.debug("[AGENT] get_available_slots (галюцинація) → allow ghost with dates to play")
+                        # _suppress_slots_turn = Turn 1 мав get_available_slots(no date).
+                        # Gemini ЗАВЖДИ галюцинує в Turn 1 (неповні дати, неправильний порядок).
+                        # Turn 2 має правильні дати → глушимо Turn 1 і дозволяємо Turn 2 зіграти.
+                        # Стосується будь-якого Turn 1 — незалежно від того чи говорив пацієнт.
+                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
+                            _allow_next_turn[0] = True   # Turn 2 (правильні дати) проривається крізь suppress
+                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, дозволяємо Turn 2")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
                             # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
