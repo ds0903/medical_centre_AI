@@ -25,7 +25,7 @@ from google.genai import types
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,9 @@ class Block1Agent:
         logger.info(f"  Лікар   : {self.visit['doctor_name']}")
         logger.info(f"  Час     : {self.visit['visit_datetime']}")
         logger.info("=" * 55)
+        if LOG_FILE:
+            from services import call_logger
+            call_logger.start_call(self.visit)
 
         start = time.time()
 
@@ -376,10 +379,14 @@ class Block1Agent:
                                 if sc.output_transcription and sc.output_transcription.text:
                                     _ai_buf.append(sc.output_transcription.text)
                                 if sc.turn_complete:
-                                    if _ai_buf and GEMINI_LOGS:
-                                        _is_ghost_log = _suppress_next_audio[0] and not _had_patient_said
-                                        _tag = "[AI GHOST]" if _is_ghost_log else "[AI]"
-                                        logger.info(f"{_tag} {''.join(_ai_buf)}")
+                                    if _ai_buf:
+                                        _is_ghost = _suppress_next_audio[0] and not _had_patient_said
+                                        if GEMINI_LOGS:
+                                            _tag = "[AI GHOST]" if _is_ghost else "[AI]"
+                                            logger.info(f"{_tag} {''.join(_ai_buf)}")
+                                        if LOG_FILE and not _is_ghost:
+                                            from services import call_logger
+                                            call_logger.log_ai("".join(_ai_buf))
                                     _ai_buf.clear()
                                     if _draining:
                                         # Чекаємо поки AI договорить перед завершенням/передачею
@@ -616,6 +623,9 @@ class Block1Agent:
         self.call_duration = time.time() - start
         result = self.call_result or "no_result"
         logger.info(f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. Результат: {result}")
+        if LOG_FILE:
+            from services import call_logger
+            call_logger.end_call(result, self.call_duration)
         return result
 
     # ------------------------------------------------------------------

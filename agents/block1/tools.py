@@ -12,7 +12,7 @@ from typing import Any
 
 from google.genai import types
 
-from config import GEMINI_LOGS
+from config import GEMINI_LOGS, LOG_FILE
 from services import clinic_api
 
 logger = logging.getLogger(__name__)
@@ -270,8 +270,12 @@ async def handle_tool_call(
 
     if function_name == "patient_said":
         text = args.get("text", "")
-        if GEMINI_LOGS and "[ІНСТРУКЦІЯ" not in text:
-            logger.info(f"[ПАЦІЄНТ] {text}")
+        if "[ІНСТРУКЦІЯ" not in text:
+            if GEMINI_LOGS:
+                logger.info(f"[ПАЦІЄНТ] {text}")
+            if LOG_FILE:
+                from services import call_logger
+                call_logger.log_patient(text)
         return {"success": True}
 
     if function_name == "end_call":

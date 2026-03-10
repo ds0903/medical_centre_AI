@@ -70,3 +70,6 @@ INTERRUPTED_PAUSE_SEC = float(os.getenv("INTERRUPTED_PAUSE_SEC", "1.0"))
 
 # Логування розмови: [ПАЦІЄНТ] і [AI] в лог (true = показувати)
 GEMINI_LOGS = os.getenv("GEMINI_LOGS", "false").lower() == "true"
+
+# Логування дзвінків у файл logs/calls_YYYY-MM-DD.jsonl
+LOG_FILE = os.getenv("LOG_FILE", "false").lower() == "true"
