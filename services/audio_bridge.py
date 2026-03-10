@@ -44,8 +44,9 @@ _LP_SOS = butter(8, 3400 / (24000 / 2), btype="low", output="sos")
 # ---------------------------------------------------------------------------
 _NOISE_FLOOR_RMS = 100    # нижче цього порогу — тиша/шум, не підсилюємо
 _TARGET_RMS_IN   = 3000   # цільовий RMS на вході (16-bit signed, max = 32768)
-_MAX_GAIN_IN     = 8.0    # захист від надмірного підсилення шуму
+_MAX_GAIN_IN     = 5.0    # захист від надмірного підсилення шуму (знижено з 8.0)
 _AGC_ALPHA       = 0.05   # швидкість адаптації (0 = ніколи, 1 = миттєво)
+_NOISE_GATE_RMS  = 250    # soft noise gate: нижче цього — плавне згасання (не підсилюємо фон)
 
 # ---------------------------------------------------------------------------
 # Gemini → SIP: Smooth нормалізація виходу
@@ -78,6 +79,7 @@ _NR_PROP_DECREASE  = 0.75    # наскільки придушувати шум 
 _nr_chunk_count: int = 0
 _nr_profile_buf: list[np.ndarray] = []
 _nr_profile: np.ndarray | None = None  # конкатенований noise profile
+_nr_collect_enabled: bool = False      # True після greeting → збирати шумовий профіль
 
 # VAD для фільтрації профілю: агресивність 2 (достатньо для відокремлення голосу від шуму)
 _profile_vad = webrtcvad.Vad(2)
@@ -123,8 +125,14 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
         arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
         resampled = resample_poly(arr, up=2, down=1)
 
-    # Крок 3: Smooth AGC
+    # Крок 3: Noise gate + Smooth AGC
     rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) else 0.0
+    # Noise gate: плавне згасання низькорівневого сигналу (фон/шум лінії).
+    # Квадратична рампа: RMS 100 → gate 0.16, RMS 200 → gate 0.64, RMS 250 → gate 1.0.
+    if 0 < rms < _NOISE_GATE_RMS:
+        gate = (rms / _NOISE_GATE_RMS) ** 2
+        resampled = resampled * gate
+        rms *= gate
     if rms > _NOISE_FLOOR_RMS:
         # Сигнал — адаптуємо gain до цільового RMS
         target = min(_TARGET_RMS_IN / rms, _MAX_GAIN_IN)
@@ -137,6 +145,9 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
 
     # Noise reduction: stationary spectral gating по профілю шуму лінії
     global _nr_chunk_count, _nr_profile, _nr_profile_buf
+    if not _nr_collect_enabled:
+        # Profiling ще не увімкнено (greeting не завершено) — пропускаємо NR
+        return np.clip(result, -32768, 32767).astype("<i2").tobytes()
     if _nr_chunk_count < _NR_PROFILE_CHUNKS:
         _nr_chunk_count += 1
 
@@ -236,15 +247,23 @@ def set_codec_opus(enabled: bool) -> None:
     logging.getLogger(__name__).info(f"[BRIDGE] Codec → {'Opus' if enabled else 'G.711'}")
 
 
+def enable_noise_profiling() -> None:
+    """Увімкнути збір шумового профілю (викликати після greeting)."""
+    global _nr_collect_enabled
+    _nr_collect_enabled = True
+    _log.debug("[BRIDGE] Noise profiling enabled")
+
+
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done
+    global _zi_gemini_to_sip, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled
     _zi_gemini_to_sip = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
     _nr_chunk_count = 0
     _nr_profile_buf.clear()
     _nr_profile = None
+    _nr_collect_enabled = False
     _use_opus  = False
     _use_alaw  = False
     _sip_input_log_done = False

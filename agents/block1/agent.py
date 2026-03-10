@@ -42,6 +42,16 @@ MAX_SILENCE_COUNT = 3    # після 3 разів — вішаємо трубк
 _VAD_FRAME_BYTES = 320   # 10мс @ 16kHz 16-bit mono = 160 семплів × 2 байти
 
 
+def _calc_echo_gate(audio_bytes: int) -> float:
+    """Адаптивний ехо-гейт: коротша пауза для коротких фраз AI, довша для довгих.
+
+    audio_bytes — скільки байтів аудіо AI вже відіграв у цьому турі (24kHz 16-bit).
+    Результат: 0.3с (фраза <0.5с) ... 1.0с (фраза >2.5с).
+    """
+    audio_sec = audio_bytes / 48000  # 24kHz 16-bit mono = 48000 bytes/sec
+    return min(0.3 + min(audio_sec, 2.5) * 0.28, INTERRUPTED_PAUSE_SEC)
+
+
 def _is_voice_rms(pcm: bytes) -> bool:
     """Fallback RMS VAD."""
     n = len(pcm) // 2
@@ -406,7 +416,7 @@ class Block1Agent:
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
                                     if turn_had_audio and _greeting_done.is_set():
-                                        _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                                        _interrupted_pause_until[0] = time.time() + _calc_echo_gate(turn_audio_bytes)
                                         _schedule_silence_timer(audio_delay=0.0)
                                         _suppress_next_audio[0] = True
                                     turn_had_audio = False
@@ -418,7 +428,7 @@ class Block1Agent:
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
                                     # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
-                                    _interrupted_pause_until[0] = time.time() + INTERRUPTED_PAUSE_SEC
+                                    _interrupted_pause_until[0] = time.time() + _calc_echo_gate(turn_audio_bytes)
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
@@ -535,6 +545,8 @@ class Block1Agent:
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
                 _greeting_done.set()
+                from services.audio_bridge import enable_noise_profiling
+                enable_noise_profiling()
                 _activity[0] = time.time()  # watchdog рахує тільки після привітання
                 logger.info("[AGENT] Стрімінг розпочато")
                 # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
@@ -546,6 +558,8 @@ class Block1Agent:
                     turn_complete=True,
                 )
                 _greeting_done.set()
+                from services.audio_bridge import enable_noise_profiling
+                enable_noise_profiling()
                 _activity[0] = time.time()  # watchdog рахує тільки після привітання
                 logger.info("[AGENT] Стрімінг розпочато")
                 # Таймер стартує після turn_complete в _recv_and_handle
