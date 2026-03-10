@@ -459,12 +459,12 @@ class Block1Agent:
                                     # Ghost/дублікатний тур: suppress=True і patient_said не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
                                     if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0]:
-                                        # Скидаємо _allow_next_turn ТІЛЬКИ коли він був вирішальним
-                                        # (ghost bypass: suppress=True і пацієнт не говорив).
-                                        # Якщо вийшли через _had_patient_said або suppress=False —
-                                        # зберігаємо True щоб ghost з датами міг зіграти далі.
-                                        if _suppress_next_audio[0] and not _had_patient_said:
-                                            _allow_next_turn[0] = False  # ghost bypass використано
+                                        # Скидаємо _allow_next_turn якщо ghost з датами щойно зіграв
+                                        # (allow_next_turn=True і пацієнт не говорив у цьому турі).
+                                        # Якщо вийшли через _had_patient_said — allow_next_turn вже
+                                        # скинуто в patient_said handler (рядок 514).
+                                        if _allow_next_turn[0] and not _had_patient_said:
+                                            _allow_next_turn[0] = False  # ghost bypass використано (ghost з датами зіграв)
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
@@ -520,10 +520,12 @@ class Block1Agent:
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
                                 _schedule_silence_timer(audio_delay=0.0)
-                                # Ghost tool call: suppress=True і patient_said не мав нового тексту.
+                                # Ghost tool call: (suppress=True АБО allow_next_turn=True) і patient_said
+                                # не мав нового тексту. allow_next_turn=True = ми в "ghost з датами" вікні —
+                                # будь-який батч без нового мовлення є ghost (напр. cancel після дублікатного "Ні").
                                 # Надсилаємо порожні відповіді щоб сесія не зависла,
                                 # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
-                                if _suppress_next_audio[0] and not _had_patient_said and not _allow_next_turn[0]:
+                                if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said:
                                     logger.debug("[AGENT] Ghost tool batch — пропускаємо")
                                     await session.send_tool_response(function_responses=[
                                         types.FunctionResponse(
