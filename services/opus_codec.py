@@ -32,8 +32,7 @@ _OPUS_FRAME_DURATION_MS = 20     # 20мс фрейми
 _OPUS_FRAME_SAMPLES     = _OPUS_SAMPLE_RATE * _OPUS_FRAME_DURATION_MS // 1000  # 960 @ 48kHz (encode)
 _OPUS_DECODE_SAMPLES    = _OPUS_DECODE_RATE * _OPUS_FRAME_DURATION_MS // 1000  # 320 @ 16kHz (decode)
 _OPUS_MAX_PACKET        = 4000   # макс розмір Opus пакету (байт)
-_OPUS_BITRATE           = 32000  # 32 kbps — виняткова якість голосу (sweet spot для speech)
-_OPUS_SIGNAL_VOICE      = 3001   # OPUS_SIGNAL_VOICE — увімкнути SILK вокодер для голосу
+_OPUS_BITRATE           = 48000  # 48 kbps — чіткіший голос, HYBRID mode (до 12kHz)
 _OPUS_COMPLEXITY        = 10     # максимальна якість кодування (0–10)
 
 # ---------------------------------------------------------------------------
@@ -58,13 +57,12 @@ def _get_encoder():
         if err.value != 0:
             raise RuntimeError(f"opus_encoder_create failed: {err.value}")
         libopus.opus_encoder_ctl(_encoder, 4002, _OPUS_BITRATE)    # OPUS_SET_BITRATE
-        libopus.opus_encoder_ctl(_encoder, 4024, _OPUS_SIGNAL_VOICE)  # OPUS_SET_SIGNAL → SILK voice
         libopus.opus_encoder_ctl(_encoder, 4010, _OPUS_COMPLEXITY)    # OPUS_SET_COMPLEXITY
         libopus.opus_encoder_ctl(_encoder, 4012, 1)                   # OPUS_SET_INBAND_FEC
         libopus.opus_encoder_ctl(_encoder, 4014, 5)                   # OPUS_SET_PACKET_LOSS_PERC = 5%
         logger.info(
             f"[OPUS] Encoder ініціалізовано ({_OPUS_BITRATE // 1000}kbps, "
-            f"complexity={_OPUS_COMPLEXITY}, SILK voice, FEC=on, loss=5%)"
+            f"complexity={_OPUS_COMPLEXITY}, HYBRID auto, FEC=on, loss=5%)"
         )
     return _encoder
 
