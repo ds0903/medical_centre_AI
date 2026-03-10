@@ -494,6 +494,11 @@ class Block1Agent:
                                 _slots_fetched = False  # True якщо get_available_slots успішно виконано в цьому батчі
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
+                                    # Реальний tool call (не логування) → скидаємо ghost suppression:
+                                    # наступний тур — відповідь на результат інструменту, не дублікат.
+                                    if fc.name != "patient_said":
+                                        _suppress_next_audio[0] = False
+                                        _had_patient_said = True
                                     if fc.name == "transfer_to_operator":
                                         reason = args.get("reason", "")
                                         logger.info(f"[AGENT] transfer_to_operator: {reason}")

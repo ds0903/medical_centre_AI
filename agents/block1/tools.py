@@ -201,9 +201,11 @@ async def handle_tool_call(
         return call_cache[function_name]
 
     if function_name == "get_available_slots":
-        cached = call_cache.get("get_available_slots")
+        requested_date = args.get("date", "").strip()
+        cache_key = f"get_available_slots:{requested_date}" if requested_date else "get_available_slots"
+        cached = call_cache.get(cache_key)
         if cached and time.monotonic() - cached["_ts"] < _SLOTS_CACHE_TTL:
-            logger.warning(f"[TOOL] get_available_slots — кеш (TTL {_SLOTS_CACHE_TTL}с)")
+            logger.warning(f"[TOOL] get_available_slots — кеш '{cache_key}' (TTL {_SLOTS_CACHE_TTL}с)")
             return cached["result"]
 
     logger.info(f"[TOOL] {function_name}({args})")
