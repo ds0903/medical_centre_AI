@@ -229,6 +229,10 @@ class Block1Agent:
             # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
             # 2 = пацієнт відповів після блокування → дозволяємо reschedule
             _reschedule_state = [0]
+            # True якщо get_available_slots(date=...) вже виконано в цьому дзвінку.
+            # Потрібно для розрізнення "пацієнт підтвердив після вибору часу" від
+            # "Gemini намагається reschedule без вибору дати і часу".
+            _date_slots_fetched = [False]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -403,6 +407,10 @@ class Block1Agent:
                         turn_had_audio = False  # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0    # байти аудіо в цьому турі → для розрахунку затримки
                         _had_patient_said = False  # True якщо в поточному inner-loop був patient_said
+                        # True якщо в цьому турі є get_available_slots(no date) з успішним результатом.
+                        # Turn 1 з цим tool call часто галюцинує ("вільних слотів немає").
+                        # Глушимо Turn 1 аудіо і дозволяємо Turn 2 (ghost) грати — він правильний.
+                        _suppress_slots_turn = False
                         _ai_buf.clear()
                         async for resp in session.receive():
                             turn_had_content = True
@@ -457,7 +465,9 @@ class Block1Agent:
                                     turn_audio_bytes = 0
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                if not _suppress_next_audio[0]:
+                                if _suppress_slots_turn:
+                                    pass  # Turn 1 галюцинація з get_available_slots → drop аудіо
+                                elif not _suppress_next_audio[0]:
                                     await binotel_call.send_audio(resp.data)
                                     # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
                                     # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
@@ -535,20 +545,27 @@ class Block1Agent:
                                     # Gemini не запитав "Все вірно?" перед переносом.
                                     # Блокуємо — Gemini має спершу озвучити дату+час і дочекатися "так".
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
-                                        logger.warning("[AGENT] reschedule_visit заблоковано — чекаємо підтвердження від пацієнта")
-                                        _reschedule_state[0] = 1
-                                        _batch.append(types.FunctionResponse(
-                                            id=fc.id, name=fc.name,
-                                            response={
-                                                "success": False,
-                                                "message": (
-                                                    "Перед переносом спершу скажи пацієнту дату і час: "
-                                                    "'Отже, переносимо на [дата] о [час]. Все вірно?' "
-                                                    "і мовчки ЧЕКАЙ відповідь. Тільки після 'так' — виклич reschedule_visit."
-                                                ),
-                                            },
-                                        ))
-                                        continue
+                                        if _had_patient_said and _date_slots_fetched[0]:
+                                            # Пацієнт підтвердив ("так/да") після повного вибору дати і часу
+                                            # → одразу дозволяємо, без зайвого блокування
+                                            _reschedule_state[0] = 2
+                                        else:
+                                            # Передчасний reschedule: або без відповіді пацієнта,
+                                            # або дату/час ще не обирали — блокуємо
+                                            logger.warning("[AGENT] reschedule_visit заблоковано — чекаємо підтвердження від пацієнта")
+                                            _reschedule_state[0] = 1
+                                            _batch.append(types.FunctionResponse(
+                                                id=fc.id, name=fc.name,
+                                                response={
+                                                    "success": False,
+                                                    "message": (
+                                                        "Перед переносом спершу скажи пацієнту дату і час: "
+                                                        "'Отже, переносимо на [дата] о [час]. Все вірно?' "
+                                                        "і мовчки ЧЕКАЙ відповідь. Тільки після 'так' — виклич reschedule_visit."
+                                                    ),
+                                                },
+                                            ))
+                                            continue
                                     # end_call поки чекаємо підтвердження переносу:
                                     # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
                                     if fc.name == "end_call" and _reschedule_state[0] == 1:
@@ -585,6 +602,17 @@ class Block1Agent:
                                     _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
                                     if fc.name == "get_available_slots" and result.get("success"):
                                         _slots_fetched = True
+                                        # Якщо повернуто конкретні слоти для дати — позначаємо:
+                                        # пацієнт вже пройшов вибір дати і часу
+                                        if result.get("date"):
+                                            _date_slots_fetched[0] = True
+                                        else:
+                                            # get_available_slots без дати (Step 1: список дат).
+                                            # Turn 1 часто галюцинує "вільних слотів немає" до того
+                                            # як Gemini інтегрує результат → глушимо Turn 1,
+                                            # Turn 2 (ghost) з правильними датами зіграє замість нього.
+                                            _suppress_slots_turn = True
+                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1 audio")
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
@@ -606,17 +634,24 @@ class Block1Agent:
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
-                            # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
-                            # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
-                            _interrupted_pause_until[0] = max(
-                                _interrupted_pause_until[0],
-                                time.time() + INTERRUPTED_PAUSE_SEC,
-                            )
-                            _schedule_silence_timer(audio_delay=0.0)
-                            # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
-                            # пацієнта — це дублікат, не відтворювати в SIP.
-                            _suppress_next_audio[0] = True
+                            if _suppress_slots_turn:
+                                # Turn 1 аудіо було dropped (галюцинація get_available_slots).
+                                # НЕ ставимо suppress → Turn 2 (ghost) зіграє правильний вміст.
+                                # НЕ ставимо echo gate і таймер тиші — пацієнт ще нічого не чув.
+                                _suppress_next_audio[0] = False
+                                logger.debug("[AGENT] Slots Turn 1 dropped → allow Turn 2 (ghost) to play")
+                            else:
+                                # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
+                                # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
+                                # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
+                                _interrupted_pause_until[0] = max(
+                                    _interrupted_pause_until[0],
+                                    time.time() + INTERRUPTED_PAUSE_SEC,
+                                )
+                                _schedule_silence_timer(audio_delay=0.0)
+                                # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
+                                # пацієнта — це дублікат, не відтворювати в SIP.
+                                _suppress_next_audio[0] = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

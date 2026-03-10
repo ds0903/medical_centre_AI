@@ -65,7 +65,9 @@ TOOLS = [
                     "БЕЗ параметра date: повертає список доступних ДАТ (без конкретних часів). "
                     "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести. "
                     "З параметром date: повертає конкретні СЛОТИ на обрану дату. "
-                    "Викликати ПІСЛЯ того як пацієнт обрав дату."
+                    "Викликати ПІСЛЯ того як пацієнт обрав дату. "
+                    "НЕ викликати повторно якщо слоти для цієї дати вже отримані — "
+                    "пацієнт вже бачив список, одразу виклич reschedule_visit з потрібним slot_id."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
@@ -206,6 +208,19 @@ async def handle_tool_call(
         cached = call_cache.get(cache_key)
         if cached and time.monotonic() - cached["_ts"] < _SLOTS_CACHE_TTL:
             logger.warning(f"[TOOL] get_available_slots — кеш '{cache_key}' (TTL {_SLOTS_CACHE_TTL}с)")
+            if requested_date:
+                # Повторний виклик для вже показаної дати — пацієнт вже бачив ці слоти
+                # і щойно назвав конкретний час. Підказуємо Gemini одразу reschedule.
+                result = {
+                    **cached["result"],
+                    "message": (
+                        "СТОП. Ці слоти вже були показані пацієнту. "
+                        "Пацієнт щойно назвав конкретний час — знайди потрібний slot_id "
+                        "у списку slots[] і ОДРАЗУ виклич reschedule_visit(visit_id=..., slot_id=...). "
+                        "НЕ перераховуй слоти знову. НЕ питай ще раз який час."
+                    ),
+                }
+                return result
             return cached["result"]
 
     logger.info(f"[TOOL] {function_name}({args})")
