@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from agents.block1.agent import Block1Agent
 from config import (
+    CALL_TIMEOUT_SEC,
     DAYS_BEFORE_VISIT,
     DEBUG,
     MAX_CALL_ATTEMPTS,
@@ -133,6 +134,11 @@ async def process_pending_calls() -> None:
 
     _kyiv = ZoneInfo("Europe/Kyiv")
 
+    # Persistent Binotel: стартуємо один раз для всього batch (економить 5-10с на SIP/WS per call)
+    if not DEBUG:
+        from services import binotel as _binotel
+        await _binotel.startup()
+
     passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
 
     for label in passes:
@@ -169,13 +175,18 @@ async def process_pending_calls() -> None:
         if stopped_by_time:
             break
 
+    # Shutdown Binotel після всіх дзвінків
+    if not DEBUG:
+        from services import binotel as _binotel
+        await _binotel.shutdown()
+
     # Архівуємо всі задачі (виконані + ті кому не встигли зателефонувати)
     await _archive_call_tasks()
     logger.info("[CALLS] Обдзвін завершено")
 
 
 async def _process_single_call(task: CallTask) -> None:
-    """Виконати один дзвінок пацієнту."""
+    """Виконати один дзвінок пацієнту (з таймаутом)."""
 
     # Позначаємо як "в процесі"
     async with get_session() as session:
@@ -194,52 +205,70 @@ async def _process_single_call(task: CallTask) -> None:
     }
 
     try:
-        if DEBUG:
-            agent = Block1Agent(visit_context)
-            call_result = await agent.run()
-            call_duration = agent.call_duration
-            agent.cleanup()
-        else:
-            from services import binotel as _binotel
-            # Binotel (SIP + WS) стартує для кожного дзвінка окремо —
-            # щоб уникнути краху pyVoIP re-registration між дзвінками.
-            await _binotel.startup()
-            try:
-                # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
-                agent = Block1Agent(visit_context)
-                call_task = asyncio.create_task(
-                    initiate_call(task.patient_phone, task.patient_name)
-                )
-                warmup_task = asyncio.create_task(agent.warmup())
-
-                binotel_call = await call_task
-
-                if binotel_call is None:
-                    warmup_task.cancel()
-                    try:
-                        await warmup_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                    logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
-                    await _handle_no_answer(task)
-                    return
-
-                await warmup_task
-                try:
-                    call_result = await agent.run(binotel_call)
-                    call_duration = agent.call_duration
-                    agent.cleanup()
-                    await asyncio.sleep(2.0)
-                finally:
-                    await binotel_call.hangup()
-            finally:
-                await _binotel.shutdown()
-
-        await _save_result(task, call_result, call_duration)
-
+        await asyncio.wait_for(
+            _execute_call(task, visit_context),
+            timeout=CALL_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            f"[CALLS] Таймаут дзвінка ({CALL_TIMEOUT_SEC}с): {task.patient_name}"
+        )
+        await _save_error(task, f"Таймаут дзвінка ({CALL_TIMEOUT_SEC}с)")
     except Exception as e:
         logger.error(f"[CALLS] Помилка при дзвінку {task.patient_name}: {e}", exc_info=True)
         await _save_error(task, str(e))
+
+
+async def _execute_call(task: CallTask, visit_context: dict) -> None:
+    """Внутрішня логіка одного дзвінка (обгорнута в таймаут _process_single_call)."""
+    if DEBUG:
+        agent = Block1Agent(visit_context)
+        call_result = await agent.run()
+        call_duration = agent.call_duration
+        agent.cleanup()
+    else:
+        from services import binotel as _binotel
+        await _binotel.ensure_ready()
+
+        # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
+        agent = Block1Agent(visit_context)
+        call_task = asyncio.create_task(
+            initiate_call(task.patient_phone, task.patient_name)
+        )
+        warmup_task = asyncio.create_task(agent.warmup())
+        binotel_call = None
+
+        try:
+            binotel_call = await call_task
+
+            if binotel_call is None:
+                warmup_task.cancel()
+                try:
+                    await warmup_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
+                await _handle_no_answer(task)
+                return
+
+            await warmup_task
+            call_result = await agent.run(binotel_call)
+            call_duration = agent.call_duration
+            agent.cleanup()
+            await asyncio.sleep(2.0)
+        finally:
+            # Cleanup subtasks при таймауті або помилці
+            if not call_task.done():
+                call_task.cancel()
+            if not warmup_task.done():
+                warmup_task.cancel()
+            if binotel_call is not None:
+                try:
+                    await binotel_call.hangup()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    await _save_result(task, call_result, call_duration)
 
 
 # ---------------------------------------------------------------------------

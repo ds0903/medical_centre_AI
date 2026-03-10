@@ -56,6 +56,7 @@ DAYS_BEFORE_VISIT = int(os.getenv("DAYS_BEFORE_VISIT", "1"))
 # Дзвінки
 MAX_CALL_ATTEMPTS = int(os.getenv("MAX_CALL_ATTEMPTS", "3"))
 PAUSE_BETWEEN_CALLS_SEC = int(os.getenv("PAUSE_BETWEEN_CALLS_SEC", "30"))
+CALL_TIMEOUT_SEC = int(os.getenv("CALL_TIMEOUT_SEC", "300"))   # таймаут одного дзвінка (5 хв)
 
 # Silence detection
 SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "5.0"))   # секунд тиші → питаємо

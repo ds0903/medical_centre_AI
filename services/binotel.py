@@ -48,15 +48,45 @@ _sip: Optional[BinotelSipClient] = None
 # ---------------------------------------------------------------------------
 
 
+def is_ready() -> bool:
+    """Перевірити чи SIP та WebSocket з'єднання живі."""
+    if _sip is None or _ws is None:
+        return False
+    if _sip._phone is None:
+        return False
+    if _ws._ws is None or getattr(_ws._ws, 'close_code', None) is not None:
+        return False
+    return True
+
+
+async def ensure_ready() -> None:
+    """Перевірити з'єднання та перепідключитись якщо потрібно."""
+    if DEBUG:
+        return
+    if is_ready():
+        return
+    logger.warning("[BINOTEL] З'єднання втрачено — перепідключення...")
+    await shutdown()
+    await startup()
+
+
 async def startup() -> None:
     """
     Ініціалізувати Binotel сервіси.
-    Викликати один раз при старті production режиму (перед планувальником).
+    Ідемпотентно: якщо вже запущені і здорові — пропускає.
     """
     global _ws, _sip
 
     if DEBUG:
-        return  # В debug режимі Binotel не потрібен
+        return
+
+    # Вже запущено і здорово? Пропускаємо.
+    if is_ready():
+        logger.debug("[BINOTEL] Сервіси вже запущені")
+        return
+
+    # Очистити залишки якщо є
+    await shutdown()
 
     # SIP клієнт — реєструємось як extension
     _sip = BinotelSipClient(
@@ -75,11 +105,20 @@ async def startup() -> None:
 
 
 async def shutdown() -> None:
-    """Зупинити Binotel сервіси."""
+    """Зупинити Binotel сервіси (безпечний для повторного виклику)."""
+    global _ws, _sip
     if _ws:
-        await _ws.disconnect()
+        try:
+            await _ws.disconnect()
+        except Exception:
+            pass
+        _ws = None
     if _sip:
-        _sip.stop()
+        try:
+            _sip.stop()
+        except Exception:
+            pass
+        _sip = None
     logger.info("[BINOTEL] Сервіси зупинено")
 
 
