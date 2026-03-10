@@ -61,14 +61,23 @@ TOOLS = [
             types.FunctionDeclaration(
                 name="get_available_slots",
                 description=(
-                    "Отримати вільні слоти для запису до лікаря. "
-                    "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести візит — "
-                    "ще до того як питати пацієнта про дату. "
-                    "Параметрів не потрібно — лікар відомий з контексту дзвінка."
+                    "Отримати вільні дати або слоти для запису до лікаря. "
+                    "БЕЗ параметра date: повертає список доступних ДАТ (без конкретних часів). "
+                    "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести. "
+                    "З параметром date: повертає конкретні СЛОТИ на обрану дату. "
+                    "Викликати ПІСЛЯ того як пацієнт обрав дату."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
-                    properties={},
+                    properties={
+                        "date": types.Schema(
+                            type="STRING",
+                            description=(
+                                "Дата для отримання слотів (напр. '12 жовтня'). "
+                                "Якщо не вказана — повертає тільки список доступних дат."
+                            ),
+                        ),
+                    },
                 ),
             ),
 
@@ -213,33 +222,74 @@ async def handle_tool_call(
         if not raw:
             return {"success": False, "message": "Вільних слотів немає"}
 
-        # Формуємо структуровану відповідь для Gemini
-        slots = []
-        seen_dates = []
+        # Групуємо слоти по датах
+        dates_map: dict[str, list[dict]] = {}
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
             date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
             time_str = dt.strftime("%H:%M")
             half = _slot_half(dt.hour)
-            slots.append({
+            slot = {
                 "slot_id": str(item["ID"]),
                 "date": date_str,
                 "time": time_str,
                 "half": half,
-            })
-            if date_str not in seen_dates:
-                seen_dates.append(date_str)
+            }
+            dates_map.setdefault(date_str, []).append(slot)
 
-        logger.info(f"[TOOL] get_available_slots → {len(slots)} слотів, дати: {', '.join(seen_dates)}")
-        for s in slots:
-            logger.debug(f"[TOOL]   slot_id={s['slot_id']} | {s['date']} {s['time']} ({s['half']} половина)")
+        requested_date = args.get("date", "").strip()
+
+        if requested_date:
+            # КРОК 2: пацієнт обрав дату → повертаємо слоти тільки за цю дату
+            # Шукаємо дату (нечіткий пошук — "15" матчить "15 жовтня")
+            matched_slots = None
+            for d, slots in dates_map.items():
+                if requested_date in d or d in requested_date:
+                    matched_slots = slots
+                    break
+            if not matched_slots:
+                return {
+                    "success": False,
+                    "message": f"На {requested_date} вільних слотів немає. "
+                               f"Доступні дати: {', '.join(dates_map.keys())}",
+                }
+            times_list = ", ".join(s["time"] for s in matched_slots[:10])
+            if len(matched_slots) > 10:
+                times_list += f" та ще {len(matched_slots) - 10} часів"
+            logger.info(f"[TOOL] get_available_slots(date={requested_date}) → {len(matched_slots)} слотів")
+            result = {
+                "success": True,
+                "message": f"На {requested_date} є {len(matched_slots)} вільних часів: {times_list}. Запитай пацієнта який час зручніше.",
+                "date": requested_date,
+                "slots": matched_slots,
+                "total_slots": len(matched_slots),
+            }
+            # Кешуємо з ключем що включає дату
+            call_cache[f"get_available_slots:{requested_date}"] = {"result": result, "_ts": time.monotonic()}
+            return result
+
+        # КРОК 1: без дати → повертаємо тільки список дат з діапазонами часу
+        date_summaries = []
+        for d, slots in dates_map.items():
+            times = [s["time"] for s in slots]
+            date_summaries.append({
+                "date": d,
+                "time_range": f"{times[0]}–{times[-1]}",
+                "count": len(slots),
+            })
+        dates_list = ", ".join(d["date"] for d in date_summaries)
+        logger.info(
+            f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
+        )
         result = {
             "success": True,
-            "available_dates": seen_dates,          # список дат (не рядок) — Gemini точніше рахує
-            "total_dates": len(seen_dates),         # скільки дат існує — захист від галюцинації меж
-            "first_date": seen_dates[0],            # перша дата
-            "last_date": seen_dates[-1],            # остання дата — заборонено виходити за неї
-            "slots": slots,
+            "message": (
+                f"Є вільні дати для переносу: {dates_list}. "
+                f"Запитай пацієнта на яку дату зручніше. "
+                f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
+            ),
+            "available_dates": date_summaries,
+            "total_dates": len(date_summaries),
         }
         call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
         return result
