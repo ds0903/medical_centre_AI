@@ -399,6 +399,12 @@ class BinotelSipAudio:
             if q is not None:
                 with q.mutex:
                     q.queue.clear()
+        # Очищаємо encode buffer — інакше залишки потраплять у наступну репліку AI
+        try:
+            from services.opus_codec import clear_encode_buffer
+            clear_encode_buffer()
+        except Exception:
+            pass
 
     def hangup(self) -> None:
         """Завершити SIP дзвінок."""

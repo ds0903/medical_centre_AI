@@ -29,7 +29,7 @@ from config import (
     BINOTEL_SIP_USERNAME,
     DEBUG,
 )
-from services.audio_bridge import apply_plc_decay, gemini_output_to_sip, reset_state, sip_to_gemini_input
+from services.audio_bridge import apply_plc_decay, generate_fadeout_g711, gemini_output_to_sip, reset_state, sip_to_gemini_input
 from services import opus_codec as _opus_codec
 from services.binotel_rest import BinotelRestClient
 from services.binotel_sip import BinotelSipAudio, BinotelSipClient
@@ -183,8 +183,14 @@ class BinotelCall:
     # ------------------------------------------------------------------
 
     def flush_audio(self) -> None:
-        """Очистити Opus чергу виводу — AI замовкає миттєво при перериванні."""
+        """Очистити аудіо з fade-out (запобігає кліку при barge-in)."""
         self._sip.flush_audio()
+        # G.711 mode: записуємо коротку рампу від останнього семпла до нуля
+        from services.audio_bridge import _use_opus
+        if not _use_opus:
+            fadeout = generate_fadeout_g711()
+            if fadeout:
+                self._sip.write(fadeout)
 
     async def hangup(self) -> None:
         """Завершити дзвінок (SIP + REST якщо є call_id)."""

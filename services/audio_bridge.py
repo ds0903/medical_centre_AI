@@ -10,7 +10,7 @@ Gemini вхід:   signed 16-bit PCM, 16 kHz, mono
 Gemini вихід:  signed 16-bit PCM, 24 kHz, mono
 
 SIP → Gemini:
-  unsigned-8bit → signed-16bit → resample_poly 8→16kHz → HP 80Hz → Noise gate → AGC → NR + comfort noise
+  unsigned-8bit → signed-16bit → resample_poly 8→16kHz → HP 80Hz → pre-emphasis → Noise gate → AGC → NR + comfort noise
 
 Gemini → SIP:
   Butterworth LP (anti-alias) → decimate 24→8kHz → Smooth norm → G.711 A/µ-law
@@ -73,6 +73,8 @@ _zi_gemini_to_sip: np.ndarray | None = None  # стан LP фільтра
 _zi_hp_input: np.ndarray | None = None       # стан HP фільтра (SIP→Gemini)
 _input_gain  = [1.0]   # поточний gain AGC (список для mutable closure)
 _output_gain = [1.0]   # поточний gain нормалізації виходу
+_pre_emphasis_prev = [0.0]  # pre-emphasis: попередній семпл x[n-1]
+_last_out_sample = [0.0]    # G.711 fade-out: останній семпл виходу
 
 # ---------------------------------------------------------------------------
 # Noise reduction: профіль шуму лінії
@@ -89,6 +91,12 @@ _nr_chunk_count: int = 0
 _nr_profile_buf: list[np.ndarray] = []
 _nr_profile: np.ndarray | None = None  # конкатенований noise profile
 _nr_collect_enabled: bool = False      # True після greeting → збирати шумовий профіль
+
+# Adaptive NR refresh: оновлення профілю під час тривалої тиші
+_NR_REFRESH_SILENCE = 60      # ~1с тиші перед початком оновлення профілю
+_NR_REFRESH_CHUNKS  = 20      # тихих чанків для нового профілю
+_nr_silence_count: int = 0
+_nr_refresh_buf: list[np.ndarray] = []
 
 # VAD для фільтрації профілю: агресивність 2 (достатньо для відокремлення голосу від шуму)
 _profile_vad = webrtcvad.Vad(2)
@@ -140,6 +148,15 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
             _zi_hp_input = sosfilt_zi(_HP_SOS) * resampled[0]
         resampled, _zi_hp_input = sosfilt(_HP_SOS, resampled, zi=_zi_hp_input)
 
+    # Крок 2.7: Pre-emphasis — компенсація телефонної лінії (підсилення високих частот)
+    # H(z) = 1 - 0.97z⁻¹ → ~6 дБ/октаву підсилення → кращі приголосні (с, т, ш, ц)
+    if len(resampled) > 0:
+        pre = np.empty_like(resampled)
+        pre[0] = resampled[0] - 0.97 * _pre_emphasis_prev[0]
+        pre[1:] = resampled[1:] - 0.97 * resampled[:-1]
+        _pre_emphasis_prev[0] = resampled[-1]
+        resampled = pre
+
     # Крок 3: Noise gate + Smooth AGC
     rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) else 0.0
     # Noise gate: плавне згасання низькорівневого сигналу (фон/шум лінії).
@@ -159,7 +176,7 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
     result = resampled * _input_gain[0]
 
     # Noise reduction: stationary spectral gating по профілю шуму лінії
-    global _nr_chunk_count, _nr_profile, _nr_profile_buf
+    global _nr_chunk_count, _nr_profile, _nr_profile_buf, _nr_silence_count, _nr_refresh_buf
     if not _nr_collect_enabled:
         # Profiling ще не увімкнено (greeting не завершено) — пропускаємо NR
         return np.clip(result, -32768, 32767).astype("<i2").tobytes()
@@ -189,6 +206,26 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
                 _log.warning("[BRIDGE] NR profile: 0 тихих фреймів — NR вимкнено для цього дзвінка")
             _nr_profile_buf.clear()
     elif _nr_profile is not None:
+        # Adaptive refresh: оновлюємо NR профіль під час тривалої тиші
+        _refresh_pcm = np.clip(result, -32768, 32767).astype("<i2").tobytes()
+        _is_silent = False
+        if len(_refresh_pcm) == 640:
+            try:
+                _is_silent = not _profile_vad.is_speech(_refresh_pcm, 16000)
+            except Exception:
+                pass
+        if _is_silent:
+            _nr_silence_count += 1
+            if _nr_silence_count >= _NR_REFRESH_SILENCE:
+                _nr_refresh_buf.append(result.copy())
+                if len(_nr_refresh_buf) >= _NR_REFRESH_CHUNKS:
+                    _nr_profile = np.concatenate(_nr_refresh_buf)
+                    _nr_refresh_buf.clear()
+                    _nr_silence_count = 0
+                    _log.debug("[BRIDGE] NR profile оновлено (adaptive refresh)")
+        else:
+            _nr_silence_count = 0
+            _nr_refresh_buf.clear()
         try:
             result = nr.reduce_noise(
                 y=result.astype(np.float32),
@@ -246,6 +283,7 @@ def gemini_output_to_sip(pcm_24khz: bytes) -> bytes:
         _output_gain[0] = (1.0 - _OUT_ALPHA) * _output_gain[0] + _OUT_ALPHA * target
         decimated = decimated * _output_gain[0]
 
+    _last_out_sample[0] = float(decimated[-1]) if len(decimated) else 0.0
     pcm_8khz = np.clip(decimated, -32768, 32767).astype("<i2").tobytes()
 
     # G.711 encoding
@@ -268,6 +306,19 @@ def set_codec_opus(enabled: bool) -> None:
     logging.getLogger(__name__).info(f"[BRIDGE] Codec → {'Opus' if enabled else 'G.711'}")
 
 
+def generate_fadeout_g711(fade_ms: int = 10) -> bytes:
+    """G.711 fade-out від останнього семпла до нуля (запобігає кліку при barge-in)."""
+    samples = int(8000 * fade_ms / 1000)  # 8kHz
+    if abs(_last_out_sample[0]) < 10:
+        return b""  # вже біля нуля — клік не буде
+    ramp = np.linspace(_last_out_sample[0], 0.0, samples)
+    pcm = np.clip(ramp, -32768, 32767).astype("<i2").tobytes()
+    _last_out_sample[0] = 0.0
+    if _use_alaw:
+        return audioop.lin2alaw(pcm, 2)
+    return audioop.lin2ulaw(pcm, 2)
+
+
 def apply_plc_decay(chunk: bytes, decay: float) -> bytes:
     """Повторити PCM chunk зі зменшеною амплітудою (PLC при втраті пакетів)."""
     arr = np.frombuffer(chunk, dtype="<i2").astype(np.float64) * decay
@@ -283,15 +334,19 @@ def enable_noise_profiling() -> None:
 
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _zi_hp_input, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled
+    global _zi_gemini_to_sip, _zi_hp_input, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled, _nr_silence_count, _nr_refresh_buf
     _zi_gemini_to_sip = None
     _zi_hp_input = None
     _input_gain[0]  = 1.0
     _output_gain[0] = 1.0
+    _pre_emphasis_prev[0] = 0.0
+    _last_out_sample[0] = 0.0
     _nr_chunk_count = 0
     _nr_profile_buf.clear()
     _nr_profile = None
     _nr_collect_enabled = False
+    _nr_silence_count = 0
+    _nr_refresh_buf.clear()
     _use_opus  = False
     _use_alaw  = False
     _sip_input_log_done = False

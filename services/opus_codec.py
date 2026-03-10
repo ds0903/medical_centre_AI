@@ -137,6 +137,12 @@ def decode(opus_bytes: bytes) -> bytes:
     return np.ctypeslib.as_array(pcm_ct[:n]).astype("<i2").tobytes()
 
 
+def clear_encode_buffer() -> None:
+    """Очистити буфер енкодера (при barge-in, щоб старе аудіо не потрапило в наступну репліку)."""
+    global _encode_buf
+    _encode_buf.clear()
+
+
 def reset() -> None:
     """Скинути стан encoder/decoder та буфер між дзвінками."""
     global _encoder, _decoder, _encode_buf
