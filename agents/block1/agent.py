@@ -332,6 +332,10 @@ class Block1Agent:
 
             async def _send_patient_audio() -> None:
                 _vad_buf = bytearray()  # буфер webrtcvad (потребує фіксовані 10мс = 320 байт)
+                # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
+                _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
+                _NOISE_ALPHA = 0.03    # швидкість адаптації (~30 chunks для стабілізації)
+                _SNR_RATIO = 2.5       # мін. SNR: голос повинен бути в 2.5x гучніше фону
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
@@ -354,6 +358,22 @@ class Block1Agent:
                                 pass
                     else:
                         _has_voice = _is_voice_rms(chunk)
+                    # Adaptive SNR check: навіть якщо VAD каже "голос", перевіряємо
+                    # чи RMS достатньо вищий за фоновий шум. В шумному оточенні
+                    # (вулиця, кафе) це запобігає хибним спрацюванням.
+                    _n_s = len(chunk) // 2
+                    if _n_s > 0:
+                        _samps = struct.unpack(f"<{_n_s}h", chunk[:_n_s * 2])
+                        _chunk_rms = math.sqrt(sum(s * s for s in _samps) / _n_s)
+                    else:
+                        _chunk_rms = 0.0
+                    if not _has_voice:
+                        # Тиша — плавно оновлюємо noise floor
+                        _noise_rms[0] += _NOISE_ALPHA * (_chunk_rms - _noise_rms[0])
+                    elif _noise_rms[0] > 50 and _chunk_rms < _noise_rms[0] * _SNR_RATIO:
+                        # VAD каже "голос" але SNR занизький → фоновий шум, не мова
+                        _has_voice = False
+                        _noise_rms[0] += _NOISE_ALPHA * (_chunk_rms - _noise_rms[0])
                     if _has_voice:
                         _patient_spoke.set()
                         _patient_ever_spoke[0] = True
