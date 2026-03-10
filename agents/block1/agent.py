@@ -224,6 +224,11 @@ class Block1Agent:
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
+            # Стан підтвердження переносу:
+            # 0 = reschedule ще не викликався
+            # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
+            # 2 = пацієнт відповів після блокування → дозволяємо reschedule
+            _reschedule_state = [0]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -482,6 +487,9 @@ class Block1Agent:
                                             _suppress_next_audio[0] = False
                                             _had_patient_said = True
                                             _last_patient_said_text[0] = _ps_text
+                                            # Пацієнт відповів після блокування reschedule → дозволяємо
+                                            if _reschedule_state[0] == 1:
+                                                _reschedule_state[0] = 2
                                         break
                                 _interrupted_pause_until[0] = time.time() + 10.0
                                 _patient_spoke.set()
@@ -494,11 +502,12 @@ class Block1Agent:
                                 _slots_fetched = False  # True якщо get_available_slots успішно виконано в цьому батчі
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
-                                    # Реальний tool call (не логування) → скидаємо ghost suppression:
-                                    # наступний тур — відповідь на результат інструменту, не дублікат.
-                                    if fc.name != "patient_said":
+                                    # Скидаємо suppress для реальних tool calls ТІЛЬКИ якщо
+                                    # patient_said вже підтвердив нове мовлення пацієнта.
+                                    # Без цієї перевірки ghost turns з tool calls (напр.
+                                    # повторний get_available_slots) обходять suppress.
+                                    if fc.name != "patient_said" and _had_patient_said:
                                         _suppress_next_audio[0] = False
-                                        _had_patient_said = True
                                     if fc.name == "transfer_to_operator":
                                         reason = args.get("reason", "")
                                         logger.info(f"[AGENT] transfer_to_operator: {reason}")
@@ -513,17 +522,30 @@ class Block1Agent:
                                     # reschedule_visit в одному батчі з patient_said = без підтвердження:
                                     # Gemini не запитав "Все вірно?" перед переносом.
                                     # Блокуємо — Gemini має спершу озвучити дату+час і дочекатися "так".
-                                    if fc.name == "reschedule_visit" and _had_patient_said:
-                                        logger.warning("[AGENT] reschedule_visit заблоковано — немає фінального підтвердження від пацієнта")
+                                    if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
+                                        logger.warning("[AGENT] reschedule_visit заблоковано — чекаємо підтвердження від пацієнта")
+                                        _reschedule_state[0] = 1
                                         _batch.append(types.FunctionResponse(
                                             id=fc.id, name=fc.name,
                                             response={
                                                 "success": False,
                                                 "message": (
-                                                    "ЗАБОРОНЕНО переносити без підтвердження. "
-                                                    "Спершу скажи пацієнту: 'Отже, переносимо на [дата] о [час]. Все вірно?' "
-                                                    "і ЧЕКАЙ відповідь. Тільки після явного 'так' — виклич reschedule_visit."
+                                                    "Перед переносом спершу скажи пацієнту дату і час: "
+                                                    "'Отже, переносимо на [дата] о [час]. Все вірно?' "
+                                                    "і мовчки ЧЕКАЙ відповідь. Тільки після 'так' — виклич reschedule_visit."
                                                 ),
+                                            },
+                                        ))
+                                        continue
+                                    # end_call поки чекаємо підтвердження переносу:
+                                    # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
+                                    if fc.name == "end_call" and _reschedule_state[0] == 1:
+                                        logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={
+                                                "success": False,
+                                                "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
                                             },
                                         ))
                                         continue
