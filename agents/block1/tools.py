@@ -285,13 +285,14 @@ async def handle_tool_call(
             call_cache[f"get_available_slots:{requested_date}"] = {"result": result, "_ts": time.monotonic()}
             return result
 
-        # КРОК 1: без дати → повертаємо тільки список дат з діапазонами часу
+        # КРОК 1: без дати → повертаємо тільки список дат (БЕЗ часових діапазонів!)
+        # НЕ передаємо time_range — AI округлює діапазони і вводить пацієнта в оману
+        # (каже "з 9 до 13" а реально 9:20–12:30, або "на 9" а є тільки 9:20).
+        # Точні часи покажемо в Кроці 2 коли пацієнт обере дату.
         date_summaries = []
         for d, slots in dates_map.items():
-            times = [s["time"] for s in slots]
             date_summaries.append({
                 "date": d,
-                "time_range": f"{times[0]}–{times[-1]}",
                 "count": len(slots),
             })
         dates_list = ", ".join(d["date"] for d in date_summaries)
@@ -305,7 +306,9 @@ async def handle_tool_call(
                 f"УВАГА: є рівно {len(date_summaries)} вільних дат. "
                 f"У своїй відповіді ОБОВ'ЯЗКОВО назви ВСІ {len(date_summaries)} дат одразу — "
                 f"не скорочуй, не пропускай жодної, не поспішай: {numbered}. "
-                f"Перерахуй їх пацієнту повністю, потім запитай на яку дату зручніше. "
+                f"НЕ ЗГАДУЙ конкретні часи зараз — тільки назви дати і кількість вільних місць. "
+                f"Точні часи буде показано після того як пацієнт обере дату. "
+                f"Перерахуй дати пацієнту повністю, потім запитай на яку дату зручніше. "
                 f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
             ),
             "available_dates": date_summaries,
