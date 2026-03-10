@@ -476,8 +476,8 @@ class Block1Agent:
                                     turn_audio_bytes = 0
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                if _suppress_slots_turn and not _allow_next_turn[0]:
-                                    pass  # Turn 1 галюцинація (без bypass) → drop аудіо
+                                if _suppress_slots_turn and not _allow_next_turn[0] and not _had_patient_said:
+                                    pass  # Turn 1 галюцинація (без реального мовлення пацієнта) → drop аудіо
                                 elif not _suppress_next_audio[0] or _allow_next_turn[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     await binotel_call.send_audio(resp.data)
@@ -650,15 +650,18 @@ class Block1Agent:
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
-                        # _suppress_slots_turn перевіряємо БЕЗ turn_had_audio:
-                        # tool calls і аудіо можуть бути в РІЗНИХ ітераціях outer while True.
-                        # Якщо tools прийшли без аудіо (turn_had_audio=False) — allow_next_turn
-                        # все одно треба встановити щоб ghost з датами зіграв у наступній ітерації.
-                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
+                        # _suppress_slots_turn + НЕ _had_patient_said = галюцинаційний тур:
+                        # пацієнт не говорив, але AI автоматично викликав get_available_slots і
+                        # паралельно згенерував аудіо. Глушимо і дозволяємо ghost з датами зіграти.
+                        # Якщо _had_patient_said=True — пацієнт справді говорив і Turn 1 аудіо валідне
+                        # (напр. "Бажаєте перенести?"). Не дозволяємо ghost — він може казати будь-що.
+                        # tools і аудіо можуть бути в РІЗНИХ ітераціях outer while True:
+                        # якщо tools прийшли без аудіо (turn_had_audio=False) → allow_next_turn теж встановлюємо.
+                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn and not _had_patient_said:
                             _allow_next_turn[0] = True   # ghost з датами проривається крізь guard
                             _suppress_next_audio[0] = False
-                            logger.debug("[AGENT] get_available_slots turn → allow ghost with dates to play")
-                        if not _draining and _greeting_done.is_set() and turn_had_audio and not _suppress_slots_turn:
+                            logger.debug("[AGENT] get_available_slots (галюцинація) → allow ghost with dates to play")
+                        if not _draining and _greeting_done.is_set() and turn_had_audio:
                             # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
                             # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
                             # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
