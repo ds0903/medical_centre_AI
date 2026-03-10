@@ -233,6 +233,9 @@ class Block1Agent:
             # Потрібно для розрізнення "пацієнт підтвердив після вибору часу" від
             # "Gemini намагається reschedule без вибору дати і часу".
             _date_slots_fetched = [False]
+            # True → наступний ghost тур має грати як реальний (після get_available_slots без дати).
+            # Встановлюється в post-loop Turn 1, скидається коли Turn 2 проривається.
+            _allow_next_turn = [False]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -432,7 +435,8 @@ class Block1Agent:
                                     _ai_buf.append(sc.output_transcription.text)
                                 if sc.turn_complete:
                                     if _ai_buf:
-                                        _is_ghost = _suppress_next_audio[0] and not _had_patient_said
+                                        # _allow_next_turn: Turn 1 мав get_available_slots → Turn 2 є реальним
+                                        _is_ghost = (_suppress_next_audio[0] and not _had_patient_said) and not _allow_next_turn[0]
                                         if GEMINI_LOGS:
                                             _tag = "[AI GHOST]" if _is_ghost else "[AI]"
                                             logger.info(f"{_tag} {''.join(_ai_buf)}")
@@ -453,7 +457,9 @@ class Block1Agent:
                                         continue
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був patient_said.
                                     # Ghost/дублікатний тур: suppress=True і patient_said не було.
-                                    if (not _suppress_next_audio[0]) or _had_patient_said:
+                                    # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
+                                    if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0]:
+                                        _allow_next_turn[0] = False  # використали одноразово
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
@@ -508,7 +514,7 @@ class Block1Agent:
                                 # Ghost tool call: suppress=True і patient_said не мав нового тексту.
                                 # Надсилаємо порожні відповіді щоб сесія не зависла,
                                 # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
-                                if _suppress_next_audio[0] and not _had_patient_said:
+                                if _suppress_next_audio[0] and not _had_patient_said and not _allow_next_turn[0]:
                                     logger.debug("[AGENT] Ghost tool batch — пропускаємо")
                                     await session.send_tool_response(function_responses=[
                                         types.FunctionResponse(
@@ -638,6 +644,7 @@ class Block1Agent:
                                 # Turn 1 аудіо було dropped (галюцинація get_available_slots).
                                 # НЕ ставимо suppress → Turn 2 (ghost) зіграє правильний вміст.
                                 # НЕ ставимо echo gate і таймер тиші — пацієнт ще нічого не чув.
+                                _allow_next_turn[0] = True   # Turn 2 проривається крізь ghost-guard
                                 _suppress_next_audio[0] = False
                                 logger.debug("[AGENT] Slots Turn 1 dropped → allow Turn 2 (ghost) to play")
                             else:
