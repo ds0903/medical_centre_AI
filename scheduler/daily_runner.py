@@ -268,6 +268,10 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+    # no_answer (one-way audio / пацієнт мовчить) → scheduler зробить retry
+    if call_result == "no_answer":
+        await _handle_no_answer(task)
+        return
     await _save_result(task, call_result, call_duration)
 
 

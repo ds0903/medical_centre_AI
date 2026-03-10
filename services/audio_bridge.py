@@ -148,14 +148,14 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
             _zi_hp_input = sosfilt_zi(_HP_SOS) * resampled[0]
         resampled, _zi_hp_input = sosfilt(_HP_SOS, resampled, zi=_zi_hp_input)
 
-    # Крок 2.7: Pre-emphasis — компенсація телефонної лінії (підсилення високих частот)
-    # H(z) = 1 - 0.97z⁻¹ → ~6 дБ/октаву підсилення → кращі приголосні (с, т, ш, ц)
-    if len(resampled) > 0:
-        pre = np.empty_like(resampled)
-        pre[0] = resampled[0] - 0.97 * _pre_emphasis_prev[0]
-        pre[1:] = resampled[1:] - 0.97 * resampled[:-1]
-        _pre_emphasis_prev[0] = resampled[-1]
-        resampled = pre
+    # Крок 2.7: Pre-emphasis ВИМКНЕНО — Gemini натренований на природну мову,
+    # pre-emphasis спотворює спектр і погіршує розпізнавання (напр. "бажаю" → "вашає").
+    # if len(resampled) > 0:
+    #     pre = np.empty_like(resampled)
+    #     pre[0] = resampled[0] - 0.97 * _pre_emphasis_prev[0]
+    #     pre[1:] = resampled[1:] - 0.97 * resampled[:-1]
+    #     _pre_emphasis_prev[0] = resampled[-1]
+    #     resampled = pre
 
     # Крок 3: Noise gate + Smooth AGC
     rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) else 0.0

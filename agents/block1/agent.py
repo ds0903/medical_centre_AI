@@ -223,6 +223,7 @@ class Block1Agent:
             # тому що ghost тури скидають suppress повторним викликом того самого тексту.
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
+            _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -237,6 +238,13 @@ class Block1Agent:
                         return
                     _silence_count += 1
                     logger.info(f"[AGENT] Тиша {_silence_count}/{MAX_SILENCE_COUNT}")
+                    # One-way audio: після 2 раундів тиші без жодного голосу від пацієнта —
+                    # SIP з'єднання ймовірно одностороннє. Завершуємо → scheduler зробить retry.
+                    if _silence_count >= 2 and not _patient_ever_spoke[0]:
+                        logger.warning("[AGENT] One-way audio: жодного голосу від пацієнта — завершуємо")
+                        self.call_result = "no_answer"
+                        self._end_event.set()
+                        return
                     if _silence_count >= MAX_SILENCE_COUNT:
                         logger.info("[AGENT] Тиша 3 рази — завершуємо дзвінок")
                         self.call_result = "no_answer"
@@ -348,6 +356,7 @@ class Block1Agent:
                         _has_voice = _is_voice_rms(chunk)
                     if _has_voice:
                         _patient_spoke.set()
+                        _patient_ever_spoke[0] = True
                         _activity[0] = time.time()
                         # НЕ скидаємо _suppress_next_audio тут — тільки patient_said tool call скидає.
                         # Інакше VAD скидає suppress раніше ніж приходить patient_said,
@@ -489,7 +498,14 @@ class Block1Agent:
                                         result = await handle_tool_call(fc.name, args, self.visit, _call_cache)
                                     except Exception as tool_err:
                                         logger.error(f"[AGENT] Tool {fc.name} помилка: {tool_err!r}")
-                                        result = {"success": True}
+                                        result = {
+                                            "success": False,
+                                            "error": (
+                                                "Технічна помилка при виконанні операції. "
+                                                "Скажи пацієнту що сталась тимчасова технічна проблема "
+                                                "і запропонуй зателефонувати в клініку для вирішення питання."
+                                            ),
+                                        }
                                     _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
                                     if fc.name == "get_available_slots" and result.get("success"):
                                         _slots_fetched = True

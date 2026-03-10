@@ -50,6 +50,14 @@ class BinotelWebSocket:
 
     async def connect(self) -> None:
         """Підключитись до Binotel WebSocket та авторизуватись."""
+        await self._do_connect()
+        self._listener_task = asyncio.create_task(
+            self._listen(), name="binotel_ws_listener"
+        )
+        logger.info("[WS] Binotel WebSocket підключено та авторизовано")
+
+    async def _do_connect(self) -> None:
+        """Встановити WebSocket з'єднання та авторизуватись (без listener)."""
         self._ws = await websockets.connect(
             BINOTEL_WS_URL,
             ping_interval=30,
@@ -69,11 +77,6 @@ class BinotelWebSocket:
             auth_resp = await asyncio.wait_for(self._ws.recv(), timeout=10)
             logger.debug(f"[WS] Auth response: {auth_resp}")
 
-        self._listener_task = asyncio.create_task(
-            self._listen(), name="binotel_ws_listener"
-        )
-        logger.info("[WS] Binotel WebSocket підключено та авторизовано")
-
     async def disconnect(self) -> None:
         """Відключитись від WebSocket."""
         if self._listener_task and not self._listener_task.done():
@@ -88,23 +91,35 @@ class BinotelWebSocket:
     # ------------------------------------------------------------------
 
     async def _listen(self) -> None:
-        """Нескінченний цикл прийому подій від Binotel."""
-        try:
-            async for raw in self._ws:
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.debug(f"[WS] Не JSON: {raw[:100]}")
-                    continue
+        """Нескінченний цикл прийому подій від Binotel з авто-реконнектом."""
+        backoff = 1
+        while True:
+            try:
+                async for raw in self._ws:
+                    backoff = 1  # успішне повідомлення — скидаємо backoff
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        logger.debug(f"[WS] Не JSON: {raw[:100]}")
+                        continue
+                    self._handle_event(data)
 
-                self._handle_event(data)
+            except asyncio.CancelledError:
+                return  # graceful shutdown — не реконнектимось
+            except ConnectionClosed as e:
+                logger.warning(f"[WS] З'єднання закрито: {e}")
+            except Exception as e:
+                logger.error(f"[WS] Помилка слухача: {e}", exc_info=True)
 
-        except ConnectionClosed as e:
-            logger.warning(f"[WS] З'єднання закрито: {e}")
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"[WS] Помилка слухача: {e}", exc_info=True)
+            # Авто-реконнект з exponential backoff (1с → 2с → 4с → ... → max 30с)
+            logger.info(f"[WS] Перепідключення через {backoff}с...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+            try:
+                await self._do_connect()
+                logger.info("[WS] Binotel WebSocket перепідключено")
+            except Exception as e:
+                logger.error(f"[WS] Помилка перепідключення: {e}")
 
     def _handle_event(self, data: dict) -> None:
         """Обробити одну подію від Binotel."""

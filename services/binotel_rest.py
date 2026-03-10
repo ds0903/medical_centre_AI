@@ -19,16 +19,20 @@ logger = logging.getLogger(__name__)
 class BinotelRestClient:
     """Низькорівневий HTTP клієнт до Binotel REST API."""
 
-    async def send_request(self, endpoint: str, params: dict) -> dict:
+    async def send_request(self, endpoint: str, params: dict, _retries: int = 3) -> dict:
         """
-        Відправити POST запит до Binotel API.
+        Відправити POST запит до Binotel API з retry логікою.
 
         Args:
             endpoint: шлях без версії, напр. "calls/internal-number-to-external-number"
             params:   параметри запиту (без key/secret — вони додаються автоматично)
+            _retries: кількість спроб (default 3)
 
         Returns:
             dict з відповіддю. Поле "status" == "success" або "error".
+
+        Retry: мережеві помилки та 5xx з exponential backoff (1с, 2с).
+        Не ретраїть 4xx (клієнтські помилки).
         """
         payload = {
             "key": BINOTEL_API_KEY,
@@ -37,15 +41,47 @@ class BinotelRestClient:
         }
         url = f"{BINOTEL_API_BASE}/{endpoint}.json"
 
-        async with aiohttp.ClientSession() as http:
-            async with http.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                resp.raise_for_status()
-                return await resp.json(content_type=None)
+        last_error: Exception | None = None
+        for attempt in range(1, _retries + 1):
+            try:
+                async with aiohttp.ClientSession() as http:
+                    async with http.post(
+                        url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        if resp.status >= 500 and attempt < _retries:
+                            wait = 2 ** (attempt - 1)
+                            logger.warning(
+                                f"[BINOTEL REST] {endpoint} сервер {resp.status} "
+                                f"(спроба {attempt}/{_retries}). Retry через {wait}с"
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        resp.raise_for_status()
+                        return await resp.json(content_type=None)
+            except (
+                aiohttp.ClientConnectionError,
+                aiohttp.ServerDisconnectedError,
+                asyncio.TimeoutError,
+                OSError,
+            ) as e:
+                last_error = e
+                if attempt < _retries:
+                    wait = 2 ** (attempt - 1)
+                    logger.warning(
+                        f"[BINOTEL REST] {endpoint} мережева помилка "
+                        f"(спроба {attempt}/{_retries}): {e}. Retry через {wait}с"
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(
+                        f"[BINOTEL REST] {endpoint} провалено після {_retries} спроб: {e}"
+                    )
+                    raise
+
+        raise last_error  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # Статус extension
