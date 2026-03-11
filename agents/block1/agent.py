@@ -566,9 +566,6 @@ class Block1Agent:
                                         for fc in resp.tool_call.function_calls
                                     ])
                                     continue
-                                # Реальний батч — ставимо echo gate (пацієнт щойно говорив,
-                                # AI зараз відповість → блокуємо стале аудіо поки AI не заговорить).
-                                _interrupted_pause_until[0] = time.time() + 10.0
                                 # Збираємо всі відповіді в батч — надсилаємо одним send_tool_response,
                                 # щоб Gemini не генерував проміжні turn-и між tool calls.
                                 _batch: list[types.FunctionResponse] = []
