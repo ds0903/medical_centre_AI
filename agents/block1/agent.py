@@ -494,8 +494,13 @@ class Block1Agent:
                                             else:
                                                 logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
                                                 await asyncio.sleep(1.0)
-                                            return
-                                        continue
+                                        else:
+                                            # end_call прийшов без аудіо в цьому турі — прощання
+                                            # вже прозвучало в попередньому турі (напр. AI сказав
+                                            # "До побачення!" до cancel_visit, потім end_call окремо).
+                                            # Виходимо одразу — інакше recv_task чекає Turn C якого немає → 15с.
+                                            logger.info("[AGENT] end_call без аудіо — прощання вже прозвучало")
+                                        return
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був input_transcription.
                                     # Ghost/дублікатний тур: suppress=True і транскрипції не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
