@@ -962,10 +962,44 @@ class Block1Agent:
             self._warmup_time = time.time()  # для перевірки стану сесії в run_production
             _warmup_cm = None  # не закривати в finally
         except Exception as e:
-            logger.warning(f"[AGENT] Warmup помилка: {e} — запустимо звичайний шлях")
+            logger.warning(f"[AGENT] Warmup помилка: {e} — retry через 1с...")
             self._greeting_buffer = []
             self._warmup_session = None
             self._warmup_cm = None
+            if _warmup_cm is not None:
+                try:
+                    await _warmup_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                _warmup_cm = None
+            # Retry — у нас є ще ~10-20с поки пацієнт чує гудки
+            await asyncio.sleep(1)
+            try:
+                _warmup_cm = self.client.aio.live.connect(
+                    model=GEMINI_MODEL,
+                    config=self._build_config(),
+                )
+                warmup_session = await _warmup_cm.__aenter__()
+                await warmup_session.send_client_content(
+                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
+                    turn_complete=True,
+                )
+                async for resp in warmup_session.receive():
+                    if resp.data:
+                        self._greeting_buffer.append(resp.data)
+                        self._greeting_duration += len(resp.data) / 48000
+                    if resp.server_content and resp.server_content.turn_complete:
+                        break
+                self._warmup_cm = _warmup_cm
+                self._warmup_session = warmup_session
+                self._warmup_time = time.time()
+                _warmup_cm = None
+                logger.info(f"[AGENT] Warmup retry успішний: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
+            except Exception as e2:
+                logger.warning(f"[AGENT] Warmup retry також провалився: {e2} — cold path")
+                self._greeting_buffer = []
+                self._warmup_session = None
+                self._warmup_cm = None
         finally:
             if _warmup_cm is not None:  # закриваємо тільки якщо не збережено
                 try:
