@@ -522,6 +522,7 @@ class BinotelSipClient:
                         self._phone.stop()
                     except Exception:
                         pass
+                    self._phone = None  # is_ready() одразу поверне False → швидке виявлення збою
 
             self._phone.sip.fatalCallback = _safe_fatal
 

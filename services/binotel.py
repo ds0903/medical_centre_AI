@@ -344,8 +344,36 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
         logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
         return None
 
-    # Крок 4: Чекаємо INVITE та відповідаємо на нього
-    sip_audio = await sip_wait_task
+    # Крок 4: Чекаємо INVITE та відповідаємо на нього.
+    # Якщо SIP впав (fatalCallback → _phone=None → is_ready()=False) під час очікування
+    # — не чекаємо 50с, скасовуємо одразу і повертаємо None щоб caller міг перезапустити.
+    async def _sip_dead_monitor():
+        while True:
+            await asyncio.sleep(0.5)
+            if not is_ready():
+                return  # SIP впав
+
+    _sip_monitor = asyncio.create_task(_sip_dead_monitor())
+    done, _ = await asyncio.wait(
+        {sip_wait_task, _sip_monitor},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    _sip_monitor.cancel()
+    if sip_wait_task not in done:
+        # SIP monitor спрацював раніше — SIP збій
+        sip_wait_task.cancel()
+        try:
+            await sip_wait_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        logger.warning("[BINOTEL] SIP збій під час очікування INVITE — скасовуємо дзвінок")
+        if general_call_id:
+            try:
+                await _rest.hangup_call(general_call_id)
+            except Exception:
+                pass
+        return None
+    sip_audio = sip_wait_task.result()
     if sip_audio is None:
         logger.warning(f"[BINOTEL] SIP extension не отримав дзвінок від Binotel")
         if general_call_id:

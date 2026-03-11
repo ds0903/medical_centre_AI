@@ -477,10 +477,13 @@ class Block1Agent:
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
+                                    # НЕ встановлюємо echo gate: ghost аудіо не відтворювалось →
+                                    # луни немає → блокувати пацієнта не треба.
+                                    # Без цього виправлення: turn_had_audio=True (бо Gemini надіслав аудіо)
+                                    # → gate блокував _send_patient_audio → Gemini не чув пацієнта
+                                    # → генерував ще ghost → repeat ("по 3 рази повторювати" баг).
                                     if turn_had_audio and _greeting_done.is_set():
-                                        _interrupted_pause_until[0] = time.time() + _calc_echo_gate(turn_audio_bytes)
                                         _schedule_silence_timer(audio_delay=0.0)
-                                        _suppress_next_audio[0] = True
                                     turn_had_audio = False
                                     turn_audio_bytes = 0
                                     _turn_audio_played = False  # скидаємо для наступного ghost-туру
