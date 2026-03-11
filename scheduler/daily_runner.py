@@ -134,11 +134,6 @@ async def process_pending_calls() -> None:
 
     _kyiv = ZoneInfo("Europe/Kyiv")
 
-    # Persistent Binotel: стартуємо один раз для всього batch (економить 5-10с на SIP/WS per call)
-    if not DEBUG:
-        from services import binotel as _binotel
-        await _binotel.startup()
-
     passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
 
     for label in passes:
@@ -228,7 +223,9 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
         agent.cleanup()
     else:
         from services import binotel as _binotel
-        await _binotel.ensure_ready()
+        # Повний рестарт перед кожним дзвінком — extension одразу онлайн, warmup завжди свіжий
+        await _binotel.shutdown()
+        await _binotel.startup()
 
         # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
         agent = Block1Agent(visit_context)
@@ -247,33 +244,9 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
                     await warmup_task
                 except (asyncio.CancelledError, Exception):
                     pass
-                # SIP збій (fatalCallback) чи пацієнт не відповів?
-                # Якщо SIP не готовий — це технічний збій, не вина пацієнта.
-                # Перезапускаємо SIP і робимо одну негайну повторну спробу
-                # БЕЗ зарахування як "no_answer" (attempt вже збільшено вище).
-                if not _binotel.is_ready():
-                    logger.warning(
-                        f"[CALLS] SIP збій → перезапуск і повторна спроба: {task.patient_name}"
-                    )
-                    await _binotel.ensure_ready()
-                    warmup_task = asyncio.create_task(agent.warmup())
-                    call_task = asyncio.create_task(
-                        initiate_call(task.patient_phone, task.patient_name)
-                    )
-                    binotel_call = await call_task
-                    if binotel_call is not None:
-                        await warmup_task
-                    else:
-                        warmup_task.cancel()
-                        try:
-                            await warmup_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
-
-                if binotel_call is None:
-                    logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
-                    await _handle_no_answer(task)
-                    return
+                logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
+                await _handle_no_answer(task)
+                return
 
             await warmup_task
             call_result = await agent.run(binotel_call)
