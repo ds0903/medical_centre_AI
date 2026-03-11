@@ -2,3 +2,4 @@
 .venv
 .idea
 data/test_visits.json
+.claude

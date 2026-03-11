@@ -8,7 +8,6 @@ aiohttp
 pyyaml
 pyVoIP
 websockets
-audioop-lts
 numpy
 scipy
 webrtcvad-wheels
