@@ -530,7 +530,6 @@ class Block1Agent:
                                             if _reschedule_state[0] == 1:
                                                 _reschedule_state[0] = 2
                                         break
-                                _interrupted_pause_until[0] = time.time() + 10.0
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
                                 _schedule_silence_timer(audio_delay=0.0)
@@ -539,7 +538,13 @@ class Block1Agent:
                                 # будь-який батч без нового мовлення є ghost (напр. cancel після дублікатного "Ні").
                                 # Надсилаємо порожні відповіді щоб сесія не зависла,
                                 # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
-                                if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said:
+                                # ВАЖЛИВО: НЕ ставимо _interrupted_pause_until для ghost-батчів —
+                                # ghost аудіо не грає, луни немає, але gate блокує пацієнта.
+                                _has_critical = any(
+                                    fc.name in ("end_call", "reschedule_visit", "confirm_visit", "cancel_visit")
+                                    for fc in resp.tool_call.function_calls
+                                )
+                                if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said and not _has_critical:
                                     logger.debug("[AGENT] Ghost tool batch — пропускаємо")
                                     await session.send_tool_response(function_responses=[
                                         types.FunctionResponse(
@@ -548,6 +553,9 @@ class Block1Agent:
                                         for fc in resp.tool_call.function_calls
                                     ])
                                     continue
+                                # Реальний батч — ставимо echo gate (пацієнт щойно говорив,
+                                # AI зараз відповість → блокуємо стале аудіо поки AI не заговорить).
+                                _interrupted_pause_until[0] = time.time() + 10.0
                                 # Збираємо всі відповіді в батч — надсилаємо одним send_tool_response,
                                 # щоб Gemini не генерував проміжні turn-и між tool calls.
                                 _batch: list[types.FunctionResponse] = []

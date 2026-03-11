@@ -405,12 +405,32 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
             t.cancel()
         answered = any(t.result() for t in done if not t.exception())
     else:
-        # Error 150 шлях: немає generalCallID.
-        # Якщо пацієнт дзвонить і audio активний — вважаємо що відповів.
-        # Чекаємо 30с на аудіо від пацієнта.
-        logger.info("[BINOTEL] Чекаємо audio підтвердження (немає generalCallID)...")
-        await asyncio.sleep(3)
-        answered = sip_audio.is_active
+        # Error 150 шлях: немає generalCallID → не можемо відстежити відповідь
+        # через WebSocket або REST. sip_audio.is_active ЗАВЖДИ True після нашого Answer
+        # (це наш SIP бік) — тому ≠ "пацієнт відповів".
+        # Чекаємо фактичні RTP аудіо-пакети від пацієнта: якщо він підняв трубку —
+        # Binotel починає форвардити його аудіо і read() повертає не порожній буфер.
+        # Якщо пацієнт не відповів — read() завжди порожній до таймауту.
+        logger.info("[BINOTEL] Error 150: чекаємо фактичне RTP аудіо від пацієнта (до 45с)...")
+        _AUDIO_TIMEOUT = 45.0    # максимальний час очікування відповіді
+        _FRAMES_NEEDED = 5       # мінімум 5 послідовних ненульових фреймів (~250мс)
+        _consecutive = 0
+        _loop = asyncio.get_running_loop()
+        _deadline = _loop.time() + _AUDIO_TIMEOUT
+        while _loop.time() < _deadline:
+            if not sip_audio.is_active:
+                break
+            await asyncio.sleep(0.05)
+            pcm = await _loop.run_in_executor(None, sip_audio.read)
+            if pcm and len(pcm) >= 16:
+                _consecutive += 1
+                if _consecutive >= _FRAMES_NEEDED:
+                    break
+            else:
+                _consecutive = 0  # скидаємо при прогалині
+        answered = sip_audio.is_active and _consecutive >= _FRAMES_NEEDED
+        if not answered:
+            logger.warning("[BINOTEL] Error 150: аудіо від пацієнта відсутнє → не відповів")
 
     if not answered:
         logger.warning(f"[BINOTEL] Пацієнт не відповів: {patient_name} ({phone})")
