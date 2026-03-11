@@ -287,6 +287,10 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
             "Binotel сервіси не ініціалізовані. Викличте binotel.startup() спочатку."
         )
 
+    # Скидаємо Opus-прапор перед новим дзвінком — кожен дзвінок визначає Opus заново через SDP
+    from services import binotel_sip as _bsip
+    _bsip._next_call_use_opus = False
+
     logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
 
     # Крок 1: Чекаємо поки наш SIP extension стане Online в Binotel

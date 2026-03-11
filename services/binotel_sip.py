@@ -195,7 +195,7 @@ import re as _re
 
 def _inject_opus_sdp(sip_msg: str) -> str:
     """Додає Opus (pt=111) першим кодеком у SDP тіло SIP повідомлення."""
-    if "m=audio" not in sip_msg or "111" in sip_msg:
+    if "m=audio" not in sip_msg or "a=rtpmap:111 opus" in sip_msg:
         return sip_msg  # вже є або немає аудіо
     if "\r\n\r\n" not in sip_msg:
         return sip_msg
