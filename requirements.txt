@@ -1,5 +1,4 @@
 google-genai
-pyaudio
 sqlalchemy[asyncio]
 asyncpg
 apscheduler
@@ -13,4 +12,3 @@ scipy
 webrtcvad-wheels
 noisereduce
 pyogg
-
