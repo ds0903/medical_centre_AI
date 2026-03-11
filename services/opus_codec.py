@@ -45,7 +45,7 @@ _OPUS_BANDWIDTH_WIDEBAND = 1103  # SILK mode, 0–8kHz — оптимально 
 # фазу → "розмазує" сибілянти → шипіння. lfilter з zi зберігає стан між chunks
 # → без edge-артефактів на межах чанків.
 # ---------------------------------------------------------------------------
-_UP_FIR = firwin(64, 11000 / 24000)            # 64-tap half-band LP @ 11kHz (48kHz сигнал)
+_UP_FIR = firwin(64, 7500 / 24000)             # 64-tap LP @ 7.5kHz — вирівняно під Opus WIDEBAND (8kHz)
 _UP_FIR_ZI_TEMPLATE = lfilter_zi(_UP_FIR, [1.0])  # шаблон початкового стану
 
 # ---------------------------------------------------------------------------
@@ -70,14 +70,14 @@ def _get_encoder():
         )
         if err.value != 0:
             raise RuntimeError(f"opus_encoder_create failed: {err.value}")
-        libopus.opus_encoder_ctl(_encoder, 4002, _OPUS_BITRATE)    # OPUS_SET_BITRATE
+        libopus.opus_encoder_ctl(_encoder, 4002, _OPUS_BITRATE)       # OPUS_SET_BITRATE
         libopus.opus_encoder_ctl(_encoder, 4010, _OPUS_COMPLEXITY)    # OPUS_SET_COMPLEXITY
-        libopus.opus_encoder_ctl(_encoder, 4012, 1)                   # OPUS_SET_INBAND_FEC
-        libopus.opus_encoder_ctl(_encoder, 4014, 5)                   # OPUS_SET_PACKET_LOSS_PERC = 5%
+        libopus.opus_encoder_ctl(_encoder, 4012, 0)                   # OPUS_SET_INBAND_FEC = off (звільняємо бітрейт)
+        libopus.opus_encoder_ctl(_encoder, 4014, 0)                   # OPUS_SET_PACKET_LOSS_PERC = 0%
         libopus.opus_encoder_ctl(_encoder, 4004, _OPUS_BANDWIDTH_WIDEBAND)  # MAX_BANDWIDTH = WIDEBAND (SILK 8kHz)
         logger.info(
             f"[OPUS] Encoder ініціалізовано ({_OPUS_BITRATE // 1000}kbps, "
-            f"complexity={_OPUS_COMPLEXITY}, SILK 8kHz, FEC=on, loss=5%)"
+            f"complexity={_OPUS_COMPLEXITY}, SILK 8kHz, FEC=off)"
         )
     return _encoder
 
