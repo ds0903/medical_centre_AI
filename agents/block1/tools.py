@@ -219,7 +219,15 @@ async def handle_tool_call(
         if cached and time.monotonic() - cached["_ts"] < _SLOTS_CACHE_TTL:
             logger.warning(f"[TOOL] get_available_slots — кеш '{cache_key}' (TTL {_SLOTS_CACHE_TTL}с)")
             if requested_date:
-                # Повторний виклик для вже показаної дати — пацієнт вже бачив ці слоти
+                cache_age = time.monotonic() - cached["_ts"]
+                if cache_age < 3.0:
+                    # Подвійний виклик у тому ж батчі (Gemini artifact, < 3с від першого виклику).
+                    # СТОП тут хибний: пацієнт ще не бачив слоти і не називав конкретний час.
+                    # Повертаємо звичайний результат щоб ghost-тур не казав "яку годину?"
+                    # замість правильного переліку слотів.
+                    logger.debug(f"[TOOL] get_available_slots — той самий батч ({cache_age:.2f}с) → без СТОП")
+                    return cached["result"]
+                # Повторний виклик з окремого туру — пацієнт вже бачив ці слоти
                 # і щойно назвав конкретний час. Підказуємо Gemini одразу reschedule.
                 result = {
                     **cached["result"],

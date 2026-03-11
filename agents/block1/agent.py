@@ -447,9 +447,13 @@ class Block1Agent:
                                         # Behavior 1: AI сама запитала підтвердження переносу
                                         # (без попереднього виклику reschedule_visit) → state 0→1
                                         # → щоб наступний patient_said "так" advance 1→2
-                                        if _reschedule_state[0] == 0 and not _is_ghost:
+                                        if not _is_ghost:
                                             _ai_text_lower = "".join(_ai_buf).lower()
                                             if any(w in _ai_text_lower for w in ("вірно", "правильно")):
+                                                # Скидаємо до 1 при КОЖНОМУ питанні підтвердження —
+                                                # навіть якщо state вже =2 від попереднього циклу.
+                                                # Без цього: state=2 лишається після "правильно" про
+                                                # НЕВІРНИЙ слот, і reschedule виконується без нового "так".
                                                 _reschedule_state[0] = 1
                                                 logger.debug("[AGENT] AI запитала підтвердження переносу → reschedule_state=1")
                                     _ai_buf.clear()
@@ -540,8 +544,12 @@ class Block1Agent:
                                 # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
                                 # ВАЖЛИВО: НЕ ставимо _interrupted_pause_until для ghost-батчів —
                                 # ghost аудіо не грає, луни немає, але gate блокує пацієнта.
+                                # Тільки end_call обходить ghost-перевірку — щоб дзвінок завершувався
+                                # навіть якщо Gemini викликає end_call в окремому ghost-турі після прощання.
+                                # reschedule/confirm/cancel НЕ обходять: ghost-тури не мають підтвердження
+                                # від пацієнта — виконувати їх без підтвердження небезпечно.
                                 _has_critical = any(
-                                    fc.name in ("end_call", "reschedule_visit", "confirm_visit", "cancel_visit")
+                                    fc.name == "end_call"
                                     for fc in resp.tool_call.function_calls
                                 )
                                 if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said and not _has_critical:
