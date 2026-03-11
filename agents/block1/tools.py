@@ -28,8 +28,18 @@ def _fmt_dt(iso: str) -> str:
     return f"{dt.day} {_MONTHS_UA[dt.month - 1]} о {dt.strftime('%H:%M')}"
 
 
-def _slot_half(hour: int) -> str:
-    return "перша" if hour < 13 else "друга"
+def _slot_period(hour: int) -> str:
+    """Розбиваємо день на 3 частини: ранок / обід / вечір."""
+    if hour < 12:
+        return "ранок"
+    elif hour < 17:
+        return "обід"
+    else:
+        return "вечір"
+
+
+# Мінімальна кількість слотів у частині дня для показу діапазону замість переліку
+_PERIOD_THRESHOLD = 6
 
 
 # ---------------------------------------------------------------------------
@@ -245,12 +255,12 @@ async def handle_tool_call(
             dt = datetime.fromisoformat(item["START_E"])
             date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
             time_str = dt.strftime("%H:%M")
-            half = _slot_half(dt.hour)
+            period = _slot_period(dt.hour)
             slot = {
                 "slot_id": str(item["ID"]),
                 "date": date_str,
                 "time": time_str,
-                "half": half,
+                "period": period,
             }
             dates_map.setdefault(date_str, []).append(slot)
 
@@ -270,20 +280,51 @@ async def handle_tool_call(
                     "message": f"На {requested_date} вільних слотів немає. "
                                f"Доступні дати: {', '.join(dates_map.keys())}",
                 }
-            times_list = ", ".join(s["time"] for s in matched_slots[:20])
-            if len(matched_slots) > 20:
-                times_list += f" та ще {len(matched_slots) - 20} часів"
-            last_time = matched_slots[-1]["time"]
+            # Групуємо слоти по частинах дня: ранок / обід / вечір
+            period_order = ["ранок", "обід", "вечір"]
+            periods_map: dict[str, list[dict]] = {p: [] for p in period_order}
+            for s in matched_slots:
+                periods_map[s["period"]].append(s)
+
+            # Будуємо текстовий опис частин дня
+            # Якщо в частині ≥ THRESHOLD слотів — показуємо кількість і діапазон (не перелічуємо)
+            # Якщо < THRESHOLD — перелічуємо конкретні часи
+            period_parts = []
+            for pname in period_order:
+                pslots = periods_map[pname]
+                if not pslots:
+                    continue
+                if len(pslots) >= _PERIOD_THRESHOLD:
+                    period_parts.append(
+                        f"{pname}: {len(pslots)} вікон ({pslots[0]['time']}–{pslots[-1]['time']})"
+                    )
+                else:
+                    times = ", ".join(s["time"] for s in pslots)
+                    period_parts.append(f"{pname}: {times}")
+
+            periods_text = "; ".join(period_parts)
+            active_periods = [p for p in period_order if periods_map[p]]
+            # Якщо є великі частини (≥ THRESHOLD) — пропонуємо пацієнту спочатку вибрати частину дня
+            large_periods = [p for p in active_periods if len(periods_map[p]) >= _PERIOD_THRESHOLD]
+            if large_periods and len(active_periods) > 1:
+                period_prompt = (
+                    f"Запитай пацієнта яка частина дня зручніше ({' / '.join(active_periods)}), "
+                    f"потім назви конкретні часи тільки для обраної частини. "
+                    f"НЕ перелічуй всі часи одразу."
+                )
+            else:
+                period_prompt = (
+                    f"Перерахуй пацієнту доступні часи і запитай який зручніше. "
+                    f"НЕ кажи часовий діапазон ('з X до Y') — тільки точні часи."
+                )
+
             logger.info(f"[TOOL] get_available_slots(date={requested_date}) → {len(matched_slots)} слотів")
             result = {
                 "success": True,
                 "message": (
-                    f"На {requested_date} є {len(matched_slots)} вільних часів: {times_list}. "
-                    f"Останній доступний час: {last_time}. "
-                    f"ВАЖЛИВО: НЕ кажи часовий діапазон ('з X до Y' або 'до Y') — "
-                    f"перерахуй пацієнту ТОЧНІ часи зі списку. НЕ округляй останній час вгору. "
-                    f"Якщо пацієнт хоче час якого немає в списку — скажи що такого немає і назви найближчий з available_times. "
-                    f"Запитай пацієнта який час зручніше."
+                    f"На {requested_date} є {len(matched_slots)} вільних вікон: {periods_text}. "
+                    f"Якщо пацієнт хоче час якого немає в списку — скажи що такого немає і назви найближчий. "
+                    f"{period_prompt}"
                 ),
                 "date": requested_date,
                 "slots": matched_slots,

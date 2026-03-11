@@ -636,9 +636,27 @@ class Block1Agent:
                                             # як Gemini інтегрує результат → глушимо Turn 1,
                                             # Turn 2 (ghost) з правильними датами зіграє замість нього.
                                             _suppress_slots_turn = True
-                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1 audio")
+                                            # Race condition fix: Gemini надсилає аудіо Turn 1
+                                            # ДО того як tool result приходить → частковий список
+                                            # вже починає грати. Обрізаємо черги + скидаємо флаг
+                                            # щоб Turn 1 трактувався як ghost, Turn 2 — як реальний.
+                                            binotel_call.flush_audio()
+                                            _turn_audio_played = False
+                                            logger.debug("[AGENT] get_available_slots(no date) → flush Turn 1 audio, suppress")
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
+                                        # Якщо одна з ключових дій вже виконана — гарантуємо
+                                        # правильний результат (захист від Gemini confusion
+                                        # після тиші/перепитування "Алло?").
+                                        if _call_cache.get("reschedule_visit", {}).get("success") and self.call_result != "rescheduled":
+                                            logger.warning(f"[AGENT] end_call({self.call_result}) але reschedule вже виконано → rescheduled")
+                                            self.call_result = "rescheduled"
+                                        elif _call_cache.get("confirm_visit", {}).get("success") and self.call_result not in ("confirmed", "rescheduled"):
+                                            logger.warning(f"[AGENT] end_call({self.call_result}) але confirm вже виконано → confirmed")
+                                            self.call_result = "confirmed"
+                                        elif _call_cache.get("cancel_visit", {}).get("success") and self.call_result != "cancelled":
+                                            logger.warning(f"[AGENT] end_call({self.call_result}) але cancel вже виконано → cancelled")
+                                            self.call_result = "cancelled"
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
                                         self._end_event.set()
                                         _after_batch = ("end_call",)
