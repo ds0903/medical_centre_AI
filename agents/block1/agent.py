@@ -8,6 +8,7 @@ PRODUCTION   : Binotel SIP аудіо ↔ Gemini Live
 import asyncio
 import logging
 import math
+import re
 import struct
 import time
 
@@ -472,14 +473,17 @@ class Block1Agent:
                                         # (без попереднього виклику reschedule_visit) → state 0→1
                                         # → щоб наступний input_transcription "так" advance 1→2
                                         if not _is_ghost:
-                                            _ai_text_lower = "".join(_ai_buf).lower()
+                                            _ai_text = "".join(_ai_buf)
+                                            _ai_text_lower = _ai_text.lower()
                                             if any(w in _ai_text_lower for w in ("вірно", "правильно")):
-                                                # Скидаємо до 1 при КОЖНОМУ питанні підтвердження —
-                                                # навіть якщо state вже =2 від попереднього циклу.
-                                                # Без цього: state=2 лишається після "правильно" про
-                                                # НЕВІРНИЙ слот, і reschedule виконується без нового "так".
-                                                _reschedule_state[0] = 1
-                                                logger.debug("[AGENT] AI запитала підтвердження переносу → reschedule_state=1")
+                                                # Скидаємо до 1 ТІЛЬКИ якщо AI підтверджує конкретний ЧАС (HH:MM).
+                                                # "На 16 жовтня, правильно?" — дата без часу → НЕ міняємо state.
+                                                # "Переносимо на 17 жовтня о 10:40. Все вірно?" → є час → state=1.
+                                                # Без цього: "правильно?" про дату → state=1 → наступна відповідь
+                                                # пацієнта → state=2 → reschedule виконується без підтвердження слоту.
+                                                if re.search(r'\d{1,2}:\d{2}', _ai_text):
+                                                    _reschedule_state[0] = 1
+                                                    logger.debug("[AGENT] AI запитала підтвердження слоту → reschedule_state=1")
                                     _ai_buf.clear()
                                     if _draining:
                                         # Чекаємо поки AI договорить перед завершенням/передачею
@@ -495,13 +499,19 @@ class Block1Agent:
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був input_transcription.
                                     # Ghost/дублікатний тур: suppress=True і транскрипції не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
-                                    if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0]:
+                                    if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0] or _real_vad_pending[0]:
                                         # Скидаємо _allow_next_turn якщо ghost з датами щойно зіграв
                                         # (allow_next_turn=True і пацієнт не говорив у цьому турі).
                                         # Якщо вийшли через _had_patient_said — allow_next_turn вже
                                         # скинуто в input_transcription handler.
                                         if _allow_next_turn[0] and not _had_patient_said:
                                             _allow_next_turn[0] = False  # ghost bypass використано (ghost з датами зіграв)
+                                        if _real_vad_pending[0] and not _had_patient_said:
+                                            # VAD підтвердив реальний голос але input_transcription не надійшов
+                                            # (коротке слово або перерване розпізнавання).
+                                            # Знімаємо suppress щоб AI відповіла — інакше deadlock.
+                                            _suppress_next_audio[0] = False
+                                            _real_vad_pending[0] = False
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
                                     logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
@@ -704,7 +714,7 @@ class Block1Agent:
                             # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + INTERRUPTED_PAUSE_SEC,
+                                time.time() + 2.0,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
                             # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
