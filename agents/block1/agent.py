@@ -754,6 +754,24 @@ class Block1Agent:
         self._warmup_session = None
         self._warmup_cm = None
 
+        # Gemini Live закриває idle сесію через ~30с без активності.
+        # Якщо між warmup і відповіддю пацієнта пройшло > 25с — сесія мертва,
+        # закриваємо її і йдемо cold path (2-3с пауза, але без мовчання на весь дзвінок).
+        if warmup_session and warmup_cm:
+            _warmup_age = time.time() - getattr(self, '_warmup_time', 0)
+            if _warmup_age > 25:
+                logger.warning(
+                    f"[AGENT] Warmup сесія застаріла ({_warmup_age:.0f}с > 25с) → cold path"
+                )
+                try:
+                    await asyncio.wait_for(
+                        warmup_cm.__aexit__(None, None, None), timeout=1.0
+                    )
+                except Exception:
+                    pass
+                warmup_session = None
+                warmup_cm = None
+
         try:
             if warmup_session and warmup_cm:
                 # Варіант А: реюзаємо warmup сесію — вона вже привіталась, cold start не потрібен
@@ -833,6 +851,7 @@ class Block1Agent:
             # Зберігаємо сесію живою — run_production() реюзає її (Варіант А)
             self._warmup_cm = _warmup_cm
             self._warmup_session = warmup_session
+            self._warmup_time = time.time()  # для перевірки стану сесії в run_production
             _warmup_cm = None  # не закривати в finally
         except Exception as e:
             logger.warning(f"[AGENT] Warmup помилка: {e} — запустимо звичайний шлях")
