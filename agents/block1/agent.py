@@ -421,6 +421,7 @@ class Block1Agent:
                         # Turn 1 з цим tool call часто галюцинує ("вільних слотів немає").
                         # Глушимо Turn 1 аудіо і дозволяємо Turn 2 (ghost) грати — він правильний.
                         _suppress_slots_turn = False
+                        _ai_text_lower = ""   # текст AI цього туру (для перевірки ack vs full)
                         _ai_buf.clear()
                         async for resp in session.receive():
                             turn_had_content = True
@@ -710,8 +711,19 @@ class Block1Agent:
                                 time.time() + 2.0,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
-                            # Піднімаємо фільтр: якщо Gemini згенерує ще один тур без відповіді
-                            # пацієнта — це дублікат, не відтворювати в SIP.
+                            if _date_slots_fetched[0]:
+                                _date_slots_fetched[0] = False
+                                # Розрізняємо два сценарії після get_available_slots(date=...):
+                                # Case A — ack-тур: Turn1="зараз перевірю" (без ранок/обід/вечір)
+                                #   → Turn2 = реальні слоти, дозволяємо його через _allow_next_turn.
+                                # Case B — повна відповідь: Turn1 вже містить ранок/обід/вечір
+                                #   → подальший autonomous Turn2 = самоговоріння, suppress блокує.
+                                _turn1_has_periods = any(
+                                    w in _ai_text_lower for w in ('ранок', 'обід', 'вечір')
+                                )
+                                if not _turn1_has_periods:
+                                    _allow_next_turn[0] = True  # ack-тур → Turn2 (реальні слоти) зіграє
+                            # ЗАВЖДИ suppress — захист від самоговоріння (autonomous turns).
                             _suppress_next_audio[0] = True
                 except asyncio.CancelledError:
                     raise
