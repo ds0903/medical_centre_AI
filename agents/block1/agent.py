@@ -444,6 +444,14 @@ class Block1Agent:
                                         if LOG_FILE and not _is_ghost:
                                             from services import call_logger
                                             call_logger.log_ai("".join(_ai_buf))
+                                        # Behavior 1: AI сама запитала підтвердження переносу
+                                        # (без попереднього виклику reschedule_visit) → state 0→1
+                                        # → щоб наступний patient_said "так" advance 1→2
+                                        if _reschedule_state[0] == 0 and not _is_ghost:
+                                            _ai_text_lower = "".join(_ai_buf).lower()
+                                            if any(w in _ai_text_lower for w in ("вірно", "правильно")):
+                                                _reschedule_state[0] = 1
+                                                logger.debug("[AGENT] AI запитала підтвердження переносу → reschedule_state=1")
                                     _ai_buf.clear()
                                     if _draining:
                                         # Чекаємо поки AI договорить перед завершенням/передачею
