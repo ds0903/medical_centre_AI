@@ -76,7 +76,7 @@ class _DebugCall:
     Має той самий інтерфейс що BinotelCall → run_production() працює без змін.
     """
 
-    def __init__(self, pa: pyaudio.PyAudio) -> None:
+    def __init__(self, pa) -> None:
         self.is_active = True
         self._out = pa.open(format=FORMAT, channels=CHANNELS, rate=OUTPUT_RATE, output=True)
         self._inp = pa.open(
@@ -133,7 +133,7 @@ class Block1Agent:
         )
         self.call_result: str | None = None
         self.call_duration: float = 0.0
-        self._pa = pyaudio.PyAudio()
+        self._pa = pyaudio.PyAudio() if _PYAUDIO_AVAILABLE else None
         self._end_event = asyncio.Event()
 
     # ------------------------------------------------------------------
