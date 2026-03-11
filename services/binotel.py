@@ -421,7 +421,13 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
             if not sip_audio.is_active:
                 break
             await asyncio.sleep(0.05)
-            pcm = await _loop.run_in_executor(None, sip_audio.read)
+            try:
+                pcm = await asyncio.wait_for(
+                    _loop.run_in_executor(None, sip_audio.read),
+                    timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                pcm = b""
             if pcm and len(pcm) >= 16:
                 _consecutive += 1
                 if _consecutive >= _FRAMES_NEEDED:
