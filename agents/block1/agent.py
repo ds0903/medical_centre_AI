@@ -995,4 +995,5 @@ class Block1Agent:
 
     def cleanup(self) -> None:
         """Звільнити PyAudio ресурси."""
-        self._pa.terminate()
+        if self._pa is not None:
+            self._pa.terminate()
