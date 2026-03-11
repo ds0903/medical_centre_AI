@@ -224,6 +224,11 @@ class Block1Agent:
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
+            # True якщо VAD зафіксував реальний голос пацієнта і patient_said ще не
+            # скористався цим сигналом. Захищає від галюцинованих patient_said від Gemini:
+            # якщо patient_said приходить без попереднього VAD — це Gemini вигадав текст,
+            # а не реальна мова пацієнта → ігноруємо.
+            _real_vad_pending = [False]
             # Стан підтвердження переносу:
             # 0 = reschedule ще не викликався
             # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
@@ -390,6 +395,7 @@ class Block1Agent:
                         _patient_spoke.set()
                         _patient_ever_spoke[0] = True
                         _activity[0] = time.time()
+                        _real_vad_pending[0] = True  # реальний голос → patient_said може споживати
                         # НЕ скидаємо _suppress_next_audio тут — тільки patient_said tool call скидає.
                         # Інакше VAD скидає suppress раніше ніж приходить patient_said,
                         # і ghost Turn 2 вважається "реальним" туром.
@@ -523,7 +529,15 @@ class Block1Agent:
                                         _ps_text = (dict(fc.args) if fc.args else {}).get("text", "")
                                         _is_injection = "[ІНСТРУКЦІЯ" in _ps_text or "Пацієнт мовчить" in _ps_text
                                         _is_new = _ps_text and _ps_text != _last_patient_said_text[0]
-                                        if _is_new and not _is_injection:
+                                        # Захист від галюцинованих patient_said: якщо VAD не
+                                        # фіксував реального голосу пацієнта після останнього
+                                        # patient_said — Gemini вигадав цей текст сам.
+                                        # Інжекції (watchdog) пропускаємо без VAD-перевірки.
+                                        _is_hallucinated = _is_new and not _real_vad_pending[0] and not _is_injection
+                                        if _is_hallucinated:
+                                            logger.warning(f"[AGENT] patient_said галюцинація (без VAD): '{_ps_text}' → ігноруємо")
+                                        if _is_new and not _is_injection and not _is_hallucinated:
+                                            _real_vad_pending[0] = False  # споживаємо VAD-сигнал
                                             _suppress_next_audio[0] = False
                                             _had_patient_said = True
                                             _last_patient_said_text[0] = _ps_text
@@ -808,6 +822,11 @@ class Block1Agent:
                     pass
                 warmup_session = None
                 warmup_cm = None
+                # Стара сесія = стара буферизована розмова теж не валідна:
+                # відтворення застарілого буфера + нова Gemini-сесія без пам'яті про
+                # привітання → пацієнт чує 2 привітання поспіль.
+                greeting_buffer = []
+                greeting_duration = 0.0
 
         try:
             if warmup_session and warmup_cm:
