@@ -407,7 +407,6 @@ class Block1Agent:
             async def _recv_and_handle() -> None:
                 nonlocal _silence_count
                 _draining = False       # True — чекаємо поки AI договорить перед завершенням
-                _pending_transfer = None  # str reason → transfer після фрази AI; None → end_call
                 _ai_buf: list[str] = []        # накопичуємо транскрипцію AI за тур
                 try:
                     # session.receive() — пер-тернова: виходить після кожного turn_complete.
@@ -476,24 +475,26 @@ class Block1Agent:
                                             _ai_text = "".join(_ai_buf)
                                             _ai_text_lower = _ai_text.lower()
                                             if any(w in _ai_text_lower for w in ("вірно", "правильно")):
-                                                # Скидаємо до 1 ТІЛЬКИ якщо AI підтверджує конкретний ЧАС (HH:MM).
-                                                # "На 16 жовтня, правильно?" — дата без часу → НЕ міняємо state.
-                                                # "Переносимо на 17 жовтня о 10:40. Все вірно?" → є час → state=1.
-                                                # Без цього: "правильно?" про дату → state=1 → наступна відповідь
-                                                # пацієнта → state=2 → reschedule виконується без підтвердження слоту.
-                                                if re.search(r'\d{1,2}:\d{2}', _ai_text):
+                                                # state=1 ТІЛЬКИ якщо AI підтверджує конкретний СЛОТ (дата + час).
+                                                # "На 16 жовтня, правильно?" — лише дата → НЕ міняємо state.
+                                                # "Переносимо на 16 жовтня о третій. Все вірно?" → є час → state=1.
+                                                # "Переносимо на 17 жовтня о 10:40. Все вірно?" → HH:MM → state=1.
+                                                # Маркери конкретного слоту: HH:MM АБО слово "переносим".
+                                                # "переносим" покриває "переносимо", "переносити" і варіанти з
+                                                # текстовим часом ("о третій", "о пів на четверту" тощо).
+                                                _slot_confirmed = (
+                                                    re.search(r'\d{1,2}:\d{2}', _ai_text)
+                                                    or 'переносим' in _ai_text_lower
+                                                )
+                                                if _slot_confirmed:
                                                     _reschedule_state[0] = 1
                                                     logger.debug("[AGENT] AI запитала підтвердження слоту → reschedule_state=1")
                                     _ai_buf.clear()
                                     if _draining:
-                                        # Чекаємо поки AI договорить перед завершенням/передачею
+                                        # Чекаємо поки AI договорить перед завершенням
                                         if turn_had_audio:
-                                            if _pending_transfer is not None:
-                                                logger.info("[AGENT] AI завершив фразу — передаємо оператору")
-                                                await binotel_call.transfer_to_operator(_pending_transfer)
-                                            else:
-                                                logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
-                                                await asyncio.sleep(1.0)
+                                            logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
+                                            await asyncio.sleep(1.0)
                                         else:
                                             # end_call прийшов без аудіо в цьому турі — прощання
                                             # вже прозвучало в попередньому турі (напр. AI сказав
@@ -584,7 +585,7 @@ class Block1Agent:
                                 # Збираємо всі відповіді в батч — надсилаємо одним send_tool_response,
                                 # щоб Gemini не генерував проміжні turn-и між tool calls.
                                 _batch: list[types.FunctionResponse] = []
-                                _after_batch = None  # ("end_call"|"transfer", ...) — виконати після відправки
+                                _after_batch = None  # "end_call" — виконати після відправки
                                 _slots_fetched = False  # True якщо get_available_slots успішно виконано в цьому батчі
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
@@ -592,17 +593,6 @@ class Block1Agent:
                                     # реальне мовлення пацієнта в поточному циклі.
                                     if _had_patient_said:
                                         _suppress_next_audio[0] = False
-                                    if fc.name == "transfer_to_operator":
-                                        reason = args.get("reason", "")
-                                        logger.info(f"[AGENT] transfer_to_operator: {reason}")
-                                        self.call_result = "transferred"
-                                        self._end_event.set()
-                                        _batch.append(types.FunctionResponse(
-                                            id=fc.id, name=fc.name,
-                                            response={"success": True, "message": "Передаємо на оператора"},
-                                        ))
-                                        _after_batch = ("transfer", reason)
-                                        break
                                     # reschedule_visit — завжди блокуємо першу спробу (state < 2).
                                     # AI повинен озвучити дату+час, почути "так" від пацієнта,
                                     # ТОДІ викликати reschedule знову. Стан 1→2 через pre-scan.
@@ -695,8 +685,6 @@ class Block1Agent:
                                 if _batch:
                                     await session.send_tool_response(function_responses=_batch)
                                 if _after_batch:
-                                    if _after_batch[0] == "transfer":
-                                        _pending_transfer = _after_batch[1]
                                     _draining = True
                         # session.receive() вийшов (turn_complete або сесія закрита)
                         if not turn_had_content:
