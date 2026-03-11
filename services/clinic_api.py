@@ -177,17 +177,19 @@ async def confirm_visit(visit_id: str) -> bool:
 
 
 async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
-    """
-    Перенести візит на новий слот.
-    SKIP_POST=true → тільки лог, без реального запиту.
-    """
+    """POST /bridge/call/slotmover → перенести візит на новий слот."""
     if SKIP_POST:
         logger.info(f"[API] reschedule_visit (SKIP_POST): visit_id={visit_id}, slot_id={slot_id}")
         return True
-
-    # TODO: реальний запит до API
-    logger.info(f"[API] reschedule_visit: visit_id={visit_id}, slot_id={slot_id} (stub)")
-    return True
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/slotmover",
+            headers=_make_headers(),
+            json={"fields": [int(visit_id), int(slot_id)]},
+        ) as resp:
+            resp.raise_for_status()
+            logger.info(f"[API] reschedule_visit → visit_id={visit_id}, slot_id={slot_id}")
+            return True
 
 
 async def update_state(visit_id: str, state: str) -> None:
