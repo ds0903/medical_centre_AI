@@ -20,7 +20,13 @@ except ImportError:
     _VAD = None
     _VAD_AVAILABLE = False
 
-import pyaudio
+try:
+    import pyaudio
+    _PYAUDIO_AVAILABLE = True
+except ImportError:
+    pyaudio = None
+    _PYAUDIO_AVAILABLE = False
+
 from google import genai
 from google.genai import types
 
@@ -31,7 +37,7 @@ from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE
 logger = logging.getLogger(__name__)
 
 # Аудіо константи
-FORMAT = pyaudio.paInt16
+FORMAT = pyaudio.paInt16 if _PYAUDIO_AVAILABLE else 8  # paInt16 = 8
 CHANNELS = 1
 INPUT_RATE = 16000   # мікрофон / SIP → Gemini
 OUTPUT_RATE = 24000  # Gemini → динамік / SIP
