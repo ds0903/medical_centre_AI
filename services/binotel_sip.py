@@ -635,12 +635,10 @@ class BinotelSipClient:
         caller = getattr(call, 'phoneNumber', None) or getattr(call, 'phone_number', 'unknown')
 
         if not self._expecting_call:
-            # Несподіваний дзвінок — залишок від попередньої сесії. Відхиляємо.
-            logger.info(f"[SIP] Відхиляємо несподіваний дзвінок від {caller} (стара сесія)")
-            try:
-                call.hangup()
-            except Exception:
-                pass
+            # Несподіваний дзвінок — залишок від попередньої сесії. Ігноруємо.
+            # НЕ викликаємо hangup() — pyVoIP при hangup() псує внутрішній стан RTP:
+            # наступний дзвінок відкривається без Opus decoder → тиша з боку пацієнта.
+            logger.info(f"[SIP] Ігноруємо несподіваний дзвінок від {caller} (стара сесія)")
             return
 
         logger.info(f"[SIP] Вхідний дзвінок від {caller}")
