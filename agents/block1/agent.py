@@ -460,8 +460,8 @@ class Block1Agent:
                                                 logger.info("[AGENT] AI завершив фразу — передаємо оператору")
                                                 await binotel_call.transfer_to_operator(_pending_transfer)
                                             else:
-                                                logger.info("[AGENT] AI завершив прощання — чекаємо 2с...")
-                                                await asyncio.sleep(2.0)
+                                                logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
+                                                await asyncio.sleep(1.0)
                                             return
                                         continue
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був patient_said.
