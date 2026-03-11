@@ -30,7 +30,7 @@ def _get_greeting() -> str:
         return "Добрий ранок"
     if hour < 18:
         return "Добрий день"
-    return "Добрий вечір"
+    return "Доброго вечора"
 
 
 def build_system_prompt(visit: dict) -> str:
