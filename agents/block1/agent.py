@@ -561,30 +561,24 @@ class Block1Agent:
                                         ))
                                         _after_batch = ("transfer", reason)
                                         break
-                                    # reschedule_visit в одному батчі з patient_said = без підтвердження:
-                                    # Gemini не запитав "Все вірно?" перед переносом.
-                                    # Блокуємо — Gemini має спершу озвучити дату+час і дочекатися "так".
+                                    # reschedule_visit — завжди блокуємо першу спробу (state < 2).
+                                    # AI повинен озвучити дату+час, почути "так" від пацієнта,
+                                    # ТОДІ викликати reschedule знову. Стан 1→2 через pre-scan.
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
-                                        if _had_patient_said:
-                                            # Пацієнт щойно сказав щось нове → дозволяємо reschedule
-                                            _reschedule_state[0] = 2
-                                        else:
-                                            # Передчасний reschedule: або без відповіді пацієнта,
-                                            # або дату/час ще не обирали — блокуємо
-                                            logger.warning("[AGENT] reschedule_visit заблоковано — чекаємо підтвердження від пацієнта")
-                                            _reschedule_state[0] = 1
-                                            _batch.append(types.FunctionResponse(
-                                                id=fc.id, name=fc.name,
-                                                response={
-                                                    "success": False,
-                                                    "message": (
-                                                        "Перед переносом спершу скажи пацієнту дату і час: "
-                                                        "'Отже, переносимо на [дата] о [час]. Все вірно?' "
-                                                        "і мовчки ЧЕКАЙ відповідь. Тільки після 'так' — виклич reschedule_visit."
-                                                    ),
-                                                },
-                                            ))
-                                            continue
+                                        logger.warning("[AGENT] reschedule_visit заблоковано — потрібне підтвердження від пацієнта")
+                                        _reschedule_state[0] = 1
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={
+                                                "success": False,
+                                                "message": (
+                                                    "Перед переносом скажи пацієнту дату і час: "
+                                                    "'Отже, переносимо на [дата] о [час]. Все вірно?' "
+                                                    "і мовчки ЧЕКАЙ відповідь. Тільки після 'так' — виклич reschedule_visit."
+                                                ),
+                                            },
+                                        ))
+                                        continue
                                     # end_call поки чекаємо підтвердження переносу:
                                     # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
                                     if fc.name == "end_call" and _reschedule_state[0] == 1:
