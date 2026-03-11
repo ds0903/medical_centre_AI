@@ -22,6 +22,37 @@ from scipy.signal import firwin, lfilter, lfilter_zi
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# 64-bit Linux fix: без явних argtypes/restype ctypes обрізає 64-bit pointer
+# до 32-bit → SEGV при першому виклику decode/encode на x86_64 Linux.
+# На Windows це "працювало" випадково (heap у нижніх 4GB).
+# ---------------------------------------------------------------------------
+libopus.opus_encoder_create.restype  = ctypes.c_void_p
+libopus.opus_encoder_create.argtypes = [
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)
+]
+libopus.opus_encoder_ctl.restype  = ctypes.c_int
+libopus.opus_encoder_ctl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+libopus.opus_encode.restype  = ctypes.c_int32
+libopus.opus_encode.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_int16),
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_int32
+]
+libopus.opus_encoder_destroy.restype  = None
+libopus.opus_encoder_destroy.argtypes = [ctypes.c_void_p]
+
+libopus.opus_decoder_create.restype  = ctypes.c_void_p
+libopus.opus_decoder_create.argtypes = [
+    ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)
+]
+libopus.opus_decode.restype  = ctypes.c_int
+libopus.opus_decode.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32,
+    ctypes.POINTER(ctypes.c_int16), ctypes.c_int, ctypes.c_int
+]
+libopus.opus_decoder_destroy.restype  = None
+libopus.opus_decoder_destroy.argtypes = [ctypes.c_void_p]
+
+# ---------------------------------------------------------------------------
 # Opus параметри
 # ---------------------------------------------------------------------------
 _OPUS_APPLICATION_VOIP  = 2048   # оптимізовано для голосових дзвінків
