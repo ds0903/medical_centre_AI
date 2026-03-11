@@ -17,7 +17,7 @@ import logging
 
 import numpy as np
 from pyogg.opus import libopus
-from scipy.signal import resample_poly
+from scipy.signal import firwin, lfilter, lfilter_zi
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,26 @@ _OPUS_DECODE_SAMPLES    = _OPUS_DECODE_RATE * _OPUS_FRAME_DURATION_MS // 1000  #
 _OPUS_MAX_PACKET        = 4000   # макс розмір Opus пакету (байт)
 _OPUS_BITRATE           = 48000  # 48 kbps — чіткіший голос, HYBRID mode (до 12kHz)
 _OPUS_COMPLEXITY        = 10     # максимальна якість кодування (0–10)
+_OPUS_BANDWIDTH_WIDEBAND = 1103  # SILK mode, 0–8kHz — оптимально для телефонного голосу
+
+# ---------------------------------------------------------------------------
+# Stateful upsample 24kHz → 48kHz
+#
+# Вставляємо нулі між семплами (zero-insertion) + stateful FIR LP 11kHz.
+# Windowed-sinc FIR (firwin) має ЛІНІЙНУ фазу → константна затримка → без фазових
+# спотворень на транзієнтах (приголосні, сибілянти). IIR Butterworth має нелінійну
+# фазу → "розмазує" сибілянти → шипіння. lfilter з zi зберігає стан між chunks
+# → без edge-артефактів на межах чанків.
+# ---------------------------------------------------------------------------
+_UP_FIR = firwin(64, 11000 / 24000)            # 64-tap half-band LP @ 11kHz (48kHz сигнал)
+_UP_FIR_ZI_TEMPLATE = lfilter_zi(_UP_FIR, [1.0])  # шаблон початкового стану
 
 # ---------------------------------------------------------------------------
 # Стан кодека
 # ---------------------------------------------------------------------------
 _encoder = None
 _decoder = None
+_upsample_zi: np.ndarray | None = None  # стан LP фільтра між chunks
 
 # Буфер для накопичення 24kHz чанків до повного Opus фрейму
 # Потрібно 960 семплів @ 48kHz = 480 семплів @ 24kHz = 960 байт (s16)
@@ -60,9 +74,10 @@ def _get_encoder():
         libopus.opus_encoder_ctl(_encoder, 4010, _OPUS_COMPLEXITY)    # OPUS_SET_COMPLEXITY
         libopus.opus_encoder_ctl(_encoder, 4012, 1)                   # OPUS_SET_INBAND_FEC
         libopus.opus_encoder_ctl(_encoder, 4014, 5)                   # OPUS_SET_PACKET_LOSS_PERC = 5%
+        libopus.opus_encoder_ctl(_encoder, 4004, _OPUS_BANDWIDTH_WIDEBAND)  # MAX_BANDWIDTH = WIDEBAND (SILK 8kHz)
         logger.info(
             f"[OPUS] Encoder ініціалізовано ({_OPUS_BITRATE // 1000}kbps, "
-            f"complexity={_OPUS_COMPLEXITY}, HYBRID auto, FEC=on, loss=5%)"
+            f"complexity={_OPUS_COMPLEXITY}, SILK 8kHz, FEC=on, loss=5%)"
         )
     return _encoder
 
@@ -87,7 +102,7 @@ def encode(pcm_24khz_s16: bytes) -> list[bytes]:
     Накопичує вхід у буфері, повертає готові фрейми коли є 960 семплів @ 48kHz.
     Повертає порожній список якщо даних ще недостатньо.
     """
-    global _encode_buf
+    global _encode_buf, _upsample_zi
     _encode_buf.extend(pcm_24khz_s16)
 
     enc = _get_encoder()
@@ -98,10 +113,15 @@ def encode(pcm_24khz_s16: bytes) -> list[bytes]:
         chunk_s16 = bytes(_encode_buf[:960])
         del _encode_buf[:960]
 
-        # Ресемпл 24kHz → 48kHz (up=2, down=1)
-        arr = np.frombuffer(chunk_s16, dtype="<i2").astype(np.float32)
-        upsampled = resample_poly(arr, up=2, down=1)
-        pcm_48k = np.clip(upsampled, -32768, 32767).astype("<i2")
+        # Stateful 2x upsample 24kHz → 48kHz:
+        # Zero-insertion + stateful FIR LP (лінійна фаза — без шипіння на сибілянтах).
+        arr = np.frombuffer(chunk_s16, dtype="<i2").astype(np.float64)
+        interleaved = np.zeros(len(arr) * 2, dtype=np.float64)
+        interleaved[::2] = arr  # оригінальні семпли на парних позиціях
+        if _upsample_zi is None:
+            _upsample_zi = _UP_FIR_ZI_TEMPLATE * interleaved[0]
+        filtered, _upsample_zi = lfilter(_UP_FIR, [1.0], interleaved, zi=_upsample_zi)
+        pcm_48k = np.clip(filtered * 2, -32768, 32767).astype("<i2")  # *2 компенсує вставку нулів
 
         # Zero-copy передача в libopus через ctypes pointer (без tolist())
         pcm_arr = np.ascontiguousarray(pcm_48k, dtype=np.int16)
@@ -143,7 +163,8 @@ def clear_encode_buffer() -> None:
 
 def reset() -> None:
     """Скинути стан encoder/decoder та буфер між дзвінками."""
-    global _encoder, _decoder, _encode_buf
+    global _encoder, _decoder, _encode_buf, _upsample_zi
+    _upsample_zi = None
     if _encoder is not None:
         libopus.opus_encoder_destroy(_encoder)
         _encoder = None
