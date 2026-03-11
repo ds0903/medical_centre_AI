@@ -216,6 +216,10 @@ class Block1Agent:
             _silence_task: asyncio.Task | None = None   # _check_silence task
             _timer_task: asyncio.Task | None = None     # _start_silence_timer task
             _call_cache: dict = {}  # захист від дублікатів tool calls
+            # Seed від warmup prefetch (завантажено під час гудків → завжди готово)
+            if getattr(self, "_prefetched_raw_slots", None):
+                _call_cache["__raw_slots"] = self._prefetched_raw_slots
+                logger.debug(f"[AGENT] Prefetch seed: {len(self._prefetched_raw_slots)} слотів → _call_cache")
             _activity = [time.time()]  # [0] = час останньої активності (для watchdog)
             _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
             # Фільтр дублікатних турів: Gemini Live іноді генерує 2 тури на одну подію.
@@ -735,6 +739,20 @@ class Block1Agent:
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
             watchdog_task = asyncio.create_task(_watchdog(), name="watchdog")
 
+            # Fallback prefetch для cold path (warmup не запускався → кеш порожній).
+            # Warmup path: кеш вже заповнений із warmup() → задача не потрібна.
+            if "__raw_slots" not in _call_cache:
+                async def _prefetch_slots() -> None:
+                    try:
+                        from services import clinic_api as _capi
+                        _raw = await _capi.get_doctor_slots(visit_context["doctor_name"])
+                        if _raw:
+                            _call_cache["__raw_slots"] = _raw
+                            logger.debug(f"[AGENT] Cold prefetch: {len(_raw)} слотів кешовано")
+                    except Exception as _e:
+                        logger.debug(f"[AGENT] Cold prefetch failed (non-critical): {_e!r}")
+                asyncio.create_task(_prefetch_slots(), name="prefetch_slots")
+
             if greeting_buffer:
                 # Warmup шлях: граємо буфер з реал-тайм рейтом.
                 # Без rate-limit всі chunks летять в Opus чергу миттєво →
@@ -883,7 +901,25 @@ class Block1Agent:
         """
         self._greeting_buffer: list[bytes] = []
         self._greeting_duration: float = 0.0  # тривалість привітання в секундах
+        self._prefetched_raw_slots: list | None = None
         _warmup_cm = None
+
+        # Prefetch слотів паралельно з генерацією привітання.
+        # Warmup стартує під час гудків (10-30с) — це максимально можливо рано.
+        # Результат зберігається в self._prefetched_raw_slots і переноситься в
+        # _call_cache на початку _stream() → перший get_available_slots завжди миттєвий.
+        async def _warmup_prefetch() -> None:
+            try:
+                from services import clinic_api as _capi
+                _raw = await _capi.get_doctor_slots(self.visit.get("doctor_name", ""))
+                if _raw:
+                    self._prefetched_raw_slots = _raw
+                    logger.debug(f"[AGENT] Warmup prefetch: {len(_raw)} слотів кешовано")
+            except Exception as _e:
+                logger.debug(f"[AGENT] Warmup prefetch failed (non-critical): {_e!r}")
+
+        prefetch_task = asyncio.create_task(_warmup_prefetch(), name="warmup_prefetch_slots")
+
         try:
             _warmup_cm = self.client.aio.live.connect(
                 model=GEMINI_MODEL,
@@ -901,9 +937,18 @@ class Block1Agent:
                     self._greeting_duration += len(resp.data) / 48000
                 if resp.server_content and resp.server_content.turn_complete:
                     break
+
+            # Чекаємо завершення prefetch якщо ще не закінчився (greeting зазвичай довше)
+            if not prefetch_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.debug("[AGENT] Warmup prefetch ще не завершився — _stream() підхопить")
+
             logger.info(
                 f"[AGENT] Warmup готовий: {len(self._greeting_buffer)} chunks буферизовано"
                 f" ({self._greeting_duration:.1f}с)"
+                + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
             )
             # Зберігаємо сесію живою — run_production() реюзає її (Варіант А)
             self._warmup_cm = _warmup_cm
@@ -921,6 +966,8 @@ class Block1Agent:
                     await _warmup_cm.__aexit__(None, None, None)
                 except Exception:
                     pass
+            if not prefetch_task.done():
+                prefetch_task.cancel()
 
     # ------------------------------------------------------------------
     # Публічний інтерфейс

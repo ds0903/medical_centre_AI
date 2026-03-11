@@ -273,7 +273,13 @@ async def handle_tool_call(
         return result
 
     if function_name == "get_available_slots":
-        raw = await clinic_api.get_doctor_slots(visit_context["doctor_name"])
+        # Використовуємо prefetch-кеш якщо він вже є (заповнений під час привітання).
+        # Другий виклик (з датою) також бере з кешу — без повторного HTTP запиту.
+        raw = call_cache.get("__raw_slots")
+        if raw is None:
+            raw = await clinic_api.get_doctor_slots(visit_context["doctor_name"])
+            if raw:
+                call_cache["__raw_slots"] = raw
         if not raw:
             return {"success": False, "message": "Вільних слотів немає"}
 
