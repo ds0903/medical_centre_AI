@@ -38,6 +38,46 @@ def _slot_period(hour: int) -> str:
         return "вечір"
 
 
+def _ordinal_suffix(day: int) -> str:
+    """Закінчення порядкового числівника: 1→ше, 2→ге, 3→тє, решта→те."""
+    if day == 1:
+        return "ше"
+    if day == 2:
+        return "ге"
+    if day == 3:
+        return "тє"
+    return "те"
+
+
+def _natural_date_list(date_summaries: list[dict]) -> str:
+    """
+    Будує природній перелік дат для вимови AI — всі з закінченням '-те'.
+
+    Один місяць:  "12-те, 13-те, 14-те, 15-те, 16-те або 17-те жовтня"
+    Різні місяці: "12-те жовтня або 5-те листопада"
+    """
+    by_month: dict[str, list[int]] = {}
+    order: list[str] = []
+    for d in date_summaries:
+        parts = d["date"].split()
+        day = int(parts[0])
+        month = parts[1] if len(parts) > 1 else ""
+        if month not in by_month:
+            by_month[month] = []
+            order.append(month)
+        by_month[month].append(day)
+
+    segments = []
+    for month in order:
+        days = by_month[month]
+        items = [f"{d}-{_ordinal_suffix(d)}" for d in days]
+        if len(items) == 1:
+            segments.append(f"{items[0]} {month}")
+        else:
+            segments.append(f"{', '.join(items[:-1])} або {items[-1]} {month}")
+    return ", ".join(segments)
+
+
 # Мінімальна кількість слотів у частині дня для показу діапазону замість переліку
 _PERIOD_THRESHOLD = 6
 
@@ -337,16 +377,13 @@ async def handle_tool_call(
         logger.info(
             f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
         )
-        numbered = " ".join(f"{i + 1}) {d['date']}" for i, d in enumerate(date_summaries))
+        natural = _natural_date_list(date_summaries)
         result = {
             "success": True,
             "message": (
-                f"УВАГА: є рівно {len(date_summaries)} вільних дат. "
-                f"У своїй відповіді ОБОВ'ЯЗКОВО назви ВСІ {len(date_summaries)} дат одразу — "
-                f"не скорочуй, не пропускай жодної, не поспішай: {numbered}. "
-                f"НЕ ЗГАДУЙ конкретні часи зараз — тільки назви дати і кількість вільних місць. "
-                f"Точні часи буде показано після того як пацієнт обере дату. "
-                f"Перерахуй дати пацієнту повністю, потім запитай на яку дату зручніше. "
+                f"Скажи пацієнту ДОСЛІВНО цей перелік дат (не змінюй порядок і закінчення): «{natural}». "
+                f"НЕ ЗГАДУЙ конкретні часи зараз — тільки дати. "
+                f"Після переліку запитай на яку дату зручніше. "
                 f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
             ),
             "available_dates": date_summaries,

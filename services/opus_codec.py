@@ -121,7 +121,7 @@ def encode(pcm_24khz_s16: bytes) -> list[bytes]:
         if _upsample_zi is None:
             _upsample_zi = _UP_FIR_ZI_TEMPLATE * interleaved[0]
         filtered, _upsample_zi = lfilter(_UP_FIR, [1.0], interleaved, zi=_upsample_zi)
-        pcm_48k = np.clip(filtered * 1.5, -32768, 32767).astype("<i2")  # *1.5 компенсує вставку нулів (знижено гучність)
+        pcm_48k = np.clip(filtered * 1.0, -32768, 32767).astype("<i2")  # *1.5 компенсує вставку нулів (знижено гучність)
 
         # Zero-copy передача в libopus через ctypes pointer (без tolist())
         pcm_arr = np.ascontiguousarray(pcm_48k, dtype=np.int16)
