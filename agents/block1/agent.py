@@ -153,6 +153,7 @@ class Block1Agent:
             # неприйнятні: пацієнт чує мовчання, потім весь текст відразу (розмазаний звук).
             thinking_config=types.ThinkingConfig(thinking_budget=0),
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
+            input_audio_transcription=types.AudioTranscriptionConfig(),
             # VAD на стороні Gemini: повільніше реагує на кінець мови → менше обрізань пацієнта.
             # end_of_speech_sensitivity=LOW → довша пауза перш ніж Gemini вважає що пацієнт замовк.
             realtime_input_config=types.RealtimeInputConfig(
@@ -218,16 +219,15 @@ class Block1Agent:
             _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
             # Фільтр дублікатних турів: Gemini Live іноді генерує 2 тури на одну подію.
             # Після кожного AI туру піднімаємо прапор — наступний тур не відтворюємо в SIP.
-            # Прапор знімається ТІЛЬКИ коли patient_said приносить НОВИЙ текст пацієнта.
-            # Gemini викликає patient_said перед кожним туром → дедуплікація по тексту запобігає
-            # тому що ghost тури скидають suppress повторним викликом того самого тексту.
+            # Прапор знімається ТІЛЬКИ коли input_transcription підтверджує НОВИЙ текст пацієнта.
+            # Дедуплікація по тексту запобігає тому що ghost тури скидають suppress
+            # повторним input_transcription від того ж мовлення.
             _suppress_next_audio = [False]
-            _last_patient_said_text = [""]  # текст останнього НОВОГО patient_said
+            _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
-            # True якщо VAD зафіксував реальний голос пацієнта і patient_said ще не
-            # скористався цим сигналом. Захищає від галюцинованих patient_said від Gemini:
-            # якщо patient_said приходить без попереднього VAD — це Gemini вигадав текст,
-            # а не реальна мова пацієнта → ігноруємо.
+            # True якщо VAD зафіксував реальний голос пацієнта і input_transcription ще не
+            # скористався цим сигналом. (Резервний захист — input_transcription сам по собі
+            # надійний, але _real_vad_pending додає ще один рівень безпеки.)
             _real_vad_pending = [False]
             # Стан підтвердження переносу:
             # 0 = reschedule ще не викликався
@@ -395,9 +395,9 @@ class Block1Agent:
                         _patient_spoke.set()
                         _patient_ever_spoke[0] = True
                         _activity[0] = time.time()
-                        _real_vad_pending[0] = True  # реальний голос → patient_said може споживати
-                        # НЕ скидаємо _suppress_next_audio тут — тільки patient_said tool call скидає.
-                        # Інакше VAD скидає suppress раніше ніж приходить patient_said,
+                        _real_vad_pending[0] = True  # реальний голос → input_transcription може споживати
+                        # НЕ скидаємо _suppress_next_audio тут — тільки input_transcription скидає.
+                        # Інакше VAD скидає suppress раніше ніж приходить транскрипція,
                         # і ghost Turn 2 вважається "реальним" туром.
                     await session.send_realtime_input(
                         audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
@@ -416,7 +416,7 @@ class Block1Agent:
                         turn_had_audio = False       # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0         # байти аудіо в цьому турі → для розрахунку затримки
                         _turn_audio_played = False   # True якщо аудіо реально відправлено пацієнту (не dropped)
-                        _had_patient_said = False    # True якщо в поточному inner-loop був patient_said
+                        _had_patient_said = False    # True якщо в поточному inner-loop був input_transcription
                         # True якщо в цьому турі є get_available_slots(no date) з успішним результатом.
                         # Turn 1 з цим tool call часто галюцинує ("вільних слотів немає").
                         # Глушимо Turn 1 аудіо і дозволяємо Turn 2 (ghost) грати — він правильний.
@@ -440,6 +440,24 @@ class Block1Agent:
                                 sc = resp.server_content
                                 if sc.output_transcription and sc.output_transcription.text:
                                     _ai_buf.append(sc.output_transcription.text)
+                                # input_transcription замінює patient_said tool:
+                                # Gemini надсилає транскрипцію вхідного аудіо без tool call →
+                                # ніякої відповіді не потрібно → ніяких ghost-турів.
+                                if sc.input_transcription and sc.input_transcription.text:
+                                    _it_text = sc.input_transcription.text.strip()
+                                    if _it_text and _it_text != _last_patient_said_text[0]:
+                                        _last_patient_said_text[0] = _it_text
+                                        _suppress_next_audio[0] = False
+                                        _had_patient_said = True
+                                        _real_vad_pending[0] = False
+                                        _allow_next_turn[0] = False
+                                        _activity[0] = time.time()
+                                        if _reschedule_state[0] == 1:
+                                            _reschedule_state[0] = 2
+                                        logger.info(f"[ПАЦІЄНТ] {_it_text}")
+                                        if LOG_FILE:
+                                            from services import call_logger
+                                            call_logger.log_patient(_it_text)
                                 if sc.turn_complete:
                                     if _ai_buf:
                                         # Ghost = аудіо так і не дійшло до пацієнта в цьому турі
@@ -452,7 +470,7 @@ class Block1Agent:
                                             call_logger.log_ai("".join(_ai_buf))
                                         # Behavior 1: AI сама запитала підтвердження переносу
                                         # (без попереднього виклику reschedule_visit) → state 0→1
-                                        # → щоб наступний patient_said "так" advance 1→2
+                                        # → щоб наступний input_transcription "так" advance 1→2
                                         if not _is_ghost:
                                             _ai_text_lower = "".join(_ai_buf).lower()
                                             if any(w in _ai_text_lower for w in ("вірно", "правильно")):
@@ -474,14 +492,14 @@ class Block1Agent:
                                                 await asyncio.sleep(1.0)
                                             return
                                         continue
-                                    # Реальний тур: suppress вимкнений АБО в цьому inner-loop був patient_said.
-                                    # Ghost/дублікатний тур: suppress=True і patient_said не було.
+                                    # Реальний тур: suppress вимкнений АБО в цьому inner-loop був input_transcription.
+                                    # Ghost/дублікатний тур: suppress=True і транскрипції не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
                                     if (not _suppress_next_audio[0]) or _had_patient_said or _allow_next_turn[0]:
                                         # Скидаємо _allow_next_turn якщо ghost з датами щойно зіграв
                                         # (allow_next_turn=True і пацієнт не говорив у цьому турі).
                                         # Якщо вийшли через _had_patient_said — allow_next_turn вже
-                                        # скинуто в patient_said handler (рядок 514).
+                                        # скинуто в input_transcription handler.
                                         if _allow_next_turn[0] and not _had_patient_said:
                                             _allow_next_turn[0] = False  # ghost bypass використано (ghost з датами зіграв)
                                         break
@@ -521,38 +539,11 @@ class Block1Agent:
                             if _draining:
                                 continue  # пропускаємо tool_call поки AI договорить
                             if resp.tool_call:
-                                # Знімаємо suppress ТІЛЬКИ якщо patient_said приносить НОВИЙ текст.
-                                # Gemini викликає patient_said перед кожним туром який генерує —
-                                # ghost тури передають той самий текст → дедупліація захищає suppress.
-                                for fc in resp.tool_call.function_calls:
-                                    if fc.name == "patient_said":
-                                        _ps_text = (dict(fc.args) if fc.args else {}).get("text", "")
-                                        _is_injection = "[ІНСТРУКЦІЯ" in _ps_text or "Пацієнт мовчить" in _ps_text
-                                        _is_new = _ps_text and _ps_text != _last_patient_said_text[0]
-                                        # Захист від галюцинованих patient_said: якщо VAD не
-                                        # фіксував реального голосу пацієнта після останнього
-                                        # patient_said — Gemini вигадав цей текст сам.
-                                        # Інжекції (watchdog) пропускаємо без VAD-перевірки.
-                                        _is_hallucinated = _is_new and not _real_vad_pending[0] and not _is_injection
-                                        if _is_hallucinated:
-                                            logger.warning(f"[AGENT] patient_said галюцинація (без VAD): '{_ps_text}' → ігноруємо")
-                                        if _is_new and not _is_injection and not _is_hallucinated:
-                                            _real_vad_pending[0] = False  # споживаємо VAD-сигнал
-                                            _suppress_next_audio[0] = False
-                                            _had_patient_said = True
-                                            _last_patient_said_text[0] = _ps_text
-                                            # Пацієнт заговорив → скидаємо ghost bypass (щоб не накопичувався
-                                            # якщо ghost з датами не прийшов або вже не потрібен)
-                                            _allow_next_turn[0] = False
-                                            # Пацієнт відповів після блокування reschedule → дозволяємо
-                                            if _reschedule_state[0] == 1:
-                                                _reschedule_state[0] = 2
-                                        break
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
                                 _schedule_silence_timer(audio_delay=0.0)
-                                # Ghost tool call: (suppress=True АБО allow_next_turn=True) і patient_said
-                                # не мав нового тексту. allow_next_turn=True = ми в "ghost з датами" вікні —
+                                # Ghost tool call: (suppress=True АБО allow_next_turn=True) і input_transcription
+                                # не приніс нового тексту. allow_next_turn=True = ми в "ghost з датами" вікні —
                                 # будь-який батч без нового мовлення є ghost (напр. cancel після дублікатного "Ні").
                                 # Надсилаємо порожні відповіді щоб сесія не зависла,
                                 # але пропускаємо реальну обробку — розриваємо ланцюжок ghost-ів.
@@ -585,11 +576,9 @@ class Block1Agent:
                                 _slots_fetched = False  # True якщо get_available_slots успішно виконано в цьому батчі
                                 for fc in resp.tool_call.function_calls:
                                     args = dict(fc.args) if fc.args else {}
-                                    # Скидаємо suppress для реальних tool calls ТІЛЬКИ якщо
-                                    # patient_said вже підтвердив нове мовлення пацієнта.
-                                    # Без цієї перевірки ghost turns з tool calls (напр.
-                                    # повторний get_available_slots) обходять suppress.
-                                    if fc.name != "patient_said" and _had_patient_said:
+                                    # Скидаємо suppress якщо input_transcription вже підтвердив
+                                    # реальне мовлення пацієнта в поточному циклі.
+                                    if _had_patient_said:
                                         _suppress_next_audio[0] = False
                                     if fc.name == "transfer_to_operator":
                                         reason = args.get("reason", "")

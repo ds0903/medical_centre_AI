@@ -137,27 +137,7 @@ TOOLS = [
                 ),
             ),
 
-            types.FunctionDeclaration(
-                name="patient_said",
-                description=(
-                    "Внутрішній інструмент логування. "
-                    "Викликати МОВЧКИ перед кожною відповіддю пацієнту — "
-                    "передати текст того що пацієнт сказав або мав на увазі. "
-                    "Пацієнт цього не чує. Не впливає на розмову."
-                ),
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "text": types.Schema(
-                            type="STRING",
-                            description="Що сказав або мав на увазі пацієнт (українською)",
-                        ),
-                    },
-                    required=["text"],
-                ),
-            ),
-
-            types.FunctionDeclaration(
+types.FunctionDeclaration(
                 name="end_call",
                 description=(
                     "Завершити розмову. "
@@ -397,16 +377,6 @@ async def handle_tool_call(
         }
         call_cache["cancel_visit"] = result
         return result
-
-    if function_name == "patient_said":
-        text = args.get("text", "")
-        if "[ІНСТРУКЦІЯ" not in text:
-            if GEMINI_LOGS:
-                logger.info(f"[ПАЦІЄНТ] {text}")
-            if LOG_FILE:
-                from services import call_logger
-                call_logger.log_patient(text)
-        return {"success": True}
 
     if function_name == "end_call":
         result = {"success": True, "result": args.get("result", "no_result")}
