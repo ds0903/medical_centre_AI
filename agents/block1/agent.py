@@ -649,7 +649,11 @@ class Block1Agent:
                                     if fc.name == "end_call" and (_slots_fetched or _date_slots_fetched[0]):
                                         logger.warning("[AGENT] end_call проігноровано — викликано в одному батчі з get_available_slots (галюцинація)")
                                         _batch.append(types.FunctionResponse(
-                                            id=fc.id, name=fc.name, response={"success": True}
+                                            id=fc.id, name=fc.name,
+                                            response={
+                                                "success": False,
+                                                "message": "НЕ завершуй дзвінок. Ти щойно отримала слоти — продовжуй розмову: назви доступні часи пацієнту.",
+                                            },
                                         ))
                                         continue
                                     try:
