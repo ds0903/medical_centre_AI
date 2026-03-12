@@ -776,11 +776,15 @@ class Block1Agent:
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
                 if _stale_warmup[0]:
-                    # Нова сесія не знає про привітання → primer без turn_complete
-                    # (Gemini не генерує відповідь, просто отримує контекст).
+                    # Нова сесія не знає про привітання → primer з turn_complete=True.
+                    # _suppress_next_audio=True: якщо Gemini згенерує відповідь на primer —
+                    # глушимо її (пацієнт вже чув привітання, повторення не потрібне).
+                    # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
+                    # галюцинує і вголос промовляє текст внутрішніх інструкцій.
+                    _suppress_next_audio[0] = True
                     await session.send_client_content(
                         turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
-                        turn_complete=False,
+                        turn_complete=True,
                     )
                     logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
                 _greeting_done.set()
