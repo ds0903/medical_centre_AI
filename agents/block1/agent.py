@@ -212,6 +212,7 @@ class Block1Agent:
 
         greeting_buffer = getattr(self, "_greeting_buffer", [])
         greeting_duration = getattr(self, "_greeting_duration", 0.0)
+        _stale_warmup = [False]  # True коли сесія протухла але буфер ще валідний
 
         async def _stream(session) -> None:
             """Двосторонній стрімінг аудіо між Binotel SIP та Gemini."""
@@ -336,6 +337,8 @@ class Block1Agent:
                     await asyncio.sleep(5)
                     if self._end_event.is_set():
                         break
+                    if not _greeting_done.is_set():
+                        continue  # не рахуємо бездіяльність поки грає привітання
                     idle = time.time() - _activity[0]
                     if idle < WATCHDOG_TIMEOUT_SEC:
                         continue
@@ -772,6 +775,14 @@ class Block1Agent:
                     _slack = (_play_start + _played_dur) - time.monotonic()
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
+                if _stale_warmup[0]:
+                    # Нова сесія не знає про привітання → primer без turn_complete
+                    # (Gemini не генерує відповідь, просто отримує контекст).
+                    await session.send_client_content(
+                        turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
+                        turn_complete=False,
+                    )
+                    logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
@@ -847,11 +858,9 @@ class Block1Agent:
                     pass
                 warmup_session = None
                 warmup_cm = None
-                # Стара сесія = стара буферизована розмова теж не валідна:
-                # відтворення застарілого буфера + нова Gemini-сесія без пам'яті про
-                # привітання → пацієнт чує 2 привітання поспіль.
-                greeting_buffer = []
-                greeting_duration = 0.0
+                # Буфер ще валідний — відтворимо пацієнту, нова сесія отримає primer.
+                if greeting_buffer:
+                    _stale_warmup[0] = True
 
         try:
             if warmup_session and warmup_cm:
