@@ -254,7 +254,7 @@ class BinotelRestClient:
                 )
                 return False
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
         logger.warning(f"[BINOTEL REST] Timeout очікування відповіді: {general_call_id}")
         return False
