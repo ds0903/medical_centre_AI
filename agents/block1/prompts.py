@@ -21,15 +21,15 @@ def _format_visit_date(iso_datetime: str) -> str:
     """Перетворює ISO дату на читабельний рядок: '19 лютого о 14:00'."""
     dt = datetime.fromisoformat(iso_datetime)
     month = _MONTHS_UA[dt.month - 1]
-    return f"{dt.day} {month} о {dt.strftime('%H:%M')}"
+    return f"{dt.day} {month} о {dt.hour}:{dt.minute:02d}"
 
 
 def _get_greeting() -> str:
     hour = datetime.now(ZoneInfo("Europe/Kyiv")).hour
     if hour < 12:
-        return "Добрий ранок"
+        return "Доброго ранку"
     if hour < 18:
-        return "Добрий день"
+        return "Доброго дня"
     return "Доброго вечора"
 
 
