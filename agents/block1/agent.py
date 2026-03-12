@@ -613,6 +613,11 @@ class Block1Agent:
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
                                         logger.warning("[AGENT] reschedule_visit заблоковано — потрібне підтвердження від пацієнта")
                                         _reschedule_state[0] = 1
+                                        # Gemini вже встигла згенерувати "Чудово! Перенесено" аудіо
+                                        # поки обробляли tool call → flush SIP буфер і придушуємо
+                                        _suppress_next_audio[0] = True
+                                        binotel_call.flush_audio()
+                                        logger.info("[AGENT] reschedule block: flush аудіо + suppress щоб не грало 'Перенесено'")
                                         _batch.append(types.FunctionResponse(
                                             id=fc.id, name=fc.name,
                                             response={
@@ -637,10 +642,11 @@ class Block1Agent:
                                             },
                                         ))
                                         continue
-                                    # end_call в одному батчі з get_available_slots = галюцинація:
-                                    # Gemini не бачив слоти, але вже вирішив завершити дзвінок.
-                                    # Ігноруємо — надсилаємо відповідь Gemini, але дзвінок не закриваємо.
-                                    if fc.name == "end_call" and _slots_fetched:
+                                    # end_call разом з get_available_slots (одному батчі або в наступному) = галюцинація:
+                                    # Gemini отримала слоти але ще не сказала їх пацієнту, вже хоче завершити.
+                                    # _slots_fetched: захист в межах поточного батчу
+                                    # _date_slots_fetched[0]: захист між батчами (персистентна між resp)
+                                    if fc.name == "end_call" and (_slots_fetched or _date_slots_fetched[0]):
                                         logger.warning("[AGENT] end_call проігноровано — викликано в одному батчі з get_available_slots (галюцинація)")
                                         _batch.append(types.FunctionResponse(
                                             id=fc.id, name=fc.name, response={"success": True}
