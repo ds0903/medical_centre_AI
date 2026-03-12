@@ -288,7 +288,7 @@ async def handle_tool_call(
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
             date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
-            time_str = dt.strftime("%H:%M")
+            time_str = f"{dt.hour}:{dt.minute:02d}"  # без ведучого нуля: 8:30, 9:00
             period = _slot_period(dt.hour)
             slot = {
                 "slot_id": str(item["ID"]),
