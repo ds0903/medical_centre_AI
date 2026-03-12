@@ -374,7 +374,7 @@ async def handle_tool_call(
         # (каже "з 9 до 13" а реально 9:20–12:30, або "на 9" а є тільки 9:20).
         # Точні часи покажемо в Кроці 2 коли пацієнт обере дату.
         date_summaries = []
-        for d, slots in dates_map.items():
+        for d, slots in list(dates_map.items())[:5]:
             date_summaries.append({
                 "date": d,
                 "count": len(slots),
