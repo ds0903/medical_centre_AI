@@ -367,6 +367,12 @@ class Block1Agent:
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
                 _NOISE_ALPHA = 0.03    # швидкість адаптації (~30 chunks для стабілізації)
                 _SNR_RATIO = 2.5       # мін. SNR: голос повинен бути в 2.5x гучніше фону
+                # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
+                # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
+                # перші склади слова пацієнта що прозвучали під час gate.
+                import collections
+                _preroll_buf: collections.deque = collections.deque(maxlen=20)  # ~320мс @ 16ms/chunk
+                _was_in_gate = [False]
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
@@ -374,7 +380,17 @@ class Block1Agent:
                         continue
                     # Ехо-гейт: після interrupted ігноруємо аудіо поки не розсіється відлуння
                     if time.time() < _interrupted_pause_until[0]:
+                        _preroll_buf.append(chunk)  # зберігаємо поки в gate
+                        _was_in_gate[0] = True
                         continue
+                    # Gate щойно закінчився — відправляємо накопичений pre-roll
+                    if _was_in_gate[0]:
+                        _was_in_gate[0] = False
+                        for _pre_chunk in _preroll_buf:
+                            await session.send_realtime_input(
+                                audio={"data": _pre_chunk, "mime_type": "audio/pcm;rate=16000"}
+                            )
+                        _preroll_buf.clear()
                     # VAD: визначаємо чи є голос у chunk
                     if _VAD_AVAILABLE:
                         _vad_buf.extend(chunk)
