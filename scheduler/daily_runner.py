@@ -292,7 +292,7 @@ _STATUS_API_MAP = {
     "confirmed": 1,
     "cancelled": 2,
     "no_result": 3,
-    "no_answer": 4,
+    "no_answer": 5,
 }
 
 
@@ -317,7 +317,7 @@ async def _handle_no_answer(task: CallTask) -> None:
             db_task.status = CallStatus.failed
             db_task.result = CallResult.no_answer
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
-            await clinic_api.update_event_status(task.visit_id, 4)
+            await clinic_api.update_event_status(task.visit_id, 5)
         else:
             db_task.status = CallStatus.pending  # Спробуємо ще раз наступного разу
             logger.info(f"[CALLS] Спроба {db_task.attempts}/{MAX_CALL_ATTEMPTS} для {task.patient_name}")

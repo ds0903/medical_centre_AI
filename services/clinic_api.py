@@ -35,7 +35,7 @@ def _load_test_data() -> dict:
 
 def _make_headers() -> dict:
     return {
-        "Authorization": f"Bearer {CLINIC_API_KEY}",
+        "Bearer": CLINIC_API_KEY,
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
@@ -171,13 +171,16 @@ async def confirm_visit(visit_id: str) -> bool:
             headers=_make_headers(),
             json={"fields": [int(visit_id), 1]},
         ) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                body = await resp.text()
+                logger.error(f"[API] confirm_visit HTTP {resp.status} body: {body}")
+                resp.raise_for_status()
             logger.info(f"[API] confirm_visit → visit_id={visit_id}, status=1")
             return True
 
 
 async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
-    """POST /bridge/call/slotmover → перенести візит на новий слот."""
+    """POST /bridge/call/slotmover → перенести візит на новий слот, потім updatestate статус 4."""
     if SKIP_POST:
         logger.info(f"[API] reschedule_visit (SKIP_POST): visit_id={visit_id}, slot_id={slot_id}")
         return True
@@ -189,7 +192,16 @@ async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
         ) as resp:
             resp.raise_for_status()
             logger.info(f"[API] reschedule_visit → visit_id={visit_id}, slot_id={slot_id}")
-            return True
+
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/updatestate",
+            headers=_make_headers(),
+            json={"fields": [int(visit_id), 4]},
+        ) as resp:
+            resp.raise_for_status()
+            logger.info(f"[API] reschedule_visit updatestate → visit_id={visit_id}, status=4 (Перенесено)")
+
+        return True
 
 
 async def update_state(visit_id: str, state: str) -> None:
@@ -246,7 +258,7 @@ async def update_event_status(event_id: str, status: int) -> None:
     TODO: уточнити endpoint та метод (POST / PATCH / PUT)
     TODO: уточнити формат авторизації (заголовок)
     """
-    _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 4: "Не додзвонились"}
+    _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 5: "Не додзвонились"}
     label = _STATUS_LABELS.get(status, str(status))
 
     if DEBUG:

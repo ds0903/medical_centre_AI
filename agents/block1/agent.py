@@ -749,7 +749,7 @@ class Block1Agent:
                             # після останнього чанку → +0.8с від turn_complete як мінімальний буфер.
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + 0.8,
+                                time.time() + 1.0,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
                             if _date_slots_fetched[0]:
