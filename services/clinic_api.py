@@ -35,7 +35,7 @@ def _load_test_data() -> dict:
 
 def _make_headers() -> dict:
     return {
-        "Bearer": CLINIC_API_KEY,
+        "Authorization": f"Bearer {CLINIC_API_KEY}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
@@ -158,7 +158,7 @@ async def get_doctor_slots(doctor_name: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def confirm_visit(visit_id: str) -> bool:
-    """POST /bridge/call/appointments/status → статус 1 (Підтверджує)."""
+    """POST /bridge/call/updatestate → статус 1 (Підтверджує)."""
     if DEBUG:
         logger.debug(f"[DEBUG] confirm_visit(visit_id={visit_id})")
         return True
@@ -167,7 +167,7 @@ async def confirm_visit(visit_id: str) -> bool:
         return True
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
             json={"fields": [int(visit_id), 1]},
         ) as resp:
@@ -206,7 +206,7 @@ async def update_state(visit_id: str, state: str) -> None:
 
 
 async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
-    """POST /bridge/call/appointments/status → статус 2 (Відміняє)."""
+    """POST /bridge/call/updatestate → статус 2 (Відміняє)."""
     if DEBUG:
         logger.debug(f"[DEBUG] cancel_visit(visit_id={visit_id}, reason={reason})")
         return True
@@ -215,7 +215,7 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
         return True
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
             json={"fields": [int(visit_id), 2]},
         ) as resp:
@@ -275,7 +275,7 @@ async def update_event_status(event_id: str, status: int) -> None:
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/appointments/status",
+            f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
             json={"fields": [int(event_id), status]},
         ) as resp:
