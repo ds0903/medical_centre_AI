@@ -742,12 +742,14 @@ class Block1Agent:
                             _allow_next_turn[0] = True   # Turn 2 (правильні дати) проривається крізь suppress
                             logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, дозволяємо Turn 2")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт після turn_complete: НЕ зменшуємо існуючий гейт
-                            # від останнього аудіо-чанку. Додаємо мін. INTERRUPTED_PAUSE_SEC,
-                            # щоб ехо від динаміка встигло розсіятися (особливо в debug режимі).
+                            # Ехо-гейт після turn_complete: 0.8с замість 2.0с.
+                            # Коротший gate → аудіо пацієнта доходить до Gemini раніше,
+                            # зменшуючи вікно inter-turn gap (1-3с) де Gemini ігнорує аудіо.
+                            # _calc_echo_gate під час аудіо вже "ковзає" і виставляє 0.3-1.0с
+                            # після останнього чанку → +0.8с від turn_complete як мінімальний буфер.
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + 2.0,
+                                time.time() + 0.8,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
                             if _date_slots_fetched[0]:
