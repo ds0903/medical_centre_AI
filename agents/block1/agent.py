@@ -135,6 +135,7 @@ class Block1Agent:
         self.call_duration: float = 0.0
         self._pa = pyaudio.PyAudio() if _PYAUDIO_AVAILABLE else None
         self._end_event = asyncio.Event()
+        self._keepalive_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Конфіг сесії
@@ -281,9 +282,7 @@ class Block1Agent:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
-                                "Пацієнт не відповідає вже третій раз. "
-                                "Скажи коротке ввічливе прощання і одразу виклич end_call(result='no_answer')."
+                                "Пацієнт не відповідає. Скажи коротке прощання і виклич end_call(result='no_answer')."
                             )}]},
                             turn_complete=True,
                         )
@@ -291,8 +290,7 @@ class Block1Agent:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
-                                "Пацієнт мовчить. Запитай тепло і невимушено: 'Алло, чуєте мене?'"
+                                "Скажи пацієнту: «Алло, ви мене чуєте?» — і мовчки чекай."
                             )}]},
                             turn_complete=True,
                         )
@@ -300,8 +298,7 @@ class Block1Agent:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: "
-                                "Пацієнт знову мовчить. Скажи: 'Я все ще чекаю вашої відповіді.'"
+                                "Скажи пацієнту: «Я все ще чекаю вашої відповіді.» — і мовчки чекай."
                             )}]},
                             turn_complete=True,
                         )
@@ -353,7 +350,7 @@ class Block1Agent:
                     try:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
-                            turns={"parts": [{"text": "[ІНСТРУКЦІЯ ДЛЯ АГЕНТА, НЕ СЛОВА ПАЦІЄНТА]: Пацієнт мовчить. Скажи лише: 'Алло, ви мене чуєте?' — і мовчки чекай відповіді. Не роби жодних дій до відповіді пацієнта."}]},
+                            turns={"parts": [{"text": "Скажи пацієнту: «Алло, ви мене чуєте?» — і мовчки чекай."}]},
                             turn_complete=True,
                         )
                     except Exception as e:
@@ -873,14 +870,19 @@ class Block1Agent:
         self._warmup_session = None
         self._warmup_cm = None
 
+        # Зупиняємо keepalive — пацієнт відповів, сесія зараз буде використана або закрита
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+        self._keepalive_task = None
+
         # Gemini Live закриває idle сесію через ~30с без активності.
-        # Якщо між warmup і відповіддю пацієнта пройшло > 25с — сесія мертва,
-        # закриваємо її і йдемо cold path (2-3с пауза, але без мовчання на весь дзвінок).
+        # Keepalive надсилає тишу кожні 15с → сесія залишається живою довго.
+        # Поріг 60с: keepalive на 45с + ~15с запас до наступного Gemini TTL.
         if warmup_session and warmup_cm:
             _warmup_age = time.time() - getattr(self, '_warmup_time', 0)
-            if _warmup_age > 25:
+            if _warmup_age > 60:
                 logger.warning(
-                    f"[AGENT] Warmup сесія застаріла ({_warmup_age:.0f}с > 25с) → cold path"
+                    f"[AGENT] Warmup сесія застаріла ({_warmup_age:.0f}с > 60с) → cold path"
                 )
                 try:
                     await asyncio.wait_for(
@@ -890,7 +892,7 @@ class Block1Agent:
                     pass
                 warmup_session = None
                 warmup_cm = None
-                # Буфер ще валідний — відтворимо пацієнту, нова сесія отримає primer.
+                # Буфер ще валідний — відтворимо пацієнту, нова cold сесія отримає primer.
                 if greeting_buffer:
                     _stale_warmup[0] = True
 
@@ -1002,6 +1004,23 @@ class Block1Agent:
             self._warmup_session = warmup_session
             self._warmup_time = time.time()  # для перевірки стану сесії в run_production
             _warmup_cm = None  # не закривати в finally
+
+            # Keepalive: кожні 15с надсилаємо тишу щоб Gemini не закрив idle сесію
+            async def _keepalive_loop(_session=warmup_session) -> None:
+                _silence = b'\x00' * 3200  # 100мс тиші @ 16kHz 16-bit
+                while True:
+                    await asyncio.sleep(15)
+                    try:
+                        await _session.send_realtime_input(
+                            audio={"data": _silence, "mime_type": "audio/pcm;rate=16000"}
+                        )
+                        logger.info("[AGENT] Keepalive: silence → warmup session OK")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as _e:
+                        logger.warning(f"[AGENT] Keepalive помилка: {_e!r} — продовжуємо")
+
+            self._keepalive_task = asyncio.create_task(_keepalive_loop(), name="warmup_keepalive")
         except Exception as e:
             logger.warning(f"[AGENT] Warmup помилка: {e} — retry через 1с...")
             self._greeting_buffer = []
