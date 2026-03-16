@@ -1018,6 +1018,9 @@ class Block1Agent:
                     except asyncio.CancelledError:
                         break
                     except Exception as _e:
+                        # ConnectionClosedOK (code=1000) — сесія закрита штатно після дзвінка
+                        if "ConnectionClosedOK" in type(_e).__name__ or getattr(_e, "code", None) == 1000:
+                            break
                         logger.warning(f"[AGENT] Keepalive помилка: {_e!r} — продовжуємо")
 
             self._keepalive_task = asyncio.create_task(_keepalive_loop(), name="warmup_keepalive")
