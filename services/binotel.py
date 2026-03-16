@@ -222,14 +222,8 @@ class BinotelCall:
     # ------------------------------------------------------------------
 
     def flush_audio(self) -> None:
-        """Очистити аудіо з fade-out (запобігає кліку при barge-in)."""
+        """Очистити аудіо буфер з fade-out (запобігає кліку при barge-in)."""
         self._sip.flush_audio()
-        # G.711 mode: записуємо коротку рампу від останнього семпла до нуля
-        from services.audio_bridge import _use_opus
-        if not _use_opus:
-            fadeout = generate_fadeout_g711()
-            if fadeout:
-                self._sip.write(fadeout)
 
     async def hangup(self) -> None:
         """Завершити дзвінок (SIP + REST якщо є call_id)."""

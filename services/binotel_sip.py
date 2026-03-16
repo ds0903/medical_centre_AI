@@ -393,12 +393,21 @@ class BinotelSipAudio:
             return b""
 
     def flush_audio(self) -> None:
-        """Очистити Opus чергу виводу — AI замовкає миттєво при перериванні пацієнтом."""
+        """Очистити аудіо буфер з fade-out щоб уникнути кліку при barge-in."""
         for rtp in getattr(self._call, "RTPClients", []):
             q = getattr(rtp, "_opus_send_queue", None)
             if q is not None:
+                # Opus mode: очищаємо чергу
                 with q.mutex:
                     q.queue.clear()
+            else:
+                # G.711 mode: замінюємо pmout буфер на fade-out рампу замість append.
+                # Без цього накопичені пакети AI грають до кінця → клік при обриві.
+                pmout = getattr(rtp, "pmout", None)
+                if pmout is not None:
+                    from services.audio_bridge import generate_fadeout_g711
+                    fadeout = generate_fadeout_g711()
+                    pmout.rebuild(reset=True, data=fadeout or b"")
         # Очищаємо encode buffer — інакше залишки потраплять у наступну репліку AI
         try:
             from services.opus_codec import clear_encode_buffer
