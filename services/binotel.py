@@ -261,7 +261,7 @@ class BinotelCall:
 # ---------------------------------------------------------------------------
 
 
-async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
+async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optional[BinotelCall]:
     """
     Ініціювати вихідний дзвінок пацієнту через Binotel.
 
@@ -409,9 +409,9 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
         # Чекаємо фактичні RTP аудіо-пакети від пацієнта: якщо він підняв трубку —
         # Binotel починає форвардити його аудіо і read() повертає не порожній буфер.
         # Якщо пацієнт не відповів — read() завжди порожній до таймауту.
-        logger.info("[BINOTEL] Error 150: чекаємо фактичне RTP аудіо від пацієнта (до 45с)...")
-        _AUDIO_TIMEOUT = 45.0    # максимальний час очікування відповіді
+        _AUDIO_TIMEOUT = 10.0    # 10с: якщо за цей час нема RTP → retry (не 45с)
         _FRAMES_NEEDED = 5       # мінімум 5 послідовних ненульових фреймів (~250мс)
+        logger.info(f"[BINOTEL] Error 150: чекаємо RTP аудіо від пацієнта (до {_AUDIO_TIMEOUT:.0f}с)...")
         _consecutive = 0
         _loop = asyncio.get_running_loop()
         _deadline = _loop.time() + _AUDIO_TIMEOUT
@@ -434,7 +434,16 @@ async def initiate_call(phone: str, patient_name: str) -> Optional[BinotelCall]:
                 _consecutive = 0  # скидаємо при прогалині
         answered = sip_audio.is_active and _consecutive >= _FRAMES_NEEDED
         if not answered:
-            logger.warning("[BINOTEL] Error 150: аудіо від пацієнта відсутнє → не відповів")
+            # Error 150 + таймаут: вина технічна (не пацієнт) → retry 1 раз.
+            # Hangup поточний SIP щоб не лишати відкрите з'єднання.
+            sip_audio.hangup()
+            if _retry == 0:
+                logger.warning("[BINOTEL] Error 150: RTP не прийшов → retry дзвінка (спроба 2)...")
+                await asyncio.sleep(3)  # коротка пауза перед повтором
+                return await initiate_call(phone, patient_name, _retry=1)
+            else:
+                logger.warning("[BINOTEL] Error 150: retry також не вдався → call_failed")
+                return None
 
     if not answered:
         logger.warning(f"[BINOTEL] Пацієнт не відповів: {patient_name} ({phone})")
