@@ -14,7 +14,7 @@ import time
 
 try:
     import webrtcvad as _webrtcvad
-    _VAD = _webrtcvad.Vad(2)   # aggressiveness 0-3: 2 = збалансований
+    _VAD = _webrtcvad.Vad(1)   # aggressiveness 0-3: 1 = м'який, чує тихіший голос
     _VAD_AVAILABLE = True
 except ImportError:
     _VAD = None
@@ -366,7 +366,7 @@ class Block1Agent:
                 # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
                 _NOISE_ALPHA = 0.03    # швидкість адаптації (~30 chunks для стабілізації)
-                _SNR_RATIO = 2.0       # мін. SNR: голос повинен бути в 2.0x гучніше фону
+                _SNR_RATIO = 1.5       # мін. SNR: голос повинен бути в 1.5x гучніше фону
                 # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
                 # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
                 # перші склади слова пацієнта що прозвучали під час gate.
