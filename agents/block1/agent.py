@@ -238,6 +238,7 @@ class Block1Agent:
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
+            _patient_said_count = [0]       # кількість НОВИХ input_transcription від пацієнта (захист від передчасних tool calls)
             # True якщо VAD зафіксував реальний голос пацієнта і input_transcription ще не
             # скористався цим сигналом. (Резервний захист — input_transcription сам по собі
             # надійний, але _real_vad_pending додає ще один рівень безпеки.)
@@ -254,6 +255,8 @@ class Block1Agent:
             # True → наступний ghost тур має грати як реальний (після get_available_slots без дати).
             # Встановлюється в post-loop Turn 1, скидається коли Turn 2 проривається.
             _allow_next_turn = [False]
+            # Час завершення останнього AI туру з реальним аудіо (для double-turn guard).
+            _last_ai_turn_end = [0.0]
 
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
@@ -476,11 +479,12 @@ class Block1Agent:
                                         _last_patient_said_text[0] = _it_text
                                         _suppress_next_audio[0] = False
                                         _had_patient_said = True
+                                        _patient_said_count[0] += 1
                                         _real_vad_pending[0] = False
                                         _allow_next_turn[0] = False
                                         _activity[0] = time.time()
-                                        if _reschedule_state[0] == 1:
-                                            _reschedule_state[0] = 2
+                                        # _reschedule_state: перехід 1→2 не тут.
+                                        # AI сама вирішує чи підтвердив пацієнт і викликає reschedule_visit вдруге.
                                         logger.info(f"[ПАЦІЄНТ] {_it_text}")
                                         if LOG_FILE:
                                             from services import call_logger
@@ -529,6 +533,15 @@ class Block1Agent:
                                             # Виходимо одразу — інакше recv_task чекає Turn C якого немає → 15с.
                                             logger.info("[AGENT] end_call без аудіо — прощання вже прозвучало")
                                         return
+                                    # Double-turn guard: Gemini іноді генерує 2 тури підряд (~1-2с) без відповіді
+                                    # пацієнта. VAD між турами ловить фоновий шум → _real_vad_pending=True →
+                                    # другий тур обходить suppress. Якщо від кінця попереднього AI туру пройшло
+                                    # менше 2.5с і input_transcription не підтвердив реального голосу — це шум.
+                                    _MIN_INTER_TURN_GAP = 2.5
+                                    if _real_vad_pending[0] and not _had_patient_said:
+                                        if time.time() - _last_ai_turn_end[0] < _MIN_INTER_TURN_GAP:
+                                            _real_vad_pending[0] = False
+                                            logger.debug("[AGENT] Double-turn guard: _real_vad_pending скинуто (шум між турами)")
                                     # Реальний тур: suppress вимкнений АБО в цьому inner-loop був input_transcription.
                                     # Ghost/дублікатний тур: suppress=True і транскрипції не було.
                                     # _allow_next_turn: Turn 1 мав get_available_slots → дозволяємо Turn 2 гратися.
@@ -620,10 +633,26 @@ class Block1Agent:
                                     # реальне мовлення пацієнта в поточному циклі.
                                     if _had_patient_said:
                                         _suppress_next_audio[0] = False
-                                    # reschedule_visit — завжди блокуємо першу спробу (state < 2).
-                                    # AI повинен озвучити дату+час, почути "так" від пацієнта,
-                                    # ТОДІ викликати reschedule знову. Стан 1→2 через pre-scan.
-                                    if fc.name == "reschedule_visit" and _reschedule_state[0] < 2:
+                                    # Захист від передчасних дій: confirm/cancel/reschedule заборонено
+                                    # поки привітання не зіграло І поки пацієнт не сказав хоч щось.
+                                    # Без цього: SIP-шум на старті → garbage transcription → AI відразу
+                                    # скасовує запис ще до початку діалогу.
+                                    _is_destructive = fc.name in ("confirm_visit", "cancel_visit", "reschedule_visit")
+                                    if _is_destructive and (not _greeting_done.is_set() or _patient_said_count[0] == 0):
+                                        logger.warning(f"[AGENT] {fc.name} заблоковано — привітання ще не завершено або пацієнт ще не говорив")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={
+                                                "success": False,
+                                                "message": "Спочатку поговори з пацієнтом — дочекайся його відповіді на запитання.",
+                                            },
+                                        ))
+                                        continue
+                                    # reschedule_visit — блокуємо тільки першу спробу (state=0).
+                                    # AI отримує інструкцію спитати підтвердження → state→1.
+                                    # Якщо AI вирішила що пацієнт підтвердив — сама знову викличе reschedule_visit.
+                                    # Другий виклик (state=1) вже пропускаємо — AI сама вирішує.
+                                    if fc.name == "reschedule_visit" and _reschedule_state[0] < 1:
                                         logger.warning("[AGENT] reschedule_visit заблоковано — потрібне підтвердження від пацієнта")
                                         _reschedule_state[0] = 1
                                         # Gemini вже встигла згенерувати "Чудово! Перенесено" аудіо
@@ -682,6 +711,10 @@ class Block1Agent:
                                             ),
                                         }
                                     _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
+                                    # reschedule_visit успішно виконано → state=2 щоб end_call
+                                    # в тому ж батчі не блокувався (перевірка state==1 на рядку ~677).
+                                    if fc.name == "reschedule_visit" and result.get("success"):
+                                        _reschedule_state[0] = 2
                                     if fc.name == "get_available_slots" and result.get("success"):
                                         _slots_fetched = True
                                         # Якщо повернуто конкретні слоти для дати — позначаємо:
@@ -762,6 +795,7 @@ class Block1Agent:
                                 if not _turn1_has_periods:
                                     _allow_next_turn[0] = True  # ack-тур → Turn2 (реальні слоти) зіграє
                             # ЗАВЖДИ suppress — захист від самоговоріння (autonomous turns).
+                            _last_ai_turn_end[0] = time.time()  # double-turn guard
                             _suppress_next_audio[0] = True
                 except asyncio.CancelledError:
                     raise
