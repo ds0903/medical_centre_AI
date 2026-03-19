@@ -14,7 +14,7 @@ import time
 
 try:
     import webrtcvad as _webrtcvad
-    _VAD = _webrtcvad.Vad(1)   # aggressiveness 0-3: 1 = м'який, чує тихіший голос
+    _VAD = _webrtcvad.Vad(2)   # aggressiveness 0-3: 2 = стандарт для телефонії
     _VAD_AVAILABLE = True
 except ImportError:
     _VAD = None
@@ -148,7 +148,7 @@ class Block1Agent:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Leda"
+                        voice_name="Zephyr"
                     )
                 ),
                 language_code="uk-UA",
@@ -168,7 +168,7 @@ class Block1Agent:
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=1500,
+                    silence_duration_ms=1250,
                 )
             ),
         )
@@ -365,8 +365,8 @@ class Block1Agent:
                 _vad_buf = bytearray()  # буфер webrtcvad (потребує фіксовані 10мс = 320 байт)
                 # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
-                _NOISE_ALPHA = 0.03    # швидкість адаптації (~30 chunks для стабілізації)
-                _SNR_RATIO = 1.5       # мін. SNR: голос повинен бути в 1.5x гучніше фону
+                _NOISE_ALPHA = 0.05    # швидкість адаптації (~20 chunks для стабілізації)
+                _SNR_RATIO = 2.0       # мін. SNR: голос повинен бути в 2.0x гучніше фону
                 # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
                 # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
                 # перші склади слова пацієнта що прозвучали під час gate.
