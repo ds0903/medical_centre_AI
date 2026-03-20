@@ -38,39 +38,47 @@ def _slot_period(hour: int) -> str:
         return "вечір"
 
 
-def _ordinal_suffix(day: int) -> str:
-    """Закінчення порядкового числівника: 1→ше, 2→ге, 3→тє, решта→те."""
-    if day == 1:
-        return "ше"
-    if day == 2:
-        return "ге"
-    if day == 3:
-        return "тє"
-    return "те"
+_UA_ORDINALS = {
+    1: "перше", 2: "друге", 3: "третє", 4: "четверте", 5: "п'яте",
+    6: "шосте", 7: "сьоме", 8: "восьме", 9: "дев'яте", 10: "десяте",
+    11: "одинадцяте", 12: "дванадцяте", 13: "тринадцяте", 14: "чотирнадцяте",
+    15: "п'ятнадцяте", 16: "шістнадцяте", 17: "сімнадцяте", 18: "вісімнадцяте",
+    19: "дев'ятнадцяте", 20: "двадцяте",
+    21: "двадцять перше", 22: "двадцять друге", 23: "двадцять третє",
+    24: "двадцять четверте", 25: "двадцять п'яте", 26: "двадцять шосте",
+    27: "двадцять сьоме", 28: "двадцять восьме", 29: "двадцять дев'яте",
+    30: "тридцяте", 31: "тридцять перше",
+}
+# Зворотній словник: "дванадцяте" → 12 (для числового fallback у матчингу)
+_NUM_FROM_ORDINAL: dict[str, int] = {v: k for k, v in _UA_ORDINALS.items()}
+
+
+def _ua_ordinal(day: int) -> str:
+    """Повний порядковий числівник середнього роду: 14 → 'чотирнадцяте'."""
+    return _UA_ORDINALS.get(day, f"{day}-те")
 
 
 def _natural_date_list(date_summaries: list[dict]) -> str:
     """
-    Будує природній перелік дат для вимови AI — всі з закінченням '-те'.
+    Будує природній перелік дат для вимови AI — дати вже в ordinal форматі.
 
-    Один місяць:  "12-те, 13-те, 14-те, 15-те, 16-те або 17-те жовтня"
-    Різні місяці: "12-те жовтня або 5-те листопада"
+    Один місяць:  "дванадцяте, тринадцяте або чотирнадцяте жовтня"
+    Різні місяці: "дванадцяте жовтня або п'яте листопада"
     """
-    by_month: dict[str, list[int]] = {}
+    by_month: dict[str, list[str]] = {}
     order: list[str] = []
     for d in date_summaries:
         parts = d["date"].split()
-        day = int(parts[0])
+        day_word = parts[0]   # вже ordinal: "дванадцяте"
         month = parts[1] if len(parts) > 1 else ""
         if month not in by_month:
             by_month[month] = []
             order.append(month)
-        by_month[month].append(day)
+        by_month[month].append(day_word)
 
     segments = []
     for month in order:
-        days = by_month[month]
-        items = [f"{d}-{_ordinal_suffix(d)}" for d in days]
+        items = by_month[month]
         if len(items) == 1:
             segments.append(f"{items[0]} {month}")
         else:
@@ -287,7 +295,7 @@ async def handle_tool_call(
         dates_map: dict[str, list[dict]] = {}
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
-            date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
+            date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
             time_str = f"{dt.hour}:{dt.minute:02d}"  # без ведучого нуля: 8:30, 9:00
             period = _slot_period(dt.hour)
             slot = {
@@ -302,12 +310,23 @@ async def handle_tool_call(
 
         if requested_date:
             # КРОК 2: пацієнт обрав дату → повертаємо слоти тільки за цю дату
-            # Шукаємо дату (нечіткий пошук — "15" матчить "15 жовтня")
+            # Нечіткий пошук — "дванадцяте жовтня" або "12 жовтня" або просто "12"
             matched_slots = None
+            _req = requested_date.lower().strip()
             for d, slots in dates_map.items():
-                if requested_date in d or d in requested_date:
+                if _req in d.lower() or d.lower() in _req:
                     matched_slots = slots
                     break
+            if not matched_slots:
+                # Числовий fallback: AI передала "12" або "12 жовтня" → шукаємо ordinal ключ
+                try:
+                    _req_day = int(_req.split()[0])
+                    for d, slots in dates_map.items():
+                        if _NUM_FROM_ORDINAL.get(d.split()[0]) == _req_day:
+                            matched_slots = slots
+                            break
+                except (ValueError, IndexError):
+                    pass
             if not matched_slots:
                 return {
                     "success": False,
