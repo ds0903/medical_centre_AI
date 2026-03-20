@@ -692,16 +692,20 @@ class Block1Agent:
                                         continue
                                     # end_call поки чекаємо підтвердження переносу:
                                     # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
+                                    # Виняток: cancel_visit вже виконано → reschedule flow не актуальний → дозволяємо.
                                     if fc.name == "end_call" and _reschedule_state[0] == 1:
-                                        logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
-                                        _batch.append(types.FunctionResponse(
-                                            id=fc.id, name=fc.name,
-                                            response={
-                                                "success": False,
-                                                "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
-                                            },
-                                        ))
-                                        continue
+                                        if _call_cache.get("cancel_visit", {}).get("success"):
+                                            logger.debug("[AGENT] end_call дозволено — cancel_visit вже виконано (reschedule скасовано)")
+                                        else:
+                                            logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
+                                            _batch.append(types.FunctionResponse(
+                                                id=fc.id, name=fc.name,
+                                                response={
+                                                    "success": False,
+                                                    "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
+                                                },
+                                            ))
+                                            continue
                                     # end_call разом з get_available_slots (одному батчі або в наступному) = галюцинація:
                                     # Gemini отримала слоти але ще не сказала їх пацієнту, вже хоче завершити.
                                     # _slots_fetched: захист в межах поточного батчу
@@ -858,22 +862,27 @@ class Block1Agent:
                     _slack = (_play_start + _played_dur) - time.monotonic()
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
-                # Завжди надсилаємо primer після програвання буфера — для обох випадків:
+                # Primer надсилаємо тільки коли він дійсно потрібен:
                 # 1. Stale warmup: нова сесія не знає про привітання → primer інформує.
-                # 2. Fresh warmup: keepalive надсилав тишу через send_realtime_input →
-                #    Gemini VAD міг інтерпретувати тишу як "пацієнт мовчить" і згенерувати
-                #    ще одне привітання у черзі. _suppress_next_audio=True дренує цю чергу.
+                # 2. Keepalive стріляв: send_realtime_input(silence) → Gemini VAD міг
+                #    інтерпретувати тишу як "пацієнт мовчить" і поставити відповідь у чергу.
+                #    _suppress_next_audio=True дренує цю чергу.
+                # Fresh warmup без keepalive: черга чиста → primer не потрібен (не буде ghost).
                 # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
                 # галюцинує і вголос промовляє текст внутрішніх інструкцій.
-                _suppress_next_audio[0] = True
-                await session.send_client_content(
-                    turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
-                    turn_complete=True,
-                )
-                if _stale_warmup[0]:
-                    logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
+                _needs_primer = _stale_warmup[0] or getattr(self, '_keepalive_fired', False)
+                if _needs_primer:
+                    _suppress_next_audio[0] = True
+                    await session.send_client_content(
+                        turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
+                        turn_complete=True,
+                    )
+                    if _stale_warmup[0]:
+                        logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
+                    else:
+                        logger.info("[AGENT] Fresh warmup: primer надіслано (keepalive стріляв — дренуємо чергу)")
                 else:
-                    logger.info("[AGENT] Fresh warmup: primer надіслано (дренуємо чергу keepalive)")
+                    logger.info("[AGENT] Fresh warmup без keepalive: primer не потрібен")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
@@ -1013,6 +1022,7 @@ class Block1Agent:
         self._greeting_buffer: list[bytes] = []
         self._greeting_duration: float = 0.0  # тривалість привітання в секундах
         self._prefetched_raw_slots: list | None = None
+        self._keepalive_fired: bool = False   # True якщо keepalive хоч раз надіслав тишу → потрібен primer
         _warmup_cm = None
 
         # Prefetch слотів паралельно з генерацією привітання.
@@ -1076,6 +1086,7 @@ class Block1Agent:
                         await _session.send_realtime_input(
                             audio={"data": _silence, "mime_type": "audio/pcm;rate=16000"}
                         )
+                        self._keepalive_fired = True
                         logger.info("[AGENT] Keepalive: silence → warmup session OK")
                     except asyncio.CancelledError:
                         break
