@@ -248,6 +248,9 @@ class Block1Agent:
             # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
             # 2 = пацієнт відповів після блокування → дозволяємо reschedule
             _reschedule_state = [0]
+            # True одразу після блокування reschedule_visit → наступний тур (питання
+            # підтвердження) повинен пробитись крізь suppress. Одноразовий прапор.
+            _reschedule_just_blocked = [False]
             # True якщо get_available_slots(date=...) вже виконано в цьому дзвінку.
             # Потрібно для розрізнення "пацієнт підтвердив після вибору часу" від
             # "Gemini намагається reschedule без вибору дати і часу".
@@ -669,6 +672,7 @@ class Block1Agent:
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 1:
                                         logger.warning("[AGENT] reschedule_visit заблоковано — потрібне підтвердження від пацієнта")
                                         _reschedule_state[0] = 1
+                                        _reschedule_just_blocked[0] = True
                                         # Gemini вже встигла згенерувати "Чудово! Перенесено" аудіо
                                         # поки обробляли tool call → flush SIP буфер і придушуємо
                                         _suppress_next_audio[0] = True
@@ -785,6 +789,12 @@ class Block1Agent:
                         if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
                             _allow_next_turn[0] = True   # Turn 2 (правильні дати) проривається крізь suppress
                             logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, дозволяємо Turn 2")
+                        # reschedule_visit щойно заблоковано → AI зараз генерує питання підтвердження.
+                        # Це питання мусить пробитись крізь suppress (інакше стає ghost → пацієнт не чує).
+                        if not _draining and _greeting_done.is_set() and _reschedule_just_blocked[0]:
+                            _reschedule_just_blocked[0] = False
+                            _allow_next_turn[0] = True
+                            logger.debug("[AGENT] reschedule blocked → allow next turn (питання підтвердження)")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             # Ехо-гейт після turn_complete: 0.8с замість 2.0с.
                             # Коротший gate → аудіо пацієнта доходить до Gemini раніше,
