@@ -858,18 +858,22 @@ class Block1Agent:
                     _slack = (_play_start + _played_dur) - time.monotonic()
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
+                # Завжди надсилаємо primer після програвання буфера — для обох випадків:
+                # 1. Stale warmup: нова сесія не знає про привітання → primer інформує.
+                # 2. Fresh warmup: keepalive надсилав тишу через send_realtime_input →
+                #    Gemini VAD міг інтерпретувати тишу як "пацієнт мовчить" і згенерувати
+                #    ще одне привітання у черзі. _suppress_next_audio=True дренує цю чергу.
+                # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
+                # галюцинує і вголос промовляє текст внутрішніх інструкцій.
+                _suppress_next_audio[0] = True
+                await session.send_client_content(
+                    turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
+                    turn_complete=True,
+                )
                 if _stale_warmup[0]:
-                    # Нова сесія не знає про привітання → primer з turn_complete=True.
-                    # _suppress_next_audio=True: якщо Gemini згенерує відповідь на primer —
-                    # глушимо її (пацієнт вже чув привітання, повторення не потрібне).
-                    # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
-                    # галюцинує і вголос промовляє текст внутрішніх інструкцій.
-                    _suppress_next_audio[0] = True
-                    await session.send_client_content(
-                        turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
-                        turn_complete=True,
-                    )
                     logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
+                else:
+                    logger.info("[AGENT] Fresh warmup: primer надіслано (дренуємо чергу keepalive)")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
