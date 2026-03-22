@@ -456,6 +456,7 @@ class Block1Agent:
                         turn_had_content = False
                         turn_had_audio = False       # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0         # байти аудіо в цьому турі → для розрахунку затримки
+                        _turn_first_audio_time: float | None = None  # час першого resp.data → echo gate forward-dating
                         _turn_audio_played = False   # True якщо аудіо реально відправлено пацієнту (не dropped)
                         _had_patient_said = False    # True якщо в поточному inner-loop був input_transcription
                         # True якщо в цьому турі є get_available_slots(no date) з успішним результатом.
@@ -585,18 +586,22 @@ class Block1Agent:
                                     _turn_audio_played = False  # скидаємо для наступного ghost-туру
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
+                                # Рахуємо байти ДО gate — _calc_echo_gate потребує актуальний total.
+                                turn_audio_bytes += len(resp.data)
+                                # Фіксуємо час першого чанку туру — для forward-dating на turn_complete.
+                                if _turn_first_audio_time is None:
+                                    _turn_first_audio_time = time.time()
                                 if _suppress_slots_turn and not _allow_next_turn[0]:
                                     pass  # Turn 1 після get_available_slots(no date) → завжди drop, Turn 2 грає замість
                                 elif not _suppress_next_audio[0] or _allow_next_turn[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     await binotel_call.send_audio(resp.data)
                                     _turn_audio_played = True   # аудіо реально дійшло до пацієнта
-                                    # Гейт ТІЛЬКИ коли аудіо реально грає через SIP.
-                                    # Оновлюємо щоразу — gate "ковзає" разом з мовою AI.
+                                    # Гейт "ковзає" разом з мовою AI під час стріму.
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
+                                    # Точний forward-dating виставляється на turn_complete (нижче).
                                     _interrupted_pause_until[0] = time.time() + _calc_echo_gate(turn_audio_bytes)
                                 turn_had_audio = True
-                                turn_audio_bytes += len(resp.data)
                                 _activity[0] = time.time()
                                 # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
                                 _patient_spoke.set()
@@ -809,14 +814,31 @@ class Block1Agent:
                             _allow_next_turn[0] = True
                             logger.debug("[AGENT] reschedule blocked → allow next turn (питання підтвердження)")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт після turn_complete: 0.8с замість 2.0с.
-                            # Коротший gate → аудіо пацієнта доходить до Gemini раніше,
-                            # зменшуючи вікно inter-turn gap (1-3с) де Gemini ігнорує аудіо.
-                            # _calc_echo_gate під час аудіо вже "ковзає" і виставляє 0.3-1.0с
-                            # після останнього чанку → +0.8с від turn_complete як мінімальний буфер.
+                            # Ехо-гейт після turn_complete: forward-dating на залишок відтворення.
+                            #
+                            # ПРОБЛЕМА без forward-dating:
+                            #   Gemini стримить аудіо швидше ніж real-time (напр. 8с мови за 1.5с).
+                            #   Після turn_complete аудіо ще відтворюється на телефоні пацієнта.
+                            #   Якщо gate = now+1.0с → спливає до завершення відтворення →
+                            #   ехо з гучномовника повертається до Gemini → AI "чує себе" →
+                            #   галюцинації, передчасні confirm_visit і т.д.
+                            #
+                            # РІШЕННЯ: forward-dating аналогічно watchdog.
+                            #   elapsed = скільки пройшло від першого чанку туру
+                            #   remaining = max(0, total_audio_duration - elapsed)
+                            #   gate = remaining + 1.5с (затухання ехо кімнати + SIP jitter)
+                            #
+                            # 1.5с: SIP round-trip ~50мс + room RT60 ~300-800мс + запас 650мс.
+                            # Якщо remaining=0 (повільний стрім, real-time) → gate = 1.5с (мінімум).
+                            _echo_elapsed = (
+                                time.time() - _turn_first_audio_time
+                                if _turn_first_audio_time is not None
+                                else 0.0
+                            )
+                            _echo_remaining = max(0.0, (turn_audio_bytes / 48000) - _echo_elapsed)
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + 1.0,
+                                time.time() + _echo_remaining + 1.5,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
                             if _date_slots_fetched[0]:
@@ -890,9 +912,10 @@ class Block1Agent:
                 # Ехо повертається в SIP-мікрофон і потрапляє в send_task → Gemini чує
                 # "своє" привітання як "аудіо пацієнта" → VAD спрацьовує → Gemini генерує
                 # відповідь на ехо → ще один небажаний тур.
-                # Gate = 1с (достатньо для затухання SIP-ехо); той самий підхід що і після
-                # turn_complete в recv_task.
-                _interrupted_pause_until[0] = time.time() + 1.0
+                # Gate = 1.5с (SIP jitter ~50мс + room echo decay ~800мс + запас 650мс).
+                # Greeting грає в real-time (sleep у циклі) → по виходу залишок відтворення ≈ 0 →
+                # потрібна тільки затримка затухання ехо кімнати.
+                _interrupted_pause_until[0] = time.time() + 1.5
                 # ────────────────────────────────────────────────────────────────────────
                 # Primer — тільки для stale сесії (відновленої через handle):
                 # нова сесія не має history привітання → треба повідомити Gemini.
