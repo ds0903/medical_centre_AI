@@ -305,7 +305,7 @@ class Block1Agent:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
                             turns={"parts": [{"text": (
-                                "Скажи пацієнту: «Алло, ви мене чуєте?» — і мовчки чекай."
+                                "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."
                             )}]},
                             turn_complete=True,
                         )
@@ -365,7 +365,7 @@ class Block1Agent:
                     try:
                         _suppress_next_audio[0] = False
                         await session.send_client_content(
-                            turns={"parts": [{"text": "Скажи пацієнту: «Алло, ви мене чуєте?» — і мовчки чекай."}]},
+                            turns={"parts": [{"text": "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."}]},
                             turn_complete=True,
                         )
                     except Exception as e:
@@ -456,7 +456,6 @@ class Block1Agent:
                         turn_had_content = False
                         turn_had_audio = False       # True якщо в цьому турі AI говорила
                         turn_audio_bytes = 0         # байти аудіо в цьому турі → для розрахунку затримки
-                        _turn_first_audio_time: float | None = None  # час першого resp.data → echo gate forward-dating
                         _turn_audio_played = False   # True якщо аудіо реально відправлено пацієнту (не dropped)
                         _had_patient_said = False    # True якщо в поточному inner-loop був input_transcription
                         # True якщо в цьому турі є get_available_slots(no date) з успішним результатом.
@@ -486,7 +485,13 @@ class Block1Agent:
                                 # input_transcription замінює patient_said tool:
                                 # Gemini надсилає транскрипцію вхідного аудіо без tool call →
                                 # ніякої відповіді не потрібно → ніяких ghost-турів.
-                                if sc.input_transcription and sc.input_transcription.text:
+                                # Guard 1: поки greeting не зіграло — будь-яка транскрипція фантомна
+                                # (warmup leakage / ехо), ігноруємо щоб не тригерити tool calls.
+                                # Guard 2: під час echo gate — аудіо до Gemini не йде, тож
+                                # будь-яка транскрипція це артефакт; ігноруємо.
+                                if (sc.input_transcription and sc.input_transcription.text
+                                        and _greeting_done.is_set()
+                                        and time.time() >= _interrupted_pause_until[0]):
                                     _it_text = sc.input_transcription.text.strip()
                                     if _it_text and _it_text != _last_patient_said_text[0]:
                                         _last_patient_said_text[0] = _it_text
@@ -586,11 +591,7 @@ class Block1Agent:
                                     _turn_audio_played = False  # скидаємо для наступного ghost-туру
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
-                                # Рахуємо байти ДО gate — _calc_echo_gate потребує актуальний total.
                                 turn_audio_bytes += len(resp.data)
-                                # Фіксуємо час першого чанку туру — для forward-dating на turn_complete.
-                                if _turn_first_audio_time is None:
-                                    _turn_first_audio_time = time.time()
                                 if _suppress_slots_turn and not _allow_next_turn[0]:
                                     pass  # Turn 1 після get_available_slots(no date) → завжди drop, Turn 2 грає замість
                                 elif not _suppress_next_audio[0] or _allow_next_turn[0]:
@@ -814,31 +815,15 @@ class Block1Agent:
                             _allow_next_turn[0] = True
                             logger.debug("[AGENT] reschedule blocked → allow next turn (питання підтвердження)")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
-                            # Ехо-гейт після turn_complete: forward-dating на залишок відтворення.
-                            #
-                            # ПРОБЛЕМА без forward-dating:
-                            #   Gemini стримить аудіо швидше ніж real-time (напр. 8с мови за 1.5с).
-                            #   Після turn_complete аудіо ще відтворюється на телефоні пацієнта.
-                            #   Якщо gate = now+1.0с → спливає до завершення відтворення →
-                            #   ехо з гучномовника повертається до Gemini → AI "чує себе" →
-                            #   галюцинації, передчасні confirm_visit і т.д.
-                            #
-                            # РІШЕННЯ: forward-dating аналогічно watchdog.
-                            #   elapsed = скільки пройшло від першого чанку туру
-                            #   remaining = max(0, total_audio_duration - elapsed)
-                            #   gate = remaining + 1.5с (затухання ехо кімнати + SIP jitter)
-                            #
-                            # 1.5с: SIP round-trip ~50мс + room RT60 ~300-800мс + запас 650мс.
-                            # Якщо remaining=0 (повільний стрім, real-time) → gate = 1.5с (мінімум).
-                            _echo_elapsed = (
-                                time.time() - _turn_first_audio_time
-                                if _turn_first_audio_time is not None
-                                else 0.0
-                            )
-                            _echo_remaining = max(0.0, (turn_audio_bytes / 48000) - _echo_elapsed)
+                            # Ехо-гейт після turn_complete: 1.0с буфер після останнього чанку.
+                            # Під час стріму gate вже "ковзав" з кожним resp.data (0.3-1.0с).
+                            # +1.0с від turn_complete → сумарно 1.3-2.0с захисту від ехо.
+                            # Довший gate (forward-dating) вбиває barge-in → не використовуємо.
+                            # Рідкісне ехо з гучномовника після gate → Gemini AEC + input_transcription
+                            # guard (нижче) запобігають false confirm/cancel.
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + _echo_remaining + 1.5,
+                                time.time() + 1.0,
                             )
                             _schedule_silence_timer(audio_delay=0.0)
                             if _date_slots_fetched[0]:
