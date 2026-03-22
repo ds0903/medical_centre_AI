@@ -135,13 +135,15 @@ class Block1Agent:
         self.call_duration: float = 0.0
         self._pa = pyaudio.PyAudio() if _PYAUDIO_AVAILABLE else None
         self._end_event = asyncio.Event()
-        self._keepalive_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task | None = None
+        self._resumption_handle: str | None = None
+        self._session_reconnected: bool = False
 
     # ------------------------------------------------------------------
     # Конфіг сесії
     # ------------------------------------------------------------------
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self, resume_handle: str | None = None) -> types.LiveConnectConfig:
         prompt = build_system_prompt(self.visit)
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -170,6 +172,13 @@ class Block1Agent:
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
                     silence_duration_ms=1200,
                 )
+            ),
+            # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
+            # Замінює silence keepalive — більше не треба надсилати тишу щоб утримати сесію.
+            # resume_handle=None → нова сесія; resume_handle=<token> → відновлення контексту.
+            session_resumption=types.SessionResumptionConfig(
+                handle=resume_handle,
+                transparent=True,
             ),
         )
 
@@ -825,6 +834,10 @@ class Block1Agent:
                             # ЗАВЖДИ suppress — захист від самоговоріння (autonomous turns).
                             _last_ai_turn_end[0] = time.time()  # double-turn guard
                             _suppress_next_audio[0] = True
+                            # Watchdog: відлік починається від кінця ВІДТВОРЕННЯ, не від генерації.
+                            # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
+                            # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
+                            _activity[0] = time.time() + (turn_audio_bytes / 48000)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -870,19 +883,16 @@ class Block1Agent:
                 # Fresh warmup без keepalive: черга чиста → primer не потрібен (не буде ghost).
                 # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
                 # галюцинує і вголос промовляє текст внутрішніх інструкцій.
-                _needs_primer = _stale_warmup[0] or getattr(self, '_keepalive_fired', False)
+                _needs_primer = _stale_warmup[0]
                 if _needs_primer:
                     _suppress_next_audio[0] = True
                     await session.send_client_content(
                         turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
                         turn_complete=True,
                     )
-                    if _stale_warmup[0]:
-                        logger.info("[AGENT] Stale warmup: primer надіслано в нову сесію")
-                    else:
-                        logger.info("[AGENT] Fresh warmup: primer надіслано (keepalive стріляв — дренуємо чергу)")
+                    logger.info("[AGENT] Stale warmup: primer надіслано в відновлену сесію")
                 else:
-                    logger.info("[AGENT] Fresh warmup без keepalive: primer не потрібен")
+                    logger.info("[AGENT] Fresh warmup: primer не потрібен")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
@@ -941,31 +951,17 @@ class Block1Agent:
         self._warmup_session = None
         self._warmup_cm = None
 
-        # Зупиняємо keepalive — пацієнт відповів, сесія зараз буде використана або закрита
-        if self._keepalive_task and not self._keepalive_task.done():
-            self._keepalive_task.cancel()
-        self._keepalive_task = None
+        # Зупиняємо monitor — пацієнт відповів, сесія зараз буде використана або закрита
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+        self._monitor_task = None
 
-        # Gemini Live закриває idle сесію через ~30с без активності.
-        # Keepalive надсилає тишу кожні 15с → сесія залишається живою довго.
-        # Поріг 60с: keepalive на 45с + ~15с запас до наступного Gemini TTL.
-        if warmup_session and warmup_cm:
-            _warmup_age = time.time() - getattr(self, '_warmup_time', 0)
-            if _warmup_age > 60:
-                logger.warning(
-                    f"[AGENT] Warmup сесія застаріла ({_warmup_age:.0f}с > 60с) → cold path"
-                )
-                try:
-                    await asyncio.wait_for(
-                        warmup_cm.__aexit__(None, None, None), timeout=1.0
-                    )
-                except Exception:
-                    pass
-                warmup_session = None
-                warmup_cm = None
-                # Буфер ще валідний — відтворимо пацієнту, нова cold сесія отримає primer.
-                if greeting_buffer:
-                    _stale_warmup[0] = True
+        # Session resumption: якщо monitor перепідключився через GoAway або idle close —
+        # self._warmup_session вже вказує на свіжу сесію з відновленим контекстом.
+        # Primer потрібен лише якщо відбувалось відновлення (сесія не та що генерувала привітання).
+        if getattr(self, '_session_reconnected', False) and warmup_session and greeting_buffer:
+            _stale_warmup[0] = True
+            logger.info("[AGENT] Session була відновлена через handle → primer буде надіслано")
 
         try:
             if warmup_session and warmup_cm:
@@ -1022,7 +1018,8 @@ class Block1Agent:
         self._greeting_buffer: list[bytes] = []
         self._greeting_duration: float = 0.0  # тривалість привітання в секундах
         self._prefetched_raw_slots: list | None = None
-        self._keepalive_fired: bool = False   # True якщо keepalive хоч раз надіслав тишу → потрібен primer
+        self._resumption_handle = None
+        self._session_reconnected = False
         _warmup_cm = None
 
         # Prefetch слотів паралельно з генерацією привітання.
@@ -1041,23 +1038,124 @@ class Block1Agent:
 
         prefetch_task = asyncio.create_task(_warmup_prefetch(), name="warmup_prefetch_slots")
 
+        def _start_monitor(initial_session, initial_cm) -> asyncio.Task:
+            """
+            Запускає фоновий монітор warmup-сесії.
+
+            Замінює silence keepalive: більше не надсилаємо аудіо-тишу щоб уникнути
+            ghost-ів та передчасних end_call від Gemini.
+
+            Логіка:
+            - Читає повідомлення від Gemini (session_resumption_update, go_away).
+            - session_resumption_update → зберігає новий handle.
+            - go_away (Gemini закривається через ~60с) → відновлює сесію через handle.
+            - Помилка з'єднання → відновлює сесію через handle (якщо є).
+            - Без handle → warmup_session = None (cold path у run_production).
+            """
+            async def _monitor_loop() -> None:
+                current_session = initial_session
+                current_cm = initial_cm
+
+                while True:
+                    session_dead = False
+                    try:
+                        while True:
+                            try:
+                                msg = await asyncio.wait_for(
+                                    current_session._receive(), timeout=30.0
+                                )
+                            except asyncio.TimeoutError:
+                                # Тиша від сервера — нормально між турами. Продовжуємо.
+                                continue
+                            if (msg.session_resumption_update
+                                    and msg.session_resumption_update.new_handle):
+                                self._resumption_handle = msg.session_resumption_update.new_handle
+                                logger.debug("[AGENT] Monitor: resumption handle оновлено")
+                            if msg.go_away:
+                                logger.warning(
+                                    f"[AGENT] Monitor: GoAway ({msg.go_away.time_left})"
+                                    " — відновлюємо сесію..."
+                                )
+                                session_dead = True
+                                break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as _e:
+                        _name = type(_e).__name__
+                        # ConnectionClosedOK → штатне закриття після дзвінка, не логуємо як помилку
+                        if "ConnectionClosedOK" not in _name and getattr(_e, "code", None) != 1000:
+                            logger.info(f"[AGENT] Monitor: сесія закрита ({_name}) — відновлення...")
+                        session_dead = True
+
+                    if not session_dead:
+                        break  # CancelledError або штатне завершення без GoAway
+
+                    if not self._resumption_handle:
+                        logger.warning("[AGENT] Monitor: немає handle → cold path")
+                        self._warmup_session = None
+                        self._warmup_cm = None
+                        break
+
+                    # Відновлюємо сесію через handle — контекст (привітання) збережено
+                    try:
+                        try:
+                            await asyncio.wait_for(
+                                current_cm.__aexit__(None, None, None), timeout=1.0
+                            )
+                        except Exception:
+                            pass
+
+                        new_cm = self.client.aio.live.connect(
+                            model=GEMINI_MODEL,
+                            config=self._build_config(
+                                resume_handle=self._resumption_handle
+                            ),
+                        )
+                        new_session = await new_cm.__aenter__()
+                        current_session = new_session
+                        current_cm = new_cm
+                        self._warmup_session = new_session
+                        self._warmup_cm = new_cm
+                        self._warmup_time = time.time()
+                        self._session_reconnected = True
+                        logger.info("[AGENT] Monitor: warmup сесію відновлено через handle")
+                        # Продовжуємо зовнішній while True з новою сесією
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as _reconnect_err:
+                        logger.error(
+                            f"[AGENT] Monitor: відновлення провалилось: {_reconnect_err!r}"
+                            " → cold path"
+                        )
+                        self._warmup_session = None
+                        self._warmup_cm = None
+                        break
+
+            return asyncio.create_task(_monitor_loop(), name="warmup_monitor")
+
+        async def _generate_greeting(session) -> None:
+            """Генерує привітання і буферизує аудіо. Захоплює handle якщо прийшов під час туру."""
+            await session.send_client_content(
+                turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
+                turn_complete=True,
+            )
+            async for resp in session.receive():
+                if resp.data:
+                    self._greeting_buffer.append(resp.data)
+                    self._greeting_duration += len(resp.data) / 48000
+                if (resp.session_resumption_update
+                        and resp.session_resumption_update.new_handle):
+                    self._resumption_handle = resp.session_resumption_update.new_handle
+                if resp.server_content and resp.server_content.turn_complete:
+                    break
+
         try:
             _warmup_cm = self.client.aio.live.connect(
                 model=GEMINI_MODEL,
                 config=self._build_config(),
             )
             warmup_session = await _warmup_cm.__aenter__()
-            await warmup_session.send_client_content(
-                turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
-                turn_complete=True,
-            )
-            async for resp in warmup_session.receive():
-                if resp.data:
-                    self._greeting_buffer.append(resp.data)
-                    # 24kHz 16-bit = 48000 bytes/sec → тривалість цього chunk
-                    self._greeting_duration += len(resp.data) / 48000
-                if resp.server_content and resp.server_content.turn_complete:
-                    break
+            await _generate_greeting(warmup_session)
 
             # Чекаємо завершення prefetch якщо ще не закінчився (greeting зазвичай довше)
             if not prefetch_task.done():
@@ -1071,32 +1169,12 @@ class Block1Agent:
                 f" ({self._greeting_duration:.1f}с)"
                 + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
             )
-            # Зберігаємо сесію живою — run_production() реюзає її (Варіант А)
             self._warmup_cm = _warmup_cm
             self._warmup_session = warmup_session
-            self._warmup_time = time.time()  # для перевірки стану сесії в run_production
+            self._warmup_time = time.time()
             _warmup_cm = None  # не закривати в finally
 
-            # Keepalive: кожні 15с надсилаємо тишу щоб Gemini не закрив idle сесію
-            async def _keepalive_loop(_session=warmup_session) -> None:
-                _silence = b'\x00' * 3200  # 100мс тиші @ 16kHz 16-bit
-                while True:
-                    await asyncio.sleep(15)
-                    try:
-                        await _session.send_realtime_input(
-                            audio={"data": _silence, "mime_type": "audio/pcm;rate=16000"}
-                        )
-                        self._keepalive_fired = True
-                        logger.info("[AGENT] Keepalive: silence → warmup session OK")
-                    except asyncio.CancelledError:
-                        break
-                    except Exception as _e:
-                        # ConnectionClosedOK (code=1000) — сесія закрита штатно після дзвінка
-                        if "ConnectionClosedOK" in type(_e).__name__ or getattr(_e, "code", None) == 1000:
-                            break
-                        logger.warning(f"[AGENT] Keepalive помилка: {_e!r} — продовжуємо")
-
-            self._keepalive_task = asyncio.create_task(_keepalive_loop(), name="warmup_keepalive")
+            self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
         except Exception as e:
             logger.warning(f"[AGENT] Warmup помилка: {e} — retry через 1с...")
             self._greeting_buffer = []
@@ -1116,21 +1194,13 @@ class Block1Agent:
                     config=self._build_config(),
                 )
                 warmup_session = await _warmup_cm.__aenter__()
-                await warmup_session.send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
-                    turn_complete=True,
-                )
-                async for resp in warmup_session.receive():
-                    if resp.data:
-                        self._greeting_buffer.append(resp.data)
-                        self._greeting_duration += len(resp.data) / 48000
-                    if resp.server_content and resp.server_content.turn_complete:
-                        break
+                await _generate_greeting(warmup_session)
                 self._warmup_cm = _warmup_cm
                 self._warmup_session = warmup_session
                 self._warmup_time = time.time()
                 _warmup_cm = None
                 logger.info(f"[AGENT] Warmup retry успішний: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
+                self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
             except Exception as e2:
                 logger.warning(f"[AGENT] Warmup retry також провалився: {e2} — cold path")
                 self._greeting_buffer = []
