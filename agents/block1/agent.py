@@ -875,24 +875,37 @@ class Block1Agent:
                     _slack = (_play_start + _played_dur) - time.monotonic()
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
-                # Primer надсилаємо тільки коли він дійсно потрібен:
-                # 1. Stale warmup: нова сесія не знає про привітання → primer інформує.
-                # 2. Keepalive стріляв: send_realtime_input(silence) → Gemini VAD міг
-                #    інтерпретувати тишу як "пацієнт мовчить" і поставити відповідь у чергу.
-                #    _suppress_next_audio=True дренує цю чергу.
-                # Fresh warmup без keepalive: черга чиста → primer не потрібен (не буде ghost).
-                # turn_complete=False ЗАБОРОНЕНО: Gemini в незавершеному стані
-                # галюцинує і вголос промовляє текст внутрішніх інструкцій.
+                # ── Suppress + echo gate після buffer playback ──────────────────────────
+                # ПРОБЛЕМА: buffer грає напряму через binotel_call.send_audio(), обходячи
+                # recv_task. recv_task ніколи не "бачив" цього аудіо-туру → ніколи не
+                # виставляв _suppress_next_audio після turn_complete → Gemini генерує
+                # автономний continuation turn (друге привітання) і він ГРАЄ, бо suppress=False.
+                #
+                # FIX 1 — suppress: завжди виставляємо після buffer, незалежно від primer.
+                # Діє так само як recv_task виставляє після будь-якого реального AI-туру.
+                _suppress_next_audio[0] = True
+                _last_ai_turn_end[0] = time.time()   # double-turn guard baseline
+                #
+                # FIX 2 — echo gate: greeting щойно відіграло через SIP-динамік пацієнта.
+                # Ехо повертається в SIP-мікрофон і потрапляє в send_task → Gemini чує
+                # "своє" привітання як "аудіо пацієнта" → VAD спрацьовує → Gemini генерує
+                # відповідь на ехо → ще один небажаний тур.
+                # Gate = 1с (достатньо для затухання SIP-ехо); той самий підхід що і після
+                # turn_complete в recv_task.
+                _interrupted_pause_until[0] = time.time() + 1.0
+                # ────────────────────────────────────────────────────────────────────────
+                # Primer — тільки для stale сесії (відновленої через handle):
+                # нова сесія не має history привітання → треба повідомити Gemini.
+                # turn_complete=False ЗАБОРОНЕНО: Gemini галюцинує в незавершеному стані.
                 _needs_primer = _stale_warmup[0]
                 if _needs_primer:
-                    _suppress_next_audio[0] = True
                     await session.send_client_content(
                         turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
                         turn_complete=True,
                     )
                     logger.info("[AGENT] Stale warmup: primer надіслано в відновлену сесію")
                 else:
-                    logger.info("[AGENT] Fresh warmup: primer не потрібен")
+                    logger.info("[AGENT] Fresh warmup: suppress + echo gate встановлено")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
