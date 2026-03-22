@@ -281,9 +281,14 @@ async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optio
             "Binotel сервіси не ініціалізовані. Викличте binotel.startup() спочатку."
         )
 
-    # Скидаємо Opus-прапор перед новим дзвінком — кожен дзвінок визначає Opus заново через SDP
+    # Скидаємо прапори перед новим дзвінком — кожен дзвінок визначає кодек заново через SDP.
+    # _encode_pcmu_log_done: якщо не скинути → set_codec_alaw() пропускається для дзвінка 2+
+    # → _use_alaw=False після reset_state() → AI голос відправляється µ-law замість A-law
+    # → Binotel декодує неправильно → спотворений звук → ехо від початку 2-го дзвінка.
     from services import binotel_sip as _bsip
     _bsip._next_call_use_opus = False
+    _bsip._encode_pcmu_log_done = False
+    _bsip._encode_opus_log_done = False
 
     logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
 
