@@ -225,6 +225,26 @@ class BinotelCall:
         """Очистити аудіо буфер з fade-out (запобігає кліку при barge-in)."""
         self._sip.flush_audio()
 
+    def flush_encode_buffer(self) -> None:
+        """Дозакодувати і відправити залишок PCM-буфера (останній фрейм туру).
+
+        Викликається при turn_complete — гарантує що останні ~200-400мс
+        кожної репліки AI дійдуть до пацієнта.
+        """
+        if not self.is_active:
+            return
+        from services.audio_bridge import _use_opus
+        if not _use_opus:
+            return
+        frames = _opus_codec.flush()
+        for frame in frames:
+            for rtp in getattr(getattr(self._sip, "_call", None), "RTPClients", []):
+                from services.binotel_sip import _ensure_opus_queue
+                try:
+                    _ensure_opus_queue(rtp).put_nowait(frame)
+                except Exception:
+                    pass
+
     async def hangup(self) -> None:
         """Завершити дзвінок (SIP + REST якщо є call_id)."""
         if not self.is_active:

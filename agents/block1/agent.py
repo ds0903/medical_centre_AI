@@ -100,6 +100,9 @@ class _DebugCall:
     def flush_audio(self) -> None:
         pass  # debug: PyAudio output має власний буфер, flush не потрібен
 
+    def flush_encode_buffer(self) -> None:
+        pass  # debug: немає Opus буфера — PyAudio writes напряму
+
     async def hangup(self) -> None:
         self.is_active = False
         logger.info("[DEBUG] Дзвінок завершено")
@@ -548,6 +551,7 @@ class Block1Agent:
                                         # Чекаємо поки AI договорить перед завершенням
                                         if turn_had_audio:
                                             logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
+                                            binotel_call.flush_encode_buffer()  # гарантуємо останній фрейм
                                             await asyncio.sleep(1.0)
                                         else:
                                             # end_call прийшов без аудіо в цьому турі — прощання
@@ -820,6 +824,7 @@ class Block1Agent:
                             _allow_next_turn[0] = True
                             logger.debug("[AGENT] reschedule blocked → allow next turn (питання підтвердження)")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
+                            binotel_call.flush_encode_buffer()  # останній Opus фрейм туру
                             # Ехо-гейт після turn_complete: 1.0с буфер після останнього чанку.
                             # Під час стріму gate вже "ковзав" з кожним resp.data (0.3-1.0с).
                             # +1.0с від turn_complete → сумарно 1.3-2.0с захисту від ехо.

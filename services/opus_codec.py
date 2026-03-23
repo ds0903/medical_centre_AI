@@ -186,6 +186,28 @@ def decode(opus_bytes: bytes) -> bytes:
     return np.ctypeslib.as_array(pcm_ct[:n]).astype("<i2").tobytes()
 
 
+def flush() -> list[bytes]:
+    """Дозакодувати залишок _encode_buf до повного фрейму (нульове доповнення).
+
+    Без flush останні ~200-400мс кожного туру ніколи не надсилаються пацієнту:
+    _encode_buf накопичує 24kHz PCM і повертає фрейм лише коли набереться 960 байт
+    (480 семплів @ 24kHz = 960 семплів @ 48kHz = 20мс). Залишок < 960 байт у кінці
+    туру так і залишається в буфері. Нульове доповнення = тиша в хвості фрейму,
+    що незначно (< 20мс) і неозначно.
+
+    Також «виштовхує» хвіст 64-tap FIR upsample фільтра: нулі через lfilter
+    виводять залишки стану _upsample_zi → весь хвіст вокалу потрапляє в пакет.
+
+    Безпечно викликати на порожньому буфері — повертає [].
+    """
+    global _encode_buf
+    if len(_encode_buf) == 0:
+        return []
+    padded = bytes(_encode_buf) + b"\x00" * (960 - len(_encode_buf))
+    _encode_buf.clear()
+    return encode(padded)
+
+
 def clear_encode_buffer() -> None:
     """Очистити буфер енкодера (при barge-in, щоб старе аудіо не потрапило в наступну репліку)."""
     global _encode_buf
