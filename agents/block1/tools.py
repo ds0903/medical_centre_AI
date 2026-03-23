@@ -357,19 +357,33 @@ async def handle_tool_call(
 
             periods_text = "; ".join(period_parts)
             active_periods = [p for p in period_order if periods_map[p]]
-            # Якщо є великі частини (≥ THRESHOLD) — пропонуємо пацієнту спочатку вибрати частину дня
-            large_periods = [p for p in active_periods if len(periods_map[p]) >= _PERIOD_THRESHOLD]
-            if large_periods and len(active_periods) > 1:
+
+            # Pre-обчислюємо як ТОЧНО озвучити кожну частину дня.
+            # ≥ THRESHOLD слотів → діапазон ("з 8:30 по 11:45")
+            # < THRESHOLD слотів → перелік ("8:30, 9:00, 9:30")
+            # AI отримує готовий текст — не думає сама, просто зачитує.
+            period_say: dict[str, str] = {}
+            for p in active_periods:
+                pslots = periods_map[p]
+                if len(pslots) >= _PERIOD_THRESHOLD:
+                    period_say[p] = f"з {pslots[0]['time']} по {pslots[-1]['time']}"
+                else:
+                    period_say[p] = ", ".join(s["time"] for s in pslots)
+
+            if len(active_periods) == 1:
+                # Єдина частина дня — одразу кажемо часи без питання про частину
+                only = active_periods[0]
                 period_prompt = (
-                    f"Запитай пацієнта яка частина дня зручніше ({' / '.join(active_periods)}), "
-                    f"потім назви конкретні часи тільки для обраної частини у форматі HH:MM (наприклад: 14:00, 14:20). "
-                    f"НЕ перелічуй всі часи одразу. НЕ вживай словесний формат ('о другій', 'о пів на третю') — тільки числа."
+                    f"Скажи пацієнту: 'є час {period_say[only]}' і запитай який зручніше. "
+                    f"Тільки числа HH:MM, без словесного формату ('о другій' тощо)."
                 )
             else:
+                # Кілька частин — спочатку питаємо яка частина, потім кажемо готове формулювання
+                guide = "; ".join(f"{p} → {period_say[p]}" for p in active_periods)
                 period_prompt = (
-                    f"Перерахуй пацієнту доступні часи у форматі HH:MM (наприклад: 14:00, 14:20) і запитай який зручніше. "
-                    f"НЕ кажи часовий діапазон ('з X до Y'). "
-                    f"НЕ вживай словесний формат ('о другій', 'о пів на третю') — тільки числа HH:MM."
+                    f"Запитай пацієнта яка частина дня зручніше ({' / '.join(active_periods)}). "
+                    f"Коли пацієнт обере — скажи ТІЛЬКИ: {guide}. "
+                    f"Тільки числа HH:MM, без словесного формату."
                 )
 
             logger.info(f"[TOOL] get_available_slots(date={requested_date}) → {len(matched_slots)} слотів")
