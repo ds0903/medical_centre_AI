@@ -456,6 +456,7 @@ class Block1Agent:
                     while True:
                         turn_had_content = False
                         turn_had_audio = False       # True якщо в цьому турі AI говорила
+                        _turn_was_interrupted = False  # True якщо в цьому турі спрацював interrupted
                         turn_audio_bytes = 0         # байти аудіо в цьому турі → для розрахунку затримки
                         _turn_audio_played = False   # True якщо аудіо реально відправлено пацієнту (не dropped)
                         _had_patient_said = False    # True якщо в поточному inner-loop був input_transcription
@@ -475,6 +476,7 @@ class Block1Agent:
                                 binotel_call.flush_audio()
                                 # НЕ ставимо гейт — пацієнт ЗАРАЗ говорить, не можна блокувати його аудіо.
                                 # Луна від обрізаного слова AI мінімальна і Gemini її сам ігнорує.
+                                _turn_was_interrupted = True  # turn_complete не виставить suppress → Turn N+1 зіграє
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()
@@ -841,9 +843,18 @@ class Block1Agent:
                                 )
                                 if not _turn1_has_periods:
                                     _allow_next_turn[0] = True  # ack-тур → Turn2 (реальні слоти) зіграє
-                            # ЗАВЖДИ suppress — захист від самоговоріння (autonomous turns).
+                            # Suppress — захист від самоговоріння (autonomous turns).
+                            # Виняток: якщо тур був перерваний пацієнтом (barge-in) —
+                            # НЕ виставляємо suppress. Причина: input_transcription приходить
+                            # поки streaming gate ще активний і фільтрується → suppress не
+                            # скидається → перша відповідь після barge-in стає ghost →
+                            # пацієнт не чує. Без suppress Turn N+1 грає нормально.
+                            # Захист від autonomous turns зберігається: _turn_was_interrupted
+                            # скидається в False на початку Turn N+1, тому Turn N+1's
+                            # turn_complete вже виставить suppress як зазвичай.
                             _last_ai_turn_end[0] = time.time()  # double-turn guard
-                            _suppress_next_audio[0] = True
+                            if not _turn_was_interrupted:
+                                _suppress_next_audio[0] = True
                             # Watchdog: відлік починається від кінця ВІДТВОРЕННЯ, не від генерації.
                             # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
                             # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
