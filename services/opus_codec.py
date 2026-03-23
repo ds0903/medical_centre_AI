@@ -103,12 +103,12 @@ def _get_encoder():
             raise RuntimeError(f"opus_encoder_create failed: {err.value}")
         libopus.opus_encoder_ctl(_encoder, 4002, _OPUS_BITRATE)       # OPUS_SET_BITRATE
         libopus.opus_encoder_ctl(_encoder, 4010, _OPUS_COMPLEXITY)    # OPUS_SET_COMPLEXITY
-        libopus.opus_encoder_ctl(_encoder, 4012, 0)                   # OPUS_SET_INBAND_FEC = off (звільняємо бітрейт)
-        libopus.opus_encoder_ctl(_encoder, 4014, 0)                   # OPUS_SET_PACKET_LOSS_PERC = 0%
+        libopus.opus_encoder_ctl(_encoder, 4012, 1)                   # OPUS_SET_INBAND_FEC = on (відновлення втрачених пакетів)
+        libopus.opus_encoder_ctl(_encoder, 4014, 10)                  # OPUS_SET_PACKET_LOSS_PERC = 10% (типово для поганого SIP)
         libopus.opus_encoder_ctl(_encoder, 4004, _OPUS_BANDWIDTH_WIDEBAND)  # MAX_BANDWIDTH = WIDEBAND (SILK 8kHz)
         logger.info(
             f"[OPUS] Encoder ініціалізовано ({_OPUS_BITRATE // 1000}kbps, "
-            f"complexity={_OPUS_COMPLEXITY}, SILK 8kHz, FEC=off)"
+            f"complexity={_OPUS_COMPLEXITY}, SILK 8kHz, FEC=on, loss=10%)"
         )
     return _encoder
 

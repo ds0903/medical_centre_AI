@@ -357,7 +357,7 @@ class Block1Agent:
                         continue
                     _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
                     _watchdog_injected[0] += 1
-                    if _watchdog_injected[0] >= 2:
+                    if _watchdog_injected[0] >= 3:
                         logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — завершуємо дзвінок")
                         self.call_result = "no_answer"
                         self._end_event.set()
