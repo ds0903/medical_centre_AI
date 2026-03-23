@@ -310,6 +310,46 @@ async def handle_tool_call(
 
         if requested_date:
             # КРОК 2: пацієнт обрав дату → повертаємо слоти тільки за цю дату
+
+            # Захист: якщо початковий перелік дат вже надавався — перевіряємо одразу
+            # чи запитана дата є в ньому. Без цього get_available_slots(date=16) шукає
+            # в raw_slots і знаходить реальні записи (16-те реально є в БД клініки,
+            # але поза першими 3 датами які ми показали пацієнту) → AI суперечить сама
+            # собі (спочатку "є тільки 12, 13, 14", потім "на 16 є слоти вранці та в обід").
+            _initial_call = call_cache.get("get_available_slots")
+            if _initial_call:
+                _initial_dates = [d["date"] for d in _initial_call["result"].get("available_dates", [])]
+                _req_l = requested_date.lower().strip()
+                _found = False
+                for _id in _initial_dates:
+                    if _req_l in _id.lower() or _id.lower() in _req_l:
+                        _found = True
+                        break
+                if not _found:
+                    # Числовий fallback: "16" або "16 жовтня" → шістнадцяте
+                    try:
+                        _req_day = int(_req_l.split()[0])
+                        for _id in _initial_dates:
+                            if _NUM_FROM_ORDINAL.get(_id.split()[0]) == _req_day:
+                                _found = True
+                                break
+                    except (ValueError, IndexError):
+                        pass
+                if not _found:
+                    _dates_str = ", ".join(_initial_dates) if _initial_dates else "відсутні"
+                    logger.info(
+                        f"[TOOL] get_available_slots(date={requested_date}) → поза переліком → відхилено"
+                    )
+                    return {
+                        "success": False,
+                        "message": (
+                            f"На жаль, на {requested_date} вільних місць немає — "
+                            f"ця дата поза нашим переліком. "
+                            f"Є тільки: {_dates_str}. "
+                            f"Скажи пацієнту це і запитай яку з цих дат обрати."
+                        ),
+                    }
+
             # Нечіткий пошук — "дванадцяте жовтня" або "12 жовтня" або просто "12"
             matched_slots = None
             _req = requested_date.lower().strip()
