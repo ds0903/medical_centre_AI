@@ -260,6 +260,10 @@ class Block1Agent:
             # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
             # 2 = пацієнт відповів після блокування → дозволяємо reschedule
             _reschedule_state = [0]
+            # Аргументи першого (заблокованого) reschedule_visit.
+            # Зберігаємо щоб виконати якщо Gemini надішле end_call(rescheduled)
+            # замість повторного reschedule_visit (баг: Gemini пропускає повторний виклик).
+            _pending_reschedule_args = [None]
             # True одразу після блокування reschedule_visit → наступний тур (питання
             # підтвердження) повинен пробитись крізь suppress. Одноразовий прапор.
             _reschedule_just_blocked = [False]
@@ -696,6 +700,7 @@ class Block1Agent:
                                     if fc.name == "reschedule_visit" and _reschedule_state[0] < 1:
                                         logger.warning("[AGENT] reschedule_visit заблоковано — потрібне підтвердження від пацієнта")
                                         _reschedule_state[0] = 1
+                                        _pending_reschedule_args[0] = args  # зберігаємо для fallback
                                         _reschedule_just_blocked[0] = True
                                         # Gemini вже встигла згенерувати "Чудово! Перенесено" аудіо
                                         # поки обробляли tool call → flush SIP буфер і придушуємо
@@ -716,10 +721,50 @@ class Block1Agent:
                                         continue
                                     # end_call поки чекаємо підтвердження переносу:
                                     # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
-                                    # Виняток: cancel_visit вже виконано → reschedule flow не актуальний → дозволяємо.
+                                    # Виняток 1: cancel_visit вже виконано → reschedule flow не актуальний.
+                                    # Виняток 2: Gemini надіслала end_call(rescheduled) замість повторного
+                                    #   reschedule_visit — це баг Gemini (пропускає повторний виклик після
+                                    #   підтвердження). Fallback: виконуємо перенос самостійно з збереженими
+                                    #   аргументами і дозволяємо end_call.
                                     if fc.name == "end_call" and _reschedule_state[0] == 1:
                                         if _call_cache.get("cancel_visit", {}).get("success"):
                                             logger.debug("[AGENT] end_call дозволено — cancel_visit вже виконано (reschedule скасовано)")
+                                        elif (
+                                            args.get("result") == "rescheduled"
+                                            and _pending_reschedule_args[0] is not None
+                                        ):
+                                            # Gemini підтвердила перенос через end_call без повторного reschedule_visit.
+                                            # Виконуємо перенос самостійно і дозволяємо end_call.
+                                            logger.info("[AGENT] end_call(rescheduled) fallback → виконуємо перенос з збереженими аргументами")
+                                            try:
+                                                _fb_result = await handle_tool_call(
+                                                    "reschedule_visit", _pending_reschedule_args[0],
+                                                    self.visit, _call_cache,
+                                                )
+                                                if _fb_result.get("success"):
+                                                    _reschedule_state[0] = 2
+                                                    logger.info("[AGENT] Fallback перенос виконано успішно → дозволяємо end_call")
+                                                    # fall through — end_call виконається нормально нижче
+                                                else:
+                                                    logger.warning(f"[AGENT] Fallback перенос не вдався: {_fb_result}")
+                                                    _batch.append(types.FunctionResponse(
+                                                        id=fc.id, name=fc.name,
+                                                        response={
+                                                            "success": False,
+                                                            "message": f"Помилка переносу: {_fb_result.get('error', 'невідома помилка')}. Повідом пацієнта що виникла технічна проблема.",
+                                                        },
+                                                    ))
+                                                    continue
+                                            except Exception as _fe:
+                                                logger.error(f"[AGENT] Fallback reschedule виняток: {_fe!r}")
+                                                _batch.append(types.FunctionResponse(
+                                                    id=fc.id, name=fc.name,
+                                                    response={
+                                                        "success": False,
+                                                        "message": "Технічна помилка при переносі. Повідом пацієнта.",
+                                                    },
+                                                ))
+                                                continue
                                         else:
                                             logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
                                             _batch.append(types.FunctionResponse(
