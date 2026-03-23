@@ -393,13 +393,36 @@ class BinotelSipAudio:
             return b""
 
     def flush_audio(self) -> None:
-        """Очистити аудіо буфер з fade-out щоб уникнути кліку при barge-in."""
+        """Зупинити аудіо AI без рипіння при barge-in.
+
+        Opus mode:
+          1. Очищаємо _opus_send_queue — зупиняємо заплановані фрейми.
+          2. Надсилаємо 2 тихих Opus-фрейми (40мс тиші).
+             Binotel-декодер отримує явний сигнал "тиша" замість "пакет загублено"
+             → PLC не спрацьовує → немає рипіння в трубці після barge-in.
+
+        G.711 mode: fade-out рампа в pmout (старий підхід, залишається).
+        """
         for rtp in getattr(self._call, "RTPClients", []):
             q = getattr(rtp, "_opus_send_queue", None)
             if q is not None:
-                # Opus mode: очищаємо чергу
+                # Opus mode: очищаємо накопичені фрейми
                 with q.mutex:
                     q.queue.clear()
+                # Додаємо 2 тихих фрейми → чистий перехід до тиші без PLC-артефакту
+                try:
+                    from services import opus_codec as _oc
+                    _oc.reset_filter_state()       # скидаємо FIR-хвіст перерваного аудіо
+                    _oc.clear_encode_buffer()      # скидаємо залишок PCM-буфера
+                    silence_pcm = b"\x00" * 960    # 480 семплів @ 24kHz = 20мс тиші
+                    for _ in range(2):
+                        for frame in _oc.encode(silence_pcm):
+                            try:
+                                q.put_nowait(frame)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             else:
                 # G.711 mode: замінюємо pmout буфер на fade-out рампу замість append.
                 # Без цього накопичені пакети AI грають до кінця → клік при обриві.
@@ -408,12 +431,12 @@ class BinotelSipAudio:
                     from services.audio_bridge import generate_fadeout_g711
                     fadeout = generate_fadeout_g711()
                     pmout.rebuild(reset=True, data=fadeout or b"")
-        # Очищаємо encode buffer — інакше залишки потраплять у наступну репліку AI
-        try:
-            from services.opus_codec import clear_encode_buffer
-            clear_encode_buffer()
-        except Exception:
-            pass
+                # G.711: очищаємо encode buffer окремо (немає silence frame логіки)
+                try:
+                    from services.opus_codec import clear_encode_buffer
+                    clear_encode_buffer()
+                except Exception:
+                    pass
 
     def hangup(self) -> None:
         """Завершити SIP дзвінок."""

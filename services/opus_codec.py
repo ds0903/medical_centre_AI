@@ -186,6 +186,16 @@ def decode(opus_bytes: bytes) -> bytes:
     return np.ctypeslib.as_array(pcm_ct[:n]).astype("<i2").tobytes()
 
 
+def reset_filter_state() -> None:
+    """Скинути стан FIR upsample фільтра (після barge-in або перед новим дзвінком).
+
+    Без цього між barge-in і наступною реплікою AI FIR-хвіст перерваного сигналу
+    потрапляє у перший фрейм нової репліки → короткий артефакт на початку фрази.
+    """
+    global _upsample_zi
+    _upsample_zi = None
+
+
 def flush() -> list[bytes]:
     """Дозакодувати залишок _encode_buf до повного фрейму (нульове доповнення).
 
