@@ -342,9 +342,10 @@ class Block1Agent:
                         _start_silence_timer(audio_delay), name="silence_timer_start"
                     )
 
+            _watchdog_injected = [0]  # винесено в _stream scope щоб скидати при продовженні розмови
+
             async def _watchdog() -> None:
                 """Фоновий watchdog: якщо жодної активності за WATCHDOG_TIMEOUT_SEC — re-inject або hangup."""
-                _injected = 0
                 while not self._end_event.is_set():
                     await asyncio.sleep(5)
                     if self._end_event.is_set():
@@ -355,8 +356,8 @@ class Block1Agent:
                     if idle < WATCHDOG_TIMEOUT_SEC:
                         continue
                     _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
-                    _injected += 1
-                    if _injected >= 2:
+                    _watchdog_injected[0] += 1
+                    if _watchdog_injected[0] >= 2:
                         logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — завершуємо дзвінок")
                         self.call_result = "no_answer"
                         self._end_event.set()
@@ -501,6 +502,8 @@ class Block1Agent:
                                         _real_vad_pending[0] = False
                                         _allow_next_turn[0] = False
                                         _activity[0] = time.time()
+                                        _silence_count = 0           # розмова продовжується — скидаємо лічильники
+                                        _watchdog_injected[0] = 0   # watchdog теж скидаємо — розмова жива
                                         # _reschedule_state: перехід 1→2 не тут.
                                         # AI сама вирішує чи підтвердив пацієнт і викликає reschedule_visit вдруге.
                                         logger.info(f"[ПАЦІЄНТ] {_it_text}")
