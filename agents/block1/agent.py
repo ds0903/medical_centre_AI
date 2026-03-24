@@ -984,14 +984,22 @@ class Block1Agent:
                             if _date_slots_fetched[0]:
                                 _date_slots_fetched[0] = False
                                 # Розрізняємо два сценарії після get_available_slots(date=...):
-                                # Case A — ack-тур: Turn1="зараз перевірю" (без ранок/обід/вечір)
+                                # Case A — ack-тур: Turn1="зараз перевірю" (без ознак повної відповіді)
                                 #   → Turn2 = реальні слоти, дозволяємо його через _allow_next_turn.
-                                # Case B — повна відповідь: Turn1 вже містить ранок/обід/вечір
-                                #   → подальший autonomous Turn2 = самоговоріння, suppress блокує.
-                                _turn1_has_periods = any(
-                                    w in _ai_text_lower for w in ('ранок', 'обід', 'вечір')
+                                # Case B — повна відповідь: Turn1 вже містить інфо про слоти або
+                                #   конкретний час → autonomous Turn2 = самоговоріння, suppress блокує.
+                                # Ознаки повної відповіді:
+                                #   - частини дня: ранок/вранці, обід, вечір/ввечері/вечором
+                                #   - підходить/зручніш — Gemini вже назвала конкретний час і питає
+                                _turn1_is_full = any(
+                                    w in _ai_text_lower for w in (
+                                        'ранок', 'вранці',
+                                        'обід',
+                                        'вечір', 'ввечері', 'вечором',
+                                        'підходить', 'зручніш',
+                                    )
                                 )
-                                if not _turn1_has_periods:
+                                if not _turn1_is_full:
                                     _allow_next_turn[0] = True  # ack-тур → Turn2 (реальні слоти) зіграє
                             # Suppress — захист від самоговоріння (autonomous turns).
                             # Виняток: якщо тур був перерваний пацієнтом (barge-in) —
