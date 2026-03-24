@@ -29,6 +29,8 @@ except ImportError:
 
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
+from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
@@ -173,7 +175,7 @@ class Block1Agent:
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                    silence_duration_ms=1000,
+                    silence_duration_ms=800,
                 )
             ),
             # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
@@ -284,6 +286,58 @@ class Block1Agent:
             # Час завершення останнього AI туру з реальним аудіо (для double-turn guard).
             _last_ai_turn_end = [0.0]
 
+            # ── Reconnect механізм ────────────────────────────────────────────────────
+            # Якщо Gemini WebSocket рветься під час активного дзвінка — перевстановлюємо
+            # з'єднання без переривання. Весь стан (_call_cache, _reschedule_state тощо)
+            # зберігається. Контекст розмови відновлюється через resumption handle.
+            _MAX_RECONNECTS = 3
+            _live_session = [session]   # мутабельний тримач; замінюється при reconnect
+            _live_cm = [None]           # CM від reconnect-сесії (оригінальний закривається зовні)
+            _reconnecting = [False]     # True поки reconnect в процесі
+            _reconnected_event = asyncio.Event()
+            _reconnect_count = [0]
+            _reconnect_lock = asyncio.Lock()
+
+            async def _do_reconnect() -> bool:
+                """Перевстановлює Gemini WebSocket. Повертає True якщо успішно."""
+                async with _reconnect_lock:
+                    if _reconnect_count[0] >= _MAX_RECONNECTS:
+                        logger.error(
+                            f"[AGENT] Reconnect: вичерпано {_MAX_RECONNECTS} спроби → завершуємо"
+                        )
+                        return False
+                    _reconnect_count[0] += 1
+                    logger.warning(
+                        f"[AGENT] Reconnect #{_reconnect_count[0]}/{_MAX_RECONNECTS}"
+                        f" ({'з handle' if self._resumption_handle else 'cold'})..."
+                    )
+                    _reconnecting[0] = True
+                    _reconnected_event.clear()
+                    try:
+                        new_cm = self.client.aio.live.connect(
+                            model=GEMINI_MODEL,
+                            config=self._build_config(resume_handle=self._resumption_handle),
+                        )
+                        new_session = await new_cm.__aenter__()
+                        # Закриваємо попередній reconnect-CM якщо є
+                        if _live_cm[0] is not None:
+                            try:
+                                await asyncio.wait_for(
+                                    _live_cm[0].__aexit__(None, None, None), timeout=3.0
+                                )
+                            except Exception:
+                                pass
+                        _live_session[0] = new_session
+                        _live_cm[0] = new_cm
+                        logger.info(f"[AGENT] Reconnect #{_reconnect_count[0]} успішний")
+                        return True
+                    except Exception as _re:
+                        logger.error(f"[AGENT] Reconnect #{_reconnect_count[0]} провалився: {_re!r}")
+                        return False
+                    finally:
+                        _reconnecting[0] = False
+                        _reconnected_event.set()  # будимо send_task незалежно від результату
+
             async def _check_silence() -> None:
                 """Чекає SILENCE_TIMEOUT секунд. Якщо пацієнт мовчить — питаємо або вішаємо."""
                 nonlocal _silence_count
@@ -309,7 +363,7 @@ class Block1Agent:
                         self.call_result = "no_answer"
                         self._end_event.set()
                         _suppress_next_audio[0] = False
-                        await session.send_client_content(
+                        await _live_session[0].send_client_content(
                             turns={"parts": [{"text": (
                                 "Пацієнт не відповідає. Скажи коротке прощання і виклич end_call(result='no_answer')."
                             )}]},
@@ -317,7 +371,7 @@ class Block1Agent:
                         )
                     elif _silence_count == 1:
                         _suppress_next_audio[0] = False
-                        await session.send_client_content(
+                        await _live_session[0].send_client_content(
                             turns={"parts": [{"text": (
                                 "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."
                             )}]},
@@ -325,7 +379,7 @@ class Block1Agent:
                         )
                     else:
                         _suppress_next_audio[0] = False
-                        await session.send_client_content(
+                        await _live_session[0].send_client_content(
                             turns={"parts": [{"text": (
                                 "Скажи пацієнту: «Я все ще чекаю вашої відповіді.» — і мовчки чекай."
                             )}]},
@@ -379,7 +433,7 @@ class Block1Agent:
                     logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — re-inject prompt")
                     try:
                         _suppress_next_audio[0] = False
-                        await session.send_client_content(
+                        await _live_session[0].send_client_content(
                             turns={"parts": [{"text": "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."}]},
                             turn_complete=True,
                         )
@@ -413,10 +467,15 @@ class Block1Agent:
                     # Gate щойно закінчився — відправляємо накопичений pre-roll
                     if _was_in_gate[0]:
                         _was_in_gate[0] = False
-                        for _pre_chunk in _preroll_buf:
-                            await session.send_realtime_input(
-                                audio={"data": _pre_chunk, "mime_type": "audio/pcm;rate=16000"}
-                            )
+                        for _pre_chunk in list(_preroll_buf):
+                            if self._end_event.is_set() or _reconnecting[0]:
+                                break
+                            try:
+                                await _live_session[0].send_realtime_input(
+                                    audio={"data": _pre_chunk, "mime_type": "audio/pcm;rate=16000"}
+                                )
+                            except (ConnectionClosedError, APIError):
+                                break  # Drop pre-roll під час reconnect — recv_task відновить з'єднання
                         _preroll_buf.clear()
                     # VAD: визначаємо чи є голос у chunk
                     if _VAD_AVAILABLE:
@@ -456,18 +515,31 @@ class Block1Agent:
                         # НЕ скидаємо _suppress_next_audio тут — тільки input_transcription скидає.
                         # Інакше VAD скидає suppress раніше ніж приходить транскрипція,
                         # і ghost Turn 2 вважається "реальним" туром.
-                    await session.send_realtime_input(
-                        audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
-                    )
+                    if _reconnecting[0]:
+                        continue  # пропускаємо chunk поки reconnect в процесі
+                    try:
+                        await _live_session[0].send_realtime_input(
+                            audio={"data": chunk, "mime_type": "audio/pcm;rate=16000"}
+                        )
+                    except (ConnectionClosedError, APIError):
+                        if self._end_event.is_set():
+                            break
+                        # recv_task виконує reconnect — чекаємо поки нова сесія готова
+                        logger.warning("[AGENT] send_task: з'єднання перервано — чекаємо reconnect...")
+                        try:
+                            await asyncio.wait_for(_reconnected_event.wait(), timeout=15.0)
+                        except asyncio.TimeoutError:
+                            logger.error("[AGENT] send_task: timeout чекання reconnect → завершуємо")
+                            break
 
             async def _recv_and_handle() -> None:
                 nonlocal _silence_count
                 _draining = False       # True — чекаємо поки AI договорить перед завершенням
                 _ai_buf: list[str] = []        # накопичуємо транскрипцію AI за тур
-                try:
-                    # session.receive() — пер-тернова: виходить після кожного turn_complete.
-                    # while True перезапускає для наступного turn.
-                    while True:
+                # session.receive() — пер-тернова: виходить після кожного turn_complete.
+                # while True перезапускає для наступного turn або після reconnect.
+                while True:
+                    try:
                         turn_had_content = False
                         turn_had_audio = False       # True якщо в цьому турі AI говорила
                         _turn_was_interrupted = False  # True якщо в цьому турі спрацював interrupted
@@ -480,8 +552,13 @@ class Block1Agent:
                         _suppress_slots_turn = False
                         _ai_text_lower = ""   # текст AI цього туру (для перевірки ack vs full)
                         _ai_buf.clear()
-                        async for resp in session.receive():
+                        async for resp in _live_session[0].receive():
                             turn_had_content = True
+                            # Зберігаємо resumption handle для можливого reconnect під час дзвінка
+                            if (resp.session_resumption_update
+                                    and resp.session_resumption_update.new_handle):
+                                self._resumption_handle = resp.session_resumption_update.new_handle
+                                logger.debug("[AGENT] Resumption handle оновлено")
                             # Якщо пацієнт перебив AI — зупиняємо аудіо, слухаємо пацієнта
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
@@ -653,7 +730,7 @@ class Block1Agent:
                                 )
                                 if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said and not _has_critical:
                                     logger.debug("[AGENT] Ghost tool batch — пропускаємо")
-                                    await session.send_tool_response(function_responses=[
+                                    await _live_session[0].send_tool_response(function_responses=[
                                         types.FunctionResponse(
                                             id=fc.id, name=fc.name, response={"success": True}
                                         )
@@ -917,12 +994,17 @@ class Block1Agent:
                                         _after_batch = ("end_call",)
                                         break
                                 if _batch:
-                                    await session.send_tool_response(function_responses=_batch)
+                                    await _live_session[0].send_tool_response(function_responses=_batch)
                                 if _after_batch:
                                     _draining = True
                         # session.receive() вийшов (turn_complete або сесія закрита)
                         if not turn_had_content:
-                            logger.warning("[AGENT] recv_task: session.receive() без контенту — сесія закрита")
+                            # Graceful close (GoAway або idle) — пробуємо reconnect
+                            if not self._end_event.is_set() and not _draining:
+                                logger.warning("[AGENT] recv_task: сесія закрита (no content) — reconnect...")
+                                if await _do_reconnect():
+                                    continue
+                            logger.warning("[AGENT] recv_task: session.receive() без контенту — виходимо")
                             return
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
@@ -986,11 +1068,18 @@ class Block1Agent:
                             # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
                             # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
                             _activity[0] = time.time() + (turn_audio_bytes / 48000)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.error(f"[AGENT] recv_task впав: {e!r}", exc_info=True)
-                    raise
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        if isinstance(e, (ConnectionClosedError, APIError, ConnectionResetError)):
+                            if not self._end_event.is_set() and not _draining:
+                                logger.warning(
+                                    f"[AGENT] recv_task: з'єднання перервано ({e!r}) — reconnect..."
+                                )
+                                if await _do_reconnect():
+                                    continue  # нова сесія в _live_session[0] → новий тур
+                        logger.error(f"[AGENT] recv_task впав: {e!r}", exc_info=True)
+                        raise
 
             send_task = asyncio.create_task(_send_patient_audio(), name="send_patient_audio")
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
@@ -1048,7 +1137,7 @@ class Block1Agent:
                 # turn_complete=False ЗАБОРОНЕНО: Gemini галюцинує в незавершеному стані.
                 _needs_primer = _stale_warmup[0]
                 if _needs_primer:
-                    await session.send_client_content(
+                    await _live_session[0].send_client_content(
                         turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
                         turn_complete=True,
                     )
@@ -1064,7 +1153,7 @@ class Block1Agent:
                 _schedule_silence_timer()
             else:
                 # Cold шлях: тригеримо привітання в реальному часі
-                await session.send_client_content(
+                await _live_session[0].send_client_content(
                     turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
@@ -1107,6 +1196,12 @@ class Block1Agent:
                 for name, r in zip(["send_task", "recv_task", "watchdog_task"], results):
                     if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
+                # Закриваємо reconnect-CM якщо з'єднання перевстановлювалось під час дзвінка
+                if _live_cm[0] is not None:
+                    try:
+                        await asyncio.wait_for(_live_cm[0].__aexit__(None, None, None), timeout=3.0)
+                    except Exception:
+                        pass
 
         warmup_session = getattr(self, '_warmup_session', None)
         warmup_cm = getattr(self, '_warmup_cm', None)
