@@ -269,13 +269,6 @@ class Block1Agent:
             # True одразу після блокування reschedule_visit → наступний тур (питання
             # підтвердження) повинен пробитись крізь suppress. Одноразовий прапор.
             _reschedule_just_blocked = [False]
-            # Стан підтвердження скасування (аналог _reschedule_state):
-            # 0 = cancel_visit ще не викликався
-            # 1 = заблоковано, AI запитала "Ви підтверджуєте скасування?" — чекаємо
-            # 2 = підтверджено / виконано
-            _cancel_state = [0]
-            _pending_cancel_args = [None]
-            _cancel_just_blocked = [False]
             # True якщо get_available_slots(date=...) вже виконано в цьому дзвінку.
             # Потрібно для розрізнення "пацієнт підтвердив після вибору часу" від
             # "Gemini намагається reschedule без вибору дати і часу".
@@ -803,72 +796,24 @@ class Block1Agent:
                                             },
                                         ))
                                         continue
-                                    # cancel_visit — блокуємо першу спробу (state=0).
-                                    # Gemini може скасувати на нечіткій фразі пацієнта
-                                    # ("не маю часу", "може не буду") без явної згоди.
-                                    # Блок гарантує що AI питає підтвердження,
-                                    # і тільки після "так" виконує cancel_visit повторно.
-                                    if fc.name == "cancel_visit" and _cancel_state[0] == 0:
-                                        logger.warning("[AGENT] cancel_visit заблоковано — потрібне підтвердження від пацієнта")
-                                        _cancel_state[0] = 1
-                                        _pending_cancel_args[0] = args
-                                        _cancel_just_blocked[0] = True
-                                        _suppress_next_audio[0] = True
-                                        binotel_call.flush_audio()
-                                        _visit_dt = self.visit.get("visit_datetime", "")[:10]
-                                        _batch.append(types.FunctionResponse(
-                                            id=fc.id, name=fc.name,
-                                            response={
-                                                "success": False,
-                                                "message": (
-                                                    f"Перед скасуванням ОБОВ'ЯЗКОВО запитай пацієнта дослівно: "
-                                                    f"'Ви підтверджуєте скасування запису до {self.visit['doctor_name']} "
-                                                    f"на {_visit_dt}?' і мовчки ЧЕКАЙ відповідь. "
-                                                    f"Тільки після явного 'так' — виклич cancel_visit."
-                                                ),
-                                            },
-                                        ))
-                                        continue
-                                    # end_call(cancelled) поки cancel не виконано → fallback як у reschedule.
-                                    if fc.name == "end_call" and _cancel_state[0] == 1:
-                                        if args.get("result") == "cancelled" and _pending_cancel_args[0] is not None:
-                                            logger.info("[AGENT] end_call(cancelled) fallback → виконуємо cancel з збереженими аргументами")
-                                            try:
-                                                _fc_result = await handle_tool_call(
-                                                    "cancel_visit", _pending_cancel_args[0],
-                                                    self.visit, _call_cache,
-                                                )
-                                                if _fc_result.get("success"):
-                                                    _cancel_state[0] = 2
-                                                    logger.info("[AGENT] Fallback cancel виконано → дозволяємо end_call")
-                                                    # fall through — end_call виконається нижче
-                                                else:
-                                                    logger.warning(f"[AGENT] Fallback cancel не вдався: {_fc_result}")
-                                                    _batch.append(types.FunctionResponse(
-                                                        id=fc.id, name=fc.name,
-                                                        response={
-                                                            "success": False,
-                                                            "message": f"Помилка скасування: {_fc_result.get('error', 'невідома помилка')}. Повідом пацієнта.",
-                                                        },
-                                                    ))
-                                                    continue
-                                            except Exception as _fce:
-                                                logger.error(f"[AGENT] Fallback cancel виняток: {_fce!r}")
-                                                _batch.append(types.FunctionResponse(
-                                                    id=fc.id, name=fc.name,
-                                                    response={"success": False, "message": "Технічна помилка при скасуванні."},
-                                                ))
-                                                continue
-                                        else:
-                                            logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження скасування")
-                                            _batch.append(types.FunctionResponse(
-                                                id=fc.id, name=fc.name,
-                                                response={
-                                                    "success": False,
-                                                    "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження скасування — мовчки чекай відповідь.",
-                                                },
-                                            ))
-                                            continue
+                                    # Safety fallback: Gemini іноді викликає end_call("cancelled")
+                                    # без попереднього cancel_visit (пропускає крок або каже
+                                    # прощання і відразу end_call). Виконуємо cancel автоматично.
+                                    if (fc.name == "end_call"
+                                            and args.get("result") == "cancelled"
+                                            and not _call_cache.get("cancel_visit", {}).get("success")):
+                                        logger.info("[AGENT] end_call(cancelled) без cancel_visit → виконуємо автоматично")
+                                        try:
+                                            _fc_result = await handle_tool_call(
+                                                "cancel_visit",
+                                                {"visit_id": str(self.visit["visit_id"])},
+                                                self.visit, _call_cache,
+                                            )
+                                            if not _fc_result.get("success"):
+                                                logger.warning(f"[AGENT] Auto cancel не вдався: {_fc_result}")
+                                        except Exception as _fce:
+                                            logger.error(f"[AGENT] Auto cancel виняток: {_fce!r}")
+                                        # fall through — end_call виконається нижче
                                     # end_call поки чекаємо підтвердження переносу:
                                     # AI запитав "Все вірно?" — не завершувати поки пацієнт не відповість.
                                     # Виняток 1: cancel_visit вже виконано → reschedule flow не актуальний.
@@ -1023,10 +968,6 @@ class Block1Agent:
                             _reschedule_just_blocked[0] = False
                             _allow_next_turn[0] = True
                             logger.debug("[AGENT] reschedule blocked → allow next turn (питання підтвердження)")
-                        if not _draining and _greeting_done.is_set() and _cancel_just_blocked[0]:
-                            _cancel_just_blocked[0] = False
-                            _allow_next_turn[0] = True
-                            logger.debug("[AGENT] cancel blocked → allow next turn (питання підтвердження)")
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             binotel_call.flush_encode_buffer()  # останній Opus фрейм туру
                             # Ехо-гейт після turn_complete: 1.0с буфер після останнього чанку.
