@@ -385,6 +385,8 @@ class Block1Agent:
                     _silence_task.cancel()
                 if self._end_event.is_set():
                     return
+                if _patient_said_count[0] == 0:
+                    return  # до першої репліки watchdog сам справляється (уникаємо race з watchdog inject)
                 # Чекаємо поки аудіо відіграє через SIP + даємо пацієнту зреагувати
                 await asyncio.sleep(audio_delay + SILENCE_START_DELAY_SEC)
                 if self._end_event.is_set():
