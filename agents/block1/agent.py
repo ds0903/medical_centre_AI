@@ -980,7 +980,14 @@ class Block1Agent:
                                 _interrupted_pause_until[0],
                                 time.time() + 1.0,
                             )
-                            _schedule_silence_timer(audio_delay=0.0)
+                            # audio_delay = реальна тривалість аудіо туру.
+                            # Gemini генерує швидше ніж real-time → на момент turn_complete
+                            # в _opus_send_queue ще є непрограні фрейми (до кількох секунд).
+                            # Без цього таймер стартує поки пацієнт ще чує AI →
+                            # ефективний час відповіді скорочується до 3-4с замість 7с.
+                            # 24kHz s16 = 48000 bytes/s → ділимо байти на 48000 → секунди.
+                            _audio_queue_sec = turn_audio_bytes / 48000.0
+                            _schedule_silence_timer(audio_delay=_audio_queue_sec)
                             if _date_slots_fetched[0]:
                                 _date_slots_fetched[0] = False
                                 # Розрізняємо два сценарії після get_available_slots(date=...):
