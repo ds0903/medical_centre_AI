@@ -838,8 +838,21 @@ class Block1Agent:
                                                 )
                                                 if _fb_result.get("success"):
                                                     _reschedule_state[0] = 2
-                                                    logger.info("[AGENT] Fallback перенос виконано успішно → дозволяємо end_call")
-                                                    # fall through — end_call виконається нормально нижче
+                                                    _suppress_next_audio[0] = False  # дозволяємо аудіо резюме
+                                                    logger.info("[AGENT] Fallback перенос виконано → чекаємо резюме від AI")
+                                                    _batch.append(types.FunctionResponse(
+                                                        id=fc.id, name=fc.name,
+                                                        response={
+                                                            "success": False,
+                                                            "message": (
+                                                                "Перенос виконано успішно. НЕ завершуй дзвінок зараз. "
+                                                                "Скажи пацієнту вголос: 'Отже, переносимо ваш запис на [дата] о [час]!' "
+                                                                "(підстав реальні дату і час з нашої розмови). "
+                                                                "Тільки після цього виклич end_call(result='rescheduled')."
+                                                            ),
+                                                        },
+                                                    ))
+                                                    continue
                                                 else:
                                                     logger.warning(f"[AGENT] Fallback перенос не вдався: {_fb_result}")
                                                     _batch.append(types.FunctionResponse(
