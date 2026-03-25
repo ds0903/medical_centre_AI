@@ -827,55 +827,28 @@ class Block1Agent:
                                     if fc.name == "end_call" and _reschedule_state[0] == 1:
                                         if _call_cache.get("cancel_visit", {}).get("success"):
                                             logger.debug("[AGENT] end_call дозволено — cancel_visit вже виконано (reschedule скасовано)")
-                                        elif (
-                                            args.get("result") == "rescheduled"
-                                            and _pending_reschedule_args[0] is not None
-                                        ):
-                                            # Gemini підтвердила перенос через end_call без повторного reschedule_visit.
-                                            # Виконуємо перенос самостійно і дозволяємо end_call.
-                                            logger.info("[AGENT] end_call(rescheduled) fallback → виконуємо перенос з збереженими аргументами")
-                                            try:
-                                                _fb_result = await handle_tool_call(
-                                                    "reschedule_visit", _pending_reschedule_args[0],
-                                                    self.visit, _call_cache,
-                                                )
-                                                if _fb_result.get("success"):
-                                                    _reschedule_state[0] = 2
-                                                    _suppress_next_audio[0] = False  # дозволяємо аудіо резюме
-                                                    logger.info("[AGENT] Fallback перенос виконано → чекаємо резюме від AI")
-                                                    _batch.append(types.FunctionResponse(
-                                                        id=fc.id, name=fc.name,
-                                                        response={
-                                                            "success": False,
-                                                            "message": (
-                                                                "Перенос виконано успішно. НЕ завершуй дзвінок зараз. "
-                                                                "Скажи пацієнту вголос: 'Отже, переносимо ваш запис на [дата] о [час]!' "
-                                                                "(підстав реальні дату і час з нашої розмови). "
-                                                                "Тільки після цього виклич end_call(result='rescheduled')."
-                                                            ),
-                                                        },
-                                                    ))
-                                                    continue
-                                                else:
-                                                    logger.warning(f"[AGENT] Fallback перенос не вдався: {_fb_result}")
-                                                    _batch.append(types.FunctionResponse(
-                                                        id=fc.id, name=fc.name,
-                                                        response={
-                                                            "success": False,
-                                                            "message": f"Помилка переносу: {_fb_result.get('error', 'невідома помилка')}. Повідом пацієнта що виникла технічна проблема.",
-                                                        },
-                                                    ))
-                                                    continue
-                                            except Exception as _fe:
-                                                logger.error(f"[AGENT] Fallback reschedule виняток: {_fe!r}")
-                                                _batch.append(types.FunctionResponse(
-                                                    id=fc.id, name=fc.name,
-                                                    response={
-                                                        "success": False,
-                                                        "message": "Технічна помилка при переносі. Повідом пацієнта.",
-                                                    },
-                                                ))
-                                                continue
+                                        elif args.get("result") == "rescheduled":
+                                            # Gemini викликала end_call(rescheduled) без повторного reschedule_visit.
+                                            # НЕ виконуємо перенос автоматично: пацієнт міг не підтвердити явно
+                                            # (напр. ghost-тур запитав "Все вірно?", пацієнт сказав "Алло?").
+                                            # Вимагаємо від Gemini задати питання вголос і дочекатись реального "так".
+                                            # Після підтвердження Gemini викличе reschedule_visit (state=1 → пропускається)
+                                            # і потім end_call (state=2 → пропускається).
+                                            _suppress_next_audio[0] = False
+                                            logger.warning("[AGENT] end_call(rescheduled) при state=1 — вимагаємо явного підтвердження")
+                                            _batch.append(types.FunctionResponse(
+                                                id=fc.id, name=fc.name,
+                                                response={
+                                                    "success": False,
+                                                    "message": (
+                                                        "Перенос ще не виконано — потрібне явне підтвердження пацієнта. "
+                                                        "Скажи вголос: 'Отже, переносимо ваш запис на [дата] о [час]. Підтверджуєте?' "
+                                                        "(підстав реальні дату і час з нашої розмови). "
+                                                        "Після 'так' — виклич reschedule_visit, потім end_call(result='rescheduled')."
+                                                    ),
+                                                },
+                                            ))
+                                            continue
                                         else:
                                             logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
                                             _batch.append(types.FunctionResponse(
