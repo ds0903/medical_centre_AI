@@ -406,7 +406,9 @@ class Block1Agent:
             _watchdog_injected = [0]  # винесено в _stream scope щоб скидати при продовженні розмови
 
             async def _watchdog() -> None:
-                """Фоновий watchdog: якщо жодної активності за WATCHDOG_TIMEOUT_SEC — re-inject або hangup."""
+                """Фоновий watchdog: якщо жодної активності за WATCHDOG_TIMEOUT_SEC — re-inject або hangup.
+                До першої репліки пацієнта використовує коротший таймаут (6с) щоб швидше
+                "будити" Gemini якщо вона зависла в idle-стані після привітання."""
                 while not self._end_event.is_set():
                     await asyncio.sleep(5)
                     if self._end_event.is_set():
@@ -414,7 +416,9 @@ class Block1Agent:
                     if not _greeting_done.is_set():
                         continue  # не рахуємо бездіяльність поки грає привітання
                     idle = time.time() - _activity[0]
-                    if idle < WATCHDOG_TIMEOUT_SEC:
+                    # До першої репліки — коротший таймаут: Gemini може зависнути в idle після greeting
+                    _timeout = 6.0 if _patient_said_count[0] == 0 else WATCHDOG_TIMEOUT_SEC
+                    if idle < _timeout:
                         continue
                     _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
                     _watchdog_injected[0] += 1
@@ -423,7 +427,8 @@ class Block1Agent:
                         self.call_result = "no_answer"
                         self._end_event.set()
                         return
-                    logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — re-inject prompt")
+                    _phase = "до першої репліки" if _patient_said_count[0] == 0 else f"репліка #{_patient_said_count[0]}"
+                    logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності ({_phase}) — re-inject prompt")
                     try:
                         _suppress_next_audio[0] = False
                         await _live_session[0].send_client_content(
@@ -441,6 +446,7 @@ class Block1Agent:
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
                 _NOISE_ALPHA = 0.05    # швидкість адаптації (~20 chunks для стабілізації)
                 _SNR_RATIO = 2.0       # мін. SNR: голос повинен бути в 2.0x гучніше фону
+                _snr_filtered_chunks = [0]  # лічильник відфільтрованих SNR чанків (для логу)
                 # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
                 # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
                 # перші склади слова пацієнта що прозвучали під час gate.
@@ -460,6 +466,7 @@ class Block1Agent:
                     # Gate щойно закінчився — відправляємо накопичений pre-roll
                     if _was_in_gate[0]:
                         _was_in_gate[0] = False
+                        logger.debug(f"[AGENT] Echo gate знято — аудіо пацієнта відкрито (preroll: {len(_preroll_buf)} чанків)")
                         for _pre_chunk in list(_preroll_buf):
                             if self._end_event.is_set() or _reconnecting[0]:
                                 break
@@ -500,7 +507,11 @@ class Block1Agent:
                         # VAD каже "голос" але SNR занизький → фоновий шум, не мова
                         _has_voice = False
                         _noise_rms[0] += _NOISE_ALPHA * (_chunk_rms - _noise_rms[0])
+                        _snr_filtered_chunks[0] += 1
+                        if _snr_filtered_chunks[0] % 20 == 1:  # лог раз на ~320мс щоб не спамити
+                            logger.debug(f"[SNR] Фільтр: rms={_chunk_rms:.0f} < поріг={_noise_rms[0] * _SNR_RATIO:.0f} (шум={_noise_rms[0]:.0f} × {_SNR_RATIO})")
                     if _has_voice:
+                        _snr_filtered_chunks[0] = 0  # голос пройшов → скидаємо лічильник фільтру
                         _patient_spoke.set()
                         _patient_ever_spoke[0] = True
                         _activity[0] = time.time()
