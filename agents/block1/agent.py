@@ -71,6 +71,67 @@ def _is_voice_rms(pcm: bytes) -> bool:
     return rms > VAD_THRESHOLD
 
 
+def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
+    """
+    Форматує доступні слоти у підказку для Gemini + pre-built cache entry.
+
+    Повертає (hint_text, cache_entry) якщо є дані, або (None, None).
+
+    Призначення: pre-injection перед першою реплікою пацієнта.
+    Gemini дізнається доступні дати заздалегідь → при запиті на перенос
+    відповідає одразу БЕЗ ghost turn (Turn 1 з галюцинованими датами, 2–4с).
+
+    cache_entry має той самий формат що повертає handle_tool_call("get_available_slots", {})
+    → при кешованому хіті tool call відпрацьовує миттєво + date-validation консистентна.
+    """
+    if not raw_slots:
+        return None, None
+    try:
+        from datetime import datetime as _dt
+        from agents.block1.tools import _ua_ordinal, _MONTHS_UA, _natural_date_list
+
+        dates_map: dict[str, list] = {}
+        for item in raw_slots:
+            d = _dt.fromisoformat(item["START_E"])
+            date_str = f"{_ua_ordinal(d.day)} {_MONTHS_UA[d.month - 1]}"
+            dates_map.setdefault(date_str, []).append(item)
+
+        if not dates_map:
+            return None, None
+
+        date_summaries = [
+            {"date": dt, "count": len(sl)}
+            for dt, sl in list(dates_map.items())[:3]
+        ]
+        natural = _natural_date_list(date_summaries)
+
+        # Підказка для Gemini — система, не для пацієнта
+        hint = (
+            f"[Системна довідка — тільки для тебе, пацієнту не кажи]\n"
+            f"Зараз вільні такі дати для перенесення: {natural}.\n"
+            f"Якщо пацієнт захоче перенести — одразу назви ці дати, не роби паузу.\n"
+            f"Для уточнення конкретного часу — виклич get_available_slots(date=\"...\")."
+        )
+
+        # Pre-built відповідь — ідентична формату handle_tool_call("get_available_slots", {})
+        # Якщо Gemini все ж зробить tool call — cache hit, відповідь миттєва, формат консистентний
+        cache_result = {
+            "success": True,
+            "message": (
+                f"Скажи пацієнту ДОСЛІВНО цей перелік дат (не змінюй порядок і закінчення): «{natural}». "
+                f"НЕ ЗГАДУЙ конкретні часи зараз — тільки дати. "
+                f"Після переліку запитай на яку дату зручніше. "
+                f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
+            ),
+            "available_dates": date_summaries,
+            "total_dates": len(date_summaries),
+        }
+        return hint, {"result": cache_result, "_ts": time.monotonic()}
+    except Exception as _e:
+        logger.debug(f"[AGENT] _build_slots_hint failed (non-critical): {_e!r}")
+        return None, None
+
+
 class _DebugCall:
     """
     Mock BinotelCall для debug режиму.
@@ -1112,6 +1173,22 @@ class Block1Agent:
                     logger.info("[AGENT] Stale warmup: primer надіслано в відновлену сесію")
                 else:
                     logger.info("[AGENT] Fresh warmup: suppress + echo gate встановлено")
+                # Slot hint injection — warmup path
+                # Передаємо Gemini перелік вільних дат ДО першої репліки пацієнта.
+                # Мета: Gemini вже знає дати → при питанні про перенесення відповідає
+                # одразу без ghost-turn (без паузи на tool call → без 10с затримки).
+                _slots_hint, _slots_cache_entry = _build_slots_hint(_call_cache.get("__raw_slots"))
+                if _slots_hint:
+                    try:
+                        await _live_session[0].send_client_content(
+                            turns={"parts": [{"text": _slots_hint}]},
+                            turn_complete=True,
+                        )
+                        if _slots_cache_entry and "get_available_slots" not in _call_cache:
+                            _call_cache["get_available_slots"] = _slots_cache_entry
+                        logger.info("[AGENT] Warmup: slot hint надіслано, кеш pre-populated")
+                    except Exception as _se:
+                        logger.debug(f"[AGENT] Warmup slot hint failed (non-critical): {_se!r}")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
@@ -1125,6 +1202,32 @@ class Block1Agent:
                     turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
+                # Slot hint injection — cold path
+                # Prefetch міг ще не завершитись → беремо з _call_cache якщо вже є,
+                # інакше спробуємо отримати синхронно (з timeout 2с).
+                _raw_cold = _call_cache.get("__raw_slots")
+                if not _raw_cold:
+                    try:
+                        from services import clinic_api as _capi
+                        _raw_cold = await asyncio.wait_for(
+                            _capi.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
+                        )
+                        if _raw_cold:
+                            _call_cache["__raw_slots"] = _raw_cold
+                    except Exception:
+                        pass
+                _slots_hint_c, _slots_cache_c = _build_slots_hint(_raw_cold)
+                if _slots_hint_c:
+                    try:
+                        await _live_session[0].send_client_content(
+                            turns={"parts": [{"text": _slots_hint_c}]},
+                            turn_complete=True,
+                        )
+                        if _slots_cache_c and "get_available_slots" not in _call_cache:
+                            _call_cache["get_available_slots"] = _slots_cache_c
+                        logger.info("[AGENT] Cold: slot hint надіслано, кеш pre-populated")
+                    except Exception as _se:
+                        logger.debug(f"[AGENT] Cold slot hint failed (non-critical): {_se!r}")
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
