@@ -558,8 +558,11 @@ class Block1Agent:
                                 # Flush Opus черги: trans() ще тримав буферизовані фрейми →
                                 # без flush AI говорить ~0.5-1с після того як Gemini вже зупинився.
                                 binotel_call.flush_audio()
-                                # НЕ ставимо гейт — пацієнт ЗАРАЗ говорить, не можна блокувати його аудіо.
-                                # Луна від обрізаного слова AI мінімальна і Gemini її сам ігнорує.
+                                # Скидаємо gate: пацієнт ЗАРАЗ говорить → ковзаючий gate від попередніх
+                                # чанків AI більше не актуальний. Без скидання перші склади пацієнта
+                                # потрапляють у preroll і можуть бути втрачені якщо фраза коротка.
+                                # Луна від обрізаного слова AI мінімальна — Gemini ігнорує її сам.
+                                _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True  # turn_complete не виставить suppress → Turn N+1 зіграє
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
