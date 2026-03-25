@@ -455,6 +455,7 @@ class Block1Agent:
                 import collections
                 _preroll_buf: collections.deque = collections.deque(maxlen=20)  # ~320мс @ 16ms/chunk
                 _was_in_gate = [False]
+                _preroll_has_vad = [False]  # True якщо під час gate VAD зафіксував реальний голос пацієнта
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
@@ -464,21 +465,29 @@ class Block1Agent:
                     if time.time() < _interrupted_pause_until[0]:
                         _preroll_buf.append(chunk)  # зберігаємо поки в gate
                         _was_in_gate[0] = True
+                        if _is_voice_rms(chunk):     # VAD під час gate — пацієнт реально говорить
+                            _preroll_has_vad[0] = True
                         continue
-                    # Gate щойно закінчився — відправляємо накопичений pre-roll
+                    # Gate щойно закінчився — флашимо pre-roll тільки якщо VAD підтвердив голос.
+                    # Без цієї перевірки ехо від AI яке осіло в pre-roll летить в Gemini і вона
+                    # чує саму себе (1 раз на ~5-8 дзвінків залежно від тімінгу ехо vs gate expiry).
                     if _was_in_gate[0]:
                         _was_in_gate[0] = False
-                        logger.debug(f"[AGENT] Echo gate знято — аудіо пацієнта відкрито (preroll: {len(_preroll_buf)} чанків)")
-                        for _pre_chunk in list(_preroll_buf):
-                            if self._end_event.is_set() or _reconnecting[0]:
-                                break
-                            try:
-                                await _live_session[0].send_realtime_input(
-                                    audio={"data": _pre_chunk, "mime_type": "audio/pcm;rate=16000"}
-                                )
-                            except (ConnectionClosedError, APIError):
-                                break  # Drop pre-roll під час reconnect — recv_task відновить з'єднання
+                        if _preroll_has_vad[0]:
+                            logger.debug(f"[AGENT] Echo gate знято — флаш pre-roll з голосом ({len(_preroll_buf)} чанків)")
+                            for _pre_chunk in list(_preroll_buf):
+                                if self._end_event.is_set() or _reconnecting[0]:
+                                    break
+                                try:
+                                    await _live_session[0].send_realtime_input(
+                                        audio={"data": _pre_chunk, "mime_type": "audio/pcm;rate=16000"}
+                                    )
+                                except (ConnectionClosedError, APIError):
+                                    break  # Drop pre-roll під час reconnect — recv_task відновить з'єднання
+                        else:
+                            logger.debug(f"[AGENT] Echo gate знято — pre-roll дропнуто (ехо/тиша, {len(_preroll_buf)} чанків)")
                         _preroll_buf.clear()
+                        _preroll_has_vad[0] = False
                     # VAD: визначаємо чи є голос у chunk
                     if _VAD_AVAILABLE:
                         _vad_buf.extend(chunk)

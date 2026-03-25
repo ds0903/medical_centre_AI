@@ -21,6 +21,7 @@ scipy + numpy: pip install scipy numpy
 
 import audioop
 import logging
+import time
 
 import noisereduce as nr
 import numpy as np
@@ -77,6 +78,40 @@ _pre_emphasis_prev = [0.0]  # pre-emphasis: попередній семпл x[n-
 _last_out_sample = [0.0]    # G.711 fade-out: останній семпл виходу
 
 # ---------------------------------------------------------------------------
+# AEC — Acoustic Echo Cancellation
+#
+# Відомо що відіграли через динамік (reference). Ехо = затримана копія.
+# Block-NLMS адаптивно оцінює і віднімає ехо з мікрофонного сигналу.
+#
+# Reference tap : gemini_output_to_sip() → 8kHz PCM → _aec_ref_buf
+# AEC apply     : sip_to_gemini_input()  → 8kHz mic → subtract echo
+#
+# Параметри (телефонія 8kHz):
+#   512 тап @ 8kHz = 64мс room IR — покриває speakerphone reverb
+#   μ = 0.02 — стабільна конвергенція за ~2с, не розходиться
+#   Затримка 0–400мс — SIP RTT + акустичний шлях
+#   Double-talk guard: mic >> reference → не оновлюємо ваги фільтра
+# ---------------------------------------------------------------------------
+_AEC_FILTER_LEN   = 512    # тапів @ 8kHz = 64мс
+_AEC_MU           = 0.02   # NLMS крок адаптації
+_AEC_EPS          = 1e-6   # регуляризація
+_AEC_MAX_DELAY    = 3200   # макс. затримка: 400мс @ 8kHz
+_AEC_REF_CAPACITY = 16000  # кільцевий буфер: 2с @ 8kHz
+_AEC_TAIL_SEC     = 1.5    # AEC активний Xс після закінчення мови AI
+_AEC_DT_RATIO     = 2.5    # double-talk: mic_rms / ref_rms > X → пауза адаптації
+_AEC_REEST_INT    = 24000  # переоцінка затримки кожні 3с (семпли @ 8kHz)
+_AEC_FIRST_EST    = 8000   # перша оцінка після 1с накопичення reference
+
+_aec_ref_buf    = np.zeros(_AEC_REF_CAPACITY, dtype=np.float64)
+_aec_ref_write  = [0]     # позиція запису (modulo _AEC_REF_CAPACITY)
+_aec_ref_total  = [0]     # загальна кількість записаних семплів
+_aec_weights    = np.zeros(_AEC_FILTER_LEN, dtype=np.float64)
+_aec_delay      = [320]   # затримка ехо в семплах (початк. 40мс @ 8kHz)
+_aec_reest_ctr  = [0]     # лічильник до наступної переоцінки
+_aec_first_done = [False] # True після першої оцінки затримки
+_aec_last_ref_t = [0.0]   # monotonic time останнього reference push
+
+# ---------------------------------------------------------------------------
 # Noise reduction: профіль шуму лінії
 #
 # Перші _NR_PROFILE_CHUNKS чанків (~640мс) — збираємо тільки тихі фрейми
@@ -109,6 +144,110 @@ _use_opus:  bool = False   # True → Gemini output кодується чере�
 _sip_input_log_done = False  # лог лише один раз про режим вхідного аудіо
 
 
+def _aec_push_ref(samples: np.ndarray) -> None:
+    """Записати reference семпли (те що відіграли AI) у кільцевий буфер."""
+    n = len(samples)
+    if n == 0:
+        return
+    pos = _aec_ref_write[0]
+    space = _AEC_REF_CAPACITY - pos
+    if n <= space:
+        _aec_ref_buf[pos:pos + n] = samples
+    else:
+        _aec_ref_buf[pos:] = samples[:space]
+        _aec_ref_buf[:n - space] = samples[space:]
+    _aec_ref_write[0] = (pos + n) % _AEC_REF_CAPACITY
+    _aec_ref_total[0] += n
+    _aec_last_ref_t[0] = time.monotonic()
+
+
+def _aec_get_ref(delay: int, length: int) -> np.ndarray:
+    """Читати 'length' семплів reference, що закінчуються за 'delay' семплів до write pos."""
+    end = (_aec_ref_write[0] - delay) % _AEC_REF_CAPACITY
+    start = (end - length) % _AEC_REF_CAPACITY
+    if start < end:
+        return _aec_ref_buf[start:end].copy()
+    return np.concatenate([_aec_ref_buf[start:], _aec_ref_buf[:end]])
+
+
+def _aec_estimate_delay(mic: np.ndarray) -> int:
+    """Cross-correlation між mic і reference → оцінка затримки ехо."""
+    n = len(mic)
+    available = _aec_ref_total[0] - _AEC_FILTER_LEN
+    search = min(_AEC_MAX_DELAY, max(0, available - n))
+    if search < 64:
+        return _aec_delay[0]
+    try:
+        ref_long = _aec_get_ref(0, search + n)
+        corr = np.abs(np.correlate(mic, ref_long, 'valid'))
+        new_d = int(np.argmax(corr))
+        new_d = max(0, min(new_d, _AEC_MAX_DELAY))
+        # Exponential smoothing — захист від одноразових викидів
+        smoothed = int(round(0.75 * _aec_delay[0] + 0.25 * new_d))
+        _log.debug(f"[AEC] Delay {_aec_delay[0]}→{smoothed} сем ({smoothed * 125 // 1000}мс)")
+        return smoothed
+    except Exception:
+        return _aec_delay[0]
+
+
+def _aec_apply(mic: np.ndarray) -> np.ndarray:
+    """
+    Block-NLMS Acoustic Echo Cancellation @ 8kHz. Повністю векторизований.
+
+    Алгоритм:
+      1. Echo estimate = convolve(reference[delay:], weights)
+      2. Error = mic - echo_estimate
+      3. Double-talk check (mic >> reference → пауза адаптації)
+      4. Block NLMS update: weights += (μ/N) * correlate(ref, e)[::-1] / norm
+
+    Математика:
+      Convolution (valid):  y[i] = Σ_k w[k] * ref[i+M-1-k]  (FIR filter)
+      Correlation gradient: grad[m] = Σ_i e[i] * ref[i+M-1-m] = corr(ref,e,'valid')[::-1][m]
+
+    Returns: float64 array — мікрофонний сигнал без ехо AI.
+    """
+    global _aec_weights
+    n = len(mic)
+    if n == 0:
+        return mic
+
+    # Переоцінка затримки
+    _aec_reest_ctr[0] += n
+    _threshold = _AEC_FIRST_EST if not _aec_first_done[0] else _AEC_REEST_INT
+    if _aec_reest_ctr[0] >= _threshold:
+        _aec_reest_ctr[0] = 0
+        _aec_first_done[0] = True
+        _aec_delay[0] = _aec_estimate_delay(mic)
+
+    delay = _aec_delay[0]
+    M = _AEC_FILTER_LEN
+    needed = M + n - 1  # для 'valid' convolution
+
+    if _aec_ref_total[0] < needed + delay:
+        return mic  # замало reference — bypass без обробки
+
+    ref = _aec_get_ref(delay, needed)  # M+n-1 семплів
+
+    # Echo estimate (повністю векторизований, використовує numpy BLAS)
+    # np.convolve(ref, w, 'valid')[i] = Σ_k ref[i+k] * w[M-1-k] = Σ_k w[k] * ref[i+M-1-k] = y[i] ✓
+    echo_est = np.convolve(ref, _aec_weights, mode='valid')  # length = n
+    e = mic - echo_est
+
+    # Double-talk detection: якщо пацієнт говорить гучніше ніж ехо → не псуємо ваги
+    ref_rms = float(np.sqrt(np.mean(ref[M - 1:] ** 2) + 1e-9))
+    mic_rms = float(np.sqrt(np.mean(mic ** 2) + 1e-9))
+    double_talk = (mic_rms > _AEC_DT_RATIO * ref_rms) or (ref_rms < 50.0)
+
+    if not double_talk:
+        # Block NLMS weight update (vectorized)
+        # grad[m] = correlate(ref, e, 'valid')[M-1-m] → reversed output
+        grad = np.correlate(ref, e, mode='valid')[::-1]  # length = M ✓
+        norm = np.dot(ref, ref) + _AEC_EPS * len(ref)
+        _aec_weights = _aec_weights + (_AEC_MU / n) * (grad / norm)
+
+    return e
+
+
 def sip_to_gemini_input(pcm: bytes) -> bytes:
     """
     Аудіо від пацієнта → PCM signed 16-bit 16 kHz (Gemini вхід).
@@ -128,6 +267,11 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
                 "[BRIDGE] SIP→Gemini: s16 16kHz Opus direct (без u8 деградації, спектр 0-8kHz)"
             )
         arr = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+        # AEC @ 8kHz: Opus mic 16kHz → 8kHz → AEC → 16kHz
+        if time.monotonic() - _aec_last_ref_t[0] < _AEC_TAIL_SEC and _aec_ref_total[0] > _AEC_FILTER_LEN:
+            arr_8k = arr[::2]  # 16→8kHz (голос < 4kHz, аліасинг не критичний)
+            arr_8k = _aec_apply(arr_8k)
+            arr = resample_poly(arr_8k, 2, 1)  # 8→16kHz
         resampled = arr
     else:
         # G.711: u8 8kHz → s16 → resample 8→16kHz
@@ -140,6 +284,9 @@ def sip_to_gemini_input(pcm: bytes) -> bytes:
         s8  = audioop.bias(pcm, 1, -128)
         s16 = audioop.lin2lin(s8, 1, 2)
         arr = np.frombuffer(s16, dtype="<i2").astype(np.float64)
+        # AEC @ 8kHz: застосовуємо до сирого 8kHz сигналу перед ресемплом
+        if time.monotonic() - _aec_last_ref_t[0] < _AEC_TAIL_SEC and _aec_ref_total[0] > _AEC_FILTER_LEN:
+            arr = _aec_apply(arr)
         resampled = resample_poly(arr, up=2, down=1)
 
     # Крок 2.5: HP фільтр — DC offset + гул мережі 50 Гц
@@ -284,7 +431,9 @@ def gemini_output_to_sip(pcm_24khz: bytes) -> bytes:
         decimated = decimated * _output_gain[0]
 
     _last_out_sample[0] = float(decimated[-1]) if len(decimated) else 0.0
-    pcm_8khz = np.clip(decimated, -32768, 32767).astype("<i2").tobytes()
+    ref_clip = np.clip(decimated, -32768, 32767)
+    _aec_push_ref(ref_clip)  # AEC: тапаємо reference (те що відіграємо пацієнту)
+    pcm_8khz = ref_clip.astype("<i2").tobytes()
 
     # G.711 encoding
     if _use_alaw:
@@ -334,7 +483,7 @@ def enable_noise_profiling() -> None:
 
 def reset_state() -> None:
     """Скинути стан ресемплерів, фільтрів та noise profile між дзвінками."""
-    global _zi_gemini_to_sip, _zi_hp_input, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled, _nr_silence_count, _nr_refresh_buf
+    global _zi_gemini_to_sip, _zi_hp_input, _nr_chunk_count, _nr_profile, _nr_profile_buf, _use_opus, _use_alaw, _sip_input_log_done, _nr_collect_enabled, _nr_silence_count, _nr_refresh_buf, _aec_ref_write, _aec_ref_total, _aec_weights, _aec_delay, _aec_reest_ctr, _aec_first_done, _aec_last_ref_t
     _zi_gemini_to_sip = None
     _zi_hp_input = None
     _input_gain[0]  = 1.0
@@ -350,3 +499,11 @@ def reset_state() -> None:
     _use_opus  = False
     _use_alaw  = False
     _sip_input_log_done = False
+    _aec_ref_buf[:] = 0.0
+    _aec_ref_write[0] = 0
+    _aec_ref_total[0] = 0
+    _aec_weights[:] = 0.0
+    _aec_delay[0] = 320
+    _aec_reest_ctr[0] = 0
+    _aec_first_done[0] = False
+    _aec_last_ref_t[0] = 0.0
