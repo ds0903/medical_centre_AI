@@ -570,17 +570,14 @@ class BinotelSipClient:
                     try:
                         response = __sc.gen_ok(message)
                         (_addr, _port) = message.headers["Via"][0]["address"]
-                        logger.info(f"[SIP] OPTIONS from Via={_addr}:{_port}, sending 200 OK")
                         __sc.out.sendto(response.encode("utf8"), (_addr, int(_port)))
                         # Also send to SIP server directly (in case Via has internal IP)
                         if _addr != __sc.server:
                             __sc.out.sendto(
                                 response.encode("utf8"), (__sc.server, __sc.port)
                             )
-                            logger.info(f"[SIP] Also sent 200 OK to server {__sc.server}:{__sc.port}")
-                        logger.info("[SIP] OPTIONS → 200 OK sent")
                     except Exception as _e:
-                        logger.info(f"[SIP] OPTIONS handler error: {_e}")
+                        logger.debug(f"[SIP] OPTIONS handler error: {_e}")
                     return
                 __orig(message)
 

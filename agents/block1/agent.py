@@ -1173,23 +1173,28 @@ class Block1Agent:
                     logger.info("[AGENT] Stale warmup: primer надіслано в відновлену сесію")
                 else:
                     logger.info("[AGENT] Fresh warmup: suppress + echo gate встановлено")
-                # Slot hint injection — warmup path
-                # Передаємо Gemini перелік вільних дат ДО першої репліки пацієнта.
-                # Мета: Gemini вже знає дати → при питанні про перенесення відповідає
-                # одразу без ghost-turn (без паузи на tool call → без 10с затримки).
-                _slots_hint, _slots_cache_entry = _build_slots_hint(_call_cache.get("__raw_slots"))
-                if _slots_hint:
-                    try:
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": _slots_hint}]},
-                            turn_complete=True,
-                        )
-                        if _slots_cache_entry and "get_available_slots" not in _call_cache:
-                            _call_cache["get_available_slots"] = _slots_cache_entry
-                        logger.info("[AGENT] Warmup: slot hint надіслано, кеш pre-populated")
-                    except Exception as _se:
-                        logger.debug(f"[AGENT] Warmup slot hint failed (non-critical): {_se!r}")
                 _greeting_done.set()
+                # Slot hint injection — warmup path (background task, не блокує _greeting_done)
+                # Відправляємо ПІСЛЯ _greeting_done.set() щоб greeting тур оброблявся нормально.
+                # Slot hint response → ghost (suppress=True після greeting buffer) → inner loop
+                # чекає пацієнта → input_transcription → suppress=False → відповідь грає.
+                _slots_hint_w = _build_slots_hint(_call_cache.get("__raw_slots"))
+                if _slots_hint_w[0]:
+                    _sh_text_w, _sh_cache_w = _slots_hint_w
+
+                    async def _warmup_inject_hint() -> None:
+                        try:
+                            await _live_session[0].send_client_content(
+                                turns={"parts": [{"text": _sh_text_w}]},
+                                turn_complete=True,
+                            )
+                            if _sh_cache_w and "get_available_slots" not in _call_cache:
+                                _call_cache["get_available_slots"] = _sh_cache_w
+                            logger.info("[AGENT] Warmup: slot hint надіслано, кеш pre-populated")
+                        except Exception as _se:
+                            logger.debug(f"[AGENT] Warmup slot hint failed (non-critical): {_se!r}")
+
+                    asyncio.create_task(_warmup_inject_hint(), name="warmup_slot_hint")
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
                 _activity[0] = time.time()  # watchdog рахує тільки після привітання
@@ -1202,37 +1207,46 @@ class Block1Agent:
                     turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення)"}]},
                     turn_complete=True,
                 )
-                # Slot hint injection — cold path
-                # Prefetch міг ще не завершитись → беремо з _call_cache якщо вже є,
-                # інакше спробуємо отримати синхронно (з timeout 2с).
-                _raw_cold = _call_cache.get("__raw_slots")
-                if not _raw_cold:
-                    try:
-                        from services import clinic_api as _capi
-                        _raw_cold = await asyncio.wait_for(
-                            _capi.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
-                        )
-                        if _raw_cold:
-                            _call_cache["__raw_slots"] = _raw_cold
-                    except Exception:
-                        pass
-                _slots_hint_c, _slots_cache_c = _build_slots_hint(_raw_cold)
-                if _slots_hint_c:
-                    try:
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": _slots_hint_c}]},
-                            turn_complete=True,
-                        )
-                        if _slots_cache_c and "get_available_slots" not in _call_cache:
-                            _call_cache["get_available_slots"] = _slots_cache_c
-                        logger.info("[AGENT] Cold: slot hint надіслано, кеш pre-populated")
-                    except Exception as _se:
-                        logger.debug(f"[AGENT] Cold slot hint failed (non-critical): {_se!r}")
+                # _greeting_done.set() ОДРАЗУ після тригера — не блокувати recv_task greeting'ом.
+                # Slot hint inject нижче — background task, щоб не затримувати _greeting_done
+                # та не ламати suppress/gate логіку greeting туру.
                 _greeting_done.set()
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
-                _activity[0] = time.time()  # watchdog рахує тільки після привітання
+                _activity[0] = time.time()
                 logger.info("[AGENT] Стрімінг розпочато")
+                # Slot hint injection — cold path (background task)
+                # Prefetch таск вже міг покласти __raw_slots в кеш (запускається перед greeting).
+                # Якщо ні — fetch синхронно в background task, не блокуємо основний потік.
+                _raw_cold_snap = _call_cache.get("__raw_slots")
+
+                async def _cold_inject_hint() -> None:
+                    _raw = _raw_cold_snap
+                    if not _raw:
+                        try:
+                            from services import clinic_api as _capi2
+                            _raw = await asyncio.wait_for(
+                                _capi2.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
+                            )
+                            if _raw:
+                                _call_cache["__raw_slots"] = _raw
+                        except Exception:
+                            pass
+                    _sh_text, _sh_cache = _build_slots_hint(_raw)
+                    if not _sh_text:
+                        return
+                    try:
+                        await _live_session[0].send_client_content(
+                            turns={"parts": [{"text": _sh_text}]},
+                            turn_complete=True,
+                        )
+                        if _sh_cache and "get_available_slots" not in _call_cache:
+                            _call_cache["get_available_slots"] = _sh_cache
+                        logger.info("[AGENT] Cold: slot hint надіслано, кеш pre-populated")
+                    except Exception as _se:
+                        logger.debug(f"[AGENT] Cold slot hint failed (non-critical): {_se!r}")
+
+                asyncio.create_task(_cold_inject_hint(), name="cold_slot_hint")
                 # Таймер стартує після turn_complete в _recv_and_handle
 
             try:
