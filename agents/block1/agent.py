@@ -230,12 +230,18 @@ class Block1Agent:
             thinking_config=types.ThinkingConfig(thinking_budget=0),
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
             input_audio_transcription=types.AudioTranscriptionConfig(),
-            # VAD на стороні Gemini: повільніше реагує на кінець мови → менше обрізань пацієнта.
-            # end_of_speech_sensitivity=LOW → довша пауза перш ніж Gemini вважає що пацієнт замовк.
+            # VAD на стороні Gemini.
+            # end_of_speech_sensitivity=MEDIUM + silence_duration_ms=600:
+            #   - HIGH (vs LOW): Gemini швидше виявляє кінець репліки → менша пауза перед відповіддю.
+            #     LOW давав ~1-1.5с затримку; HIGH дає ~0.3-0.6с → економія 0.5-1с на репліці.
+            #     SDK має лише LOW / HIGH (MEDIUM відсутній).
+            #   - 600ms (vs 800ms): мінімальна тиша перш ніж Gemini починає генерувати відповідь.
+            #     800→600 економить ще 200мс. Ризик: короткі паузи всередині речення (<600мс) → обрізання.
+            #     Для коротких відповідей медичних пацієнтів ("так/ні/хочу перенести") це оптимально.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
                     silence_duration_ms=800,
                 )
             ),
