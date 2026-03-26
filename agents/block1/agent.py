@@ -318,6 +318,7 @@ class Block1Agent:
             # повторним input_transcription від того ж мовлення.
             _suppress_next_audio = [False]
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
+            _last_patient_said_time = [0.0]  # час останньої прийнятої транскрипції (для time-based dedup)
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
             _patient_said_count = [0]       # кількість НОВИХ input_transcription від пацієнта (захист від передчасних tool calls)
             # True якщо VAD зафіксував реальний голос пацієнта і input_transcription ще не
@@ -672,14 +673,22 @@ class Block1Agent:
                                         and _greeting_done.is_set()
                                         and time.time() >= _interrupted_pause_until[0]):
                                     _it_text = sc.input_transcription.text.strip()
-                                    if _it_text and _it_text != _last_patient_said_text[0]:
+                                    _it_now = time.time()
+                                    # Dedup: однаковий текст вважається дублікатом тільки якщо
+                                    # прийшов менш ніж за 3с після попереднього (ghost-тур або
+                                    # повторний стрім того ж аудіо).
+                                    # Через 3с той самий текст — нова фраза пацієнта (напр. "Так" двічі).
+                                    _is_dup = (_it_text == _last_patient_said_text[0]
+                                               and _it_now - _last_patient_said_time[0] < 3.0)
+                                    if _it_text and not _is_dup:
                                         _last_patient_said_text[0] = _it_text
+                                        _last_patient_said_time[0] = _it_now
                                         _suppress_next_audio[0] = False
                                         _had_patient_said = True
                                         _patient_said_count[0] += 1
                                         _real_vad_pending[0] = False
                                         _allow_next_turn[0] = False
-                                        _activity[0] = time.time()
+                                        _activity[0] = _it_now
                                         _silence_count = 0           # розмова продовжується — скидаємо лічильники
                                         _watchdog_injected[0] = 0   # watchdog теж скидаємо — розмова жива
                                         # _reschedule_state: перехід 1→2 не тут.
@@ -954,15 +963,23 @@ class Block1Agent:
                                                 ))
                                                 continue
                                         else:
-                                            logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
-                                            _batch.append(types.FunctionResponse(
-                                                id=fc.id, name=fc.name,
-                                                response={
-                                                    "success": False,
-                                                    "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
-                                                },
-                                            ))
-                                            continue
+                                            # no_result / cancelled — AI здалась або скасовує.
+                                            # Дозволяємо: навіть при pending reschedule пацієнт
+                                            # міг сказати "алло/не чути/скасуйте" — не блокуємо.
+                                            _result = args.get("result", "")
+                                            if _result in ("no_result", "cancelled"):
+                                                logger.debug(f"[AGENT] end_call({_result}) при state=1 — дозволено (AI здалась)")
+                                                # fall through — end_call виконається нижче
+                                            else:
+                                                logger.warning(f"[AGENT] end_call({_result}) заблоковано — чекаємо підтвердження переносу")
+                                                _batch.append(types.FunctionResponse(
+                                                    id=fc.id, name=fc.name,
+                                                    response={
+                                                        "success": False,
+                                                        "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
+                                                    },
+                                                ))
+                                                continue
                                     # end_call разом з get_available_slots (одному батчі або в наступному) = галюцинація:
                                     # Gemini отримала слоти але ще не сказала їх пацієнту, вже хоче завершити.
                                     # _slots_fetched: захист в межах поточного батчу
@@ -1066,9 +1083,6 @@ class Block1Agent:
                             # Ехо-гейт після turn_complete: 1.0с буфер після останнього чанку.
                             # Під час стріму gate вже "ковзав" з кожним resp.data (0.3-1.0с).
                             # +1.0с від turn_complete → сумарно 1.3-2.0с захисту від ехо.
-                            # Довший gate (forward-dating) вбиває barge-in → не використовуємо.
-                            # Рідкісне ехо з гучномовника після gate → Gemini AEC + input_transcription
-                            # guard (нижче) запобігають false confirm/cancel.
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
                                 time.time() + 1.0,
