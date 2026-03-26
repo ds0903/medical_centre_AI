@@ -918,26 +918,41 @@ class Block1Agent:
                                             logger.debug("[AGENT] end_call дозволено — cancel_visit вже виконано (reschedule скасовано)")
                                         elif args.get("result") == "rescheduled":
                                             # Gemini викликала end_call(rescheduled) без повторного reschedule_visit.
-                                            # НЕ виконуємо перенос автоматично: пацієнт міг не підтвердити явно
-                                            # (напр. ghost-тур запитав "Все вірно?", пацієнт сказав "Алло?").
-                                            # Вимагаємо від Gemini задати питання вголос і дочекатись реального "так".
-                                            # Після підтвердження Gemini викличе reschedule_visit (state=1 → пропускається)
-                                            # і потім end_call (state=2 → пропускається).
-                                            _suppress_next_audio[0] = False
-                                            logger.warning("[AGENT] end_call(rescheduled) при state=1 — вимагаємо явного підтвердження")
-                                            _batch.append(types.FunctionResponse(
-                                                id=fc.id, name=fc.name,
-                                                response={
-                                                    "success": False,
-                                                    "message": (
-                                                        "Перенос ще не виконано — потрібне явне підтвердження пацієнта. "
-                                                        "Скажи вголос: 'Отже, переносимо ваш запис на [дата] о [час]. Підтверджуєте?' "
-                                                        "(підстав реальні дату і час з нашої розмови). "
-                                                        "Після 'так' — виклич reschedule_visit, потім end_call(result='rescheduled')."
-                                                    ),
-                                                },
-                                            ))
-                                            continue
+                                            # Пацієнт вже підтвердив ("Все вірно?" → "так"), AI сказала прощання
+                                            # і пішла напряму в end_call пропустивши reschedule_visit.
+                                            # Якщо маємо збережені аргументи — виконуємо reschedule автоматично.
+                                            _rargs = _pending_reschedule_args[0]
+                                            if _rargs:
+                                                logger.info("[AGENT] end_call(rescheduled) при state=1 → auto-reschedule зі saved args")
+                                                try:
+                                                    _rr = await handle_tool_call(
+                                                        "reschedule_visit", _rargs, self.visit, _call_cache
+                                                    )
+                                                    if _rr.get("success"):
+                                                        logger.info("[AGENT] Auto-reschedule виконано → дозволяємо end_call")
+                                                        # fall through — end_call виконається нижче
+                                                    else:
+                                                        logger.warning(f"[AGENT] Auto-reschedule не вдався: {_rr}")
+                                                        _batch.append(types.FunctionResponse(
+                                                            id=fc.id, name=fc.name,
+                                                            response={"success": False, "message": "Перенос не вдався. Скажи пацієнту і заверши дзвінок."},
+                                                        ))
+                                                        continue
+                                                except Exception as _re:
+                                                    logger.error(f"[AGENT] Auto-reschedule помилка: {_re!r}")
+                                                    # fall through — дозволяємо end_call з тим що є
+                                            else:
+                                                # Немає збережених аргументів — невідомий slot_id.
+                                                _suppress_next_audio[0] = False
+                                                logger.warning("[AGENT] end_call(rescheduled) при state=1 — немає saved args")
+                                                _batch.append(types.FunctionResponse(
+                                                    id=fc.id, name=fc.name,
+                                                    response={
+                                                        "success": False,
+                                                        "message": "Перенос ще не виконано. Виклич reschedule_visit з visit_id і slot_id, потім end_call(result='rescheduled').",
+                                                    },
+                                                ))
+                                                continue
                                         else:
                                             logger.warning("[AGENT] end_call заблоковано — чекаємо підтвердження переносу")
                                             _batch.append(types.FunctionResponse(
