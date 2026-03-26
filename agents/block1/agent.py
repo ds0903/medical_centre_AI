@@ -848,17 +848,17 @@ class Block1Agent:
                                             },
                                         ))
                                         continue
-                                    # end_call(no_result) після першого ж повідомлення пацієнта — занадто рано.
-                                    # Пацієнт міг задати питання (куди їхати, що взяти) — треба відповісти.
-                                    # Блокуємо no_result якщо менше 2 реальних input_transcription.
+                                    # end_call(no_result) до того як пацієнт взагалі щось сказав — занадто рано.
+                                    # Якщо пацієнт вже сказав хоча б одну фразу — дозволяємо завершувати.
+                                    # Навіть "передзвони потім / я зайнятий" з першої репліки = валідна причина.
                                     _end_args = dict(fc.args) if fc.args else {}
-                                    if fc.name == "end_call" and _end_args.get("result") == "no_result" and _patient_said_count[0] < 2:
-                                        logger.warning("[AGENT] end_call(no_result) заблоковано — менше 2 реплік від пацієнта")
+                                    if fc.name == "end_call" and _end_args.get("result") == "no_result" and _patient_said_count[0] < 1:
+                                        logger.warning("[AGENT] end_call(no_result) заблоковано — пацієнт ще нічого не сказав")
                                         _batch.append(types.FunctionResponse(
                                             id=fc.id, name=fc.name,
                                             response={
                                                 "success": False,
-                                                "message": "Зарано завершувати. Пацієнт тільки-но почав говорити — дай відповідь на його питання і продовжуй розмову.",
+                                                "message": "Пацієнт ще нічого не сказав — спочатку привітайся і нагадай про запис, дочекайся його відповіді.",
                                             },
                                         ))
                                         continue
