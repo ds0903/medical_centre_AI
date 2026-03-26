@@ -189,7 +189,12 @@ types.FunctionDeclaration(
                 name="end_call",
                 description=(
                     "Завершити розмову. "
-                    "ОБОВ'ЯЗКОВО викликати після прощання з пацієнтом з відповідним результатом."
+                    "ОБОВ'ЯЗКОВО викликати після прощання. "
+                    "confirmed — пацієнт підтвердив запис; "
+                    "rescheduled — запис перенесено; "
+                    "cancelled — запис скасовано; "
+                    "no_result — пацієнт не визначився або попросив передзвонити пізніше; "
+                    "no_answer — пацієнт не відповів на дзвінок."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
@@ -197,7 +202,7 @@ types.FunctionDeclaration(
                         "result": types.Schema(
                             type="STRING",
                             description="Підсумок розмови",
-                            enum=["confirmed", "cancelled", "no_result", "no_answer"],
+                            enum=["confirmed", "rescheduled", "cancelled", "no_result", "no_answer"],
                         ),
                     },
                     required=["result"],
@@ -275,7 +280,11 @@ async def handle_tool_call(
         success = await clinic_api.confirm_visit(args["visit_id"])
         result = {
             "success": success,
-            "message": "Візит підтверджено" if success else "Помилка підтвердження, спробуйте пізніше",
+            "message": (
+                "Візит підтверджено. Тепер ОДРАЗУ виклич end_call(result='confirmed'). НЕ питай нічого більше."
+                if success else
+                "Помилка підтвердження. Скажи пацієнту і заверши дзвінок."
+            ),
         }
         call_cache["confirm_visit"] = result
         return result
@@ -478,7 +487,11 @@ async def handle_tool_call(
         )
         result = {
             "success": success,
-            "message": "Візит перенесено" if success else "Помилка переносу, спробуйте пізніше",
+            "message": (
+                "Візит перенесено. Тепер ОДРАЗУ виклич end_call(result='rescheduled'). НЕ питай нічого більше."
+                if success else
+                "Помилка переносу. Скажи пацієнту і заверши дзвінок."
+            ),
         }
         call_cache["reschedule_visit"] = result
         return result
@@ -490,7 +503,11 @@ async def handle_tool_call(
         )
         result = {
             "success": success,
-            "message": "Візит скасовано" if success else "Помилка скасування, спробуйте пізніше",
+            "message": (
+                "Візит скасовано. Тепер ОДРАЗУ виклич end_call(result='cancelled'). НЕ питай нічого більше."
+                if success else
+                "Помилка скасування. Скажи пацієнту і заверши дзвінок."
+            ),
         }
         call_cache["cancel_visit"] = result
         return result
