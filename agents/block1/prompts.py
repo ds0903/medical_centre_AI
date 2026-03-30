@@ -16,6 +16,19 @@ _MONTHS_UA = [
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
 ]
 
+_WEEKDAYS_UA = [
+    "понеділок", "вівторок", "середа", "четвер",
+    "п'ятниця", "субота", "неділя",
+]
+
+
+def _get_today_date() -> str:
+    """Повертає рядок: 'понеділок, 30 березня 2026 р.' (київський час)."""
+    now = datetime.now(ZoneInfo("Europe/Kyiv"))
+    weekday = _WEEKDAYS_UA[now.weekday()]
+    month = _MONTHS_UA[now.month - 1]
+    return f"{weekday}, {now.day} {month} {now.year} р."
+
 
 def _format_visit_date(iso_datetime: str) -> str:
     """Перетворює ISO дату на читабельний рядок: '19 лютого о 14:00'."""
@@ -53,4 +66,5 @@ def build_system_prompt(visit: dict) -> str:
         visit_id=visit["visit_id"],
         message=visit.get("message", ""),
         greeting=_get_greeting(),
+        today_date=_get_today_date(),
     )
