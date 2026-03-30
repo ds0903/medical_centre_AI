@@ -822,14 +822,16 @@ class Block1Agent:
                                     # Ghost тури не грають → луни немає → гейт не потрібен.
                                     # Точний forward-dating виставляється на turn_complete (нижче).
                                     _interrupted_pause_until[0] = time.time() + _calc_echo_gate(turn_audio_bytes)
+                                    # Watchdog/silence: тільки якщо аудіо реально йде до пацієнта.
+                                    # Suppressed (autonomous) тури НЕ скидають watchdog —
+                                    # інакше watchdogніколи не спрацьовує під час тиші пацієнта.
+                                    _activity[0] = time.time()
+                                    _patient_spoke.set()
+                                    if _timer_task and not _timer_task.done():
+                                        _timer_task.cancel()
+                                    if _silence_task and not _silence_task.done():
+                                        _silence_task.cancel()
                                 turn_had_audio = True
-                                _activity[0] = time.time()
-                                # AI говорить — скасовуємо таймер щоб він не тік під час мови AI
-                                _patient_spoke.set()
-                                if _timer_task and not _timer_task.done():
-                                    _timer_task.cancel()
-                                if _silence_task and not _silence_task.done():
-                                    _silence_task.cancel()
                             if _draining:
                                 continue  # пропускаємо tool_call поки AI договорить
                             if resp.tool_call:
@@ -1173,7 +1175,9 @@ class Block1Agent:
                             # Watchdog: відлік починається від кінця ВІДТВОРЕННЯ, не від генерації.
                             # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
                             # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
-                            _activity[0] = time.time() + (turn_audio_bytes / 48000)
+                            # Тільки якщо аудіо реально грало — suppressed/ghost тури НЕ скидають watchdog.
+                            if _turn_audio_played:
+                                _activity[0] = time.time() + (turn_audio_bytes / 48000)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
