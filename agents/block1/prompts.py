@@ -61,6 +61,7 @@ def build_system_prompt(visit: dict) -> str:
 
     return template.format(
         patient_name=visit["patient_name"],
+        patient_phone=visit.get("patient_phone", ""),
         doctor_name=visit["doctor_name"],
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
