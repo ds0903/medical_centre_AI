@@ -235,18 +235,16 @@ class Block1Agent:
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             # VAD на стороні Gemini.
-            # end_of_speech_sensitivity=MEDIUM + silence_duration_ms=600:
-            #   - HIGH (vs LOW): Gemini швидше виявляє кінець репліки → менша пауза перед відповіддю.
-            #     LOW давав ~1-1.5с затримку; HIGH дає ~0.3-0.6с → економія 0.5-1с на репліці.
-            #     SDK має лише LOW / HIGH (MEDIUM відсутній).
-            #   - 600ms (vs 800ms): мінімальна тиша перш ніж Gemini починає генерувати відповідь.
-            #     800→600 економить ще 200мс. Ризик: короткі паузи всередині речення (<600мс) → обрізання.
-            #     Для коротких відповідей медичних пацієнтів ("так/ні/хочу перенести") це оптимально.
+            # END_SENSITIVITY_HIGH + silence_duration_ms=400:
+            #   - HIGH: Gemini швидше виявляє кінець репліки.
+            #   - 400ms: страховка якщо наш VAD не спрацював першим.
+            #     Наш webrtcvad надсилає activity_end після 300мс тиші → відповідь ще швидше.
+            #     Gemini 400ms VAD — резервний fallback.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=700,
+                    silence_duration_ms=400,
                 )
             ),
             # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
@@ -530,6 +528,12 @@ class Block1Agent:
                 _preroll_buf: collections.deque = collections.deque(maxlen=20)  # ~320мс @ 16ms/chunk
                 _was_in_gate = [False]
                 _preroll_has_vad = [False]  # True якщо під час gate VAD зафіксував реальний голос пацієнта
+                # Ранній activity_end: після 300мс тиші від останньої мови пацієнта
+                # надсилаємо Gemini явний сигнал "пацієнт закінчив" — замість чекати 400мс Gemini VAD.
+                # Виграш: ~100-150мс на кожній репліці (наш VAD + activity_end < Gemini silence timer).
+                _last_speech_ts = [0.0]   # час останнього voice chunk
+                _eot_sent = [False]       # True якщо activity_end вже надіслано для цього мовчання
+                _EARLY_EOT_SEC = 0.30     # 300мс тиші → надсилаємо activity_end
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
@@ -604,6 +608,23 @@ class Block1Agent:
                         # НЕ скидаємо _suppress_next_audio тут — тільки input_transcription скидає.
                         # Інакше VAD скидає suppress раніше ніж приходить транскрипція,
                         # і ghost Turn 2 вважається "реальним" туром.
+                        _last_speech_ts[0] = time.time()
+                        _eot_sent[0] = False  # нова мова → скидаємо флаг EOT
+                    elif (not _eot_sent[0]
+                          and _last_speech_ts[0] > 0
+                          and not _reconnecting[0]
+                          and time.time() >= _interrupted_pause_until[0]
+                          and time.time() - _last_speech_ts[0] >= _EARLY_EOT_SEC):
+                        # Пацієнт мовчить 300мс після мови → надсилаємо ранній activity_end.
+                        # Gemini починає генерувати відразу, не чекаючи свого 400мс таймера.
+                        _eot_sent[0] = True
+                        try:
+                            await _live_session[0].send_realtime_input(
+                                activity_end=types.ActivityEnd()
+                            )
+                            logger.debug(f"[VAD] Early EOT: {(time.time()-_last_speech_ts[0])*1000:.0f}мс тиші")
+                        except Exception:
+                            pass  # якщо SDK не підтримує — ігноруємо, Gemini VAD спрацює самостійно
                     if _reconnecting[0]:
                         continue  # пропускаємо chunk поки reconnect в процесі
                     try:
