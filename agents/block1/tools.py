@@ -243,6 +243,26 @@ types.FunctionDeclaration(
                 ),
             ),
 
+            types.FunctionDeclaration(
+                name="transfer_to_operator",
+                description=(
+                    "Перемкнути дзвінок на менеджера (лінія 914). "
+                    "Викликати ТІЛЬКИ якщо пацієнт явно погодився на з'єднання з менеджером. "
+                    "Перед викликом ОБОВ'ЯЗКОВО скажи вголос: "
+                    "'Добре, перенаправляю ваш дзвінок до менеджера. До побачення!'"
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "reason": types.Schema(
+                            type="STRING",
+                            description="Причина передачі (для логування)",
+                        ),
+                    },
+                    required=["reason"],
+                ),
+            ),
+
         ]
     )
 ]
@@ -253,7 +273,7 @@ types.FunctionDeclaration(
 # ---------------------------------------------------------------------------
 
 # Функції які можна викликати лише 1 раз за дзвінок
-_ONE_TIME_TOOLS = {"confirm_visit", "cancel_visit", "reschedule_visit", "end_call"}
+_ONE_TIME_TOOLS = {"confirm_visit", "cancel_visit", "reschedule_visit", "end_call", "transfer_to_operator"}
 # TTL кешу для get_available_slots (секунди)
 _SLOTS_CACHE_TTL = 60
 
@@ -559,6 +579,13 @@ async def handle_tool_call(
     if function_name == "end_call":
         result = {"success": True, "result": args.get("result", "no_result")}
         call_cache["end_call"] = result
+        return result
+
+    if function_name == "transfer_to_operator":
+        reason = args.get("reason", "")
+        logger.info(f"[TOOL] transfer_to_operator → {reason}")
+        result = {"success": True, "reason": reason}
+        call_cache["transfer_to_operator"] = result
         return result
 
     logger.error(f"[TOOL] Невідома функція: {function_name}")

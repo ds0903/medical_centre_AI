@@ -348,6 +348,8 @@ class Block1Agent:
             # True → наступний ghost тур має грати як реальний (після get_available_slots без дати).
             # Встановлюється в post-loop Turn 1, скидається коли Turn 2 проривається.
             _allow_next_turn = [False]
+            # Причина transfer_to_operator (заповнюється коли AI викликає цей tool).
+            _transfer_reason = [""]
             # Час завершення останнього AI туру з реальним аудіо (для double-turn guard).
             _last_ai_turn_end = [0.0]
 
@@ -1039,6 +1041,13 @@ class Block1Agent:
                                             # виправить правильними датами.
                                             _turn_audio_played = False
                                             logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, no flush")
+                                    if fc.name == "transfer_to_operator":
+                                        _transfer_reason[0] = result.get("reason", "")
+                                        self.call_result = "transferred"
+                                        logger.info(f"[AGENT] transfer_to_operator → {_transfer_reason[0]}")
+                                        self._end_event.set()
+                                        _after_batch = ("transfer_to_operator",)
+                                        break
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         # Якщо одна з ключових дій вже виконана — гарантуємо
@@ -1309,13 +1318,16 @@ class Block1Agent:
                     else:
                         logger.info(f"[AGENT] '{t.get_name()}' завершено нормально")
 
-                # Якщо end_call спрацював — recv_task ще грає прощання AI.
+                # Якщо end_call/transfer_to_operator спрацював — recv_task ще грає прощання AI.
                 # Чекаємо поки AI договорить (max 15с) перш ніж обривати дзвінок.
                 if self._end_event.is_set() and not recv_task.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
                     except asyncio.TimeoutError:
                         logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
+                # Виконуємо transfer після того як AI договорила прощання
+                if _transfer_reason[0]:
+                    await binotel_call.transfer_to_operator(_transfer_reason[0])
             finally:
                 if _timer_task and not _timer_task.done():
                     _timer_task.cancel()
