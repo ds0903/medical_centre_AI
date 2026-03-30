@@ -3,3 +3,7 @@
 .idea
 data/test_visits.json
 .claude
+data
+/data/
+info.txt
+credentials.json
