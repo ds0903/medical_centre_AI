@@ -119,12 +119,12 @@ TOOLS = [
             types.FunctionDeclaration(
                 name="get_available_slots",
                 description=(
-                    "Отримати вільні дати або слоти для запису до лікаря. "
+                    "Отримати доступні дати або вільний час для запису до лікаря. "
                     "БЕЗ параметра date: повертає список доступних ДАТ (без конкретних часів). "
                     "Викликати ОДРАЗУ як пацієнт сказав що хоче перенести. "
-                    "З параметром date: повертає конкретні СЛОТИ на обрану дату. "
+                    "З параметром date: повертає конкретний вільний час на обрану дату. "
                     "Викликати ПІСЛЯ того як пацієнт обрав дату. "
-                    "НЕ викликати повторно якщо слоти для цієї дати вже отримані — "
+                    "НЕ викликати повторно якщо вільний час для цієї дати вже отримано — "
                     "пацієнт вже бачив список, одразу виклич reschedule_visit з потрібним slot_id."
                 ),
                 parameters=types.Schema(
@@ -133,7 +133,7 @@ TOOLS = [
                         "date": types.Schema(
                             type="STRING",
                             description=(
-                                "Дата для отримання слотів (напр. '12 жовтня'). "
+                                "Дата для отримання доступного часу (напр. '12 жовтня'). "
                                 "Якщо не вказана — повертає тільки список доступних дат."
                             ),
                         ),
@@ -144,7 +144,7 @@ TOOLS = [
             types.FunctionDeclaration(
                 name="reschedule_visit",
                 description=(
-                    "Перенести візит на обраний пацієнтом слот. "
+                    "Перенести візит на обраний пацієнтом час. "
                     "Викликати лише після того як пацієнт підтвердив конкретний час."
                 ),
                 parameters=types.Schema(
@@ -156,7 +156,7 @@ TOOLS = [
                         ),
                         "slot_id": types.Schema(
                             type="STRING",
-                            description="ID слоту з результату get_available_slots",
+                            description="ID вільного часу з результату get_available_slots",
                         ),
                     },
                     required=["visit_id", "slot_id"],
@@ -265,10 +265,10 @@ async def handle_tool_call(
                 result = {
                     **cached["result"],
                     "message": (
-                        "СТОП. Ці слоти вже були показані пацієнту. "
+                        "СТОП. Доступний час вже було показано пацієнту. "
                         "Пацієнт щойно назвав конкретний час — знайди потрібний slot_id "
                         "у списку slots[] і ОДРАЗУ виклич reschedule_visit(visit_id=..., slot_id=...). "
-                        "НЕ перераховуй слоти знову. НЕ питай ще раз який час."
+                        "НЕ перераховуй доступний час знову. НЕ питай ще раз який час."
                     ),
                 }
                 return result
@@ -298,7 +298,7 @@ async def handle_tool_call(
             if raw:
                 call_cache["__raw_slots"] = raw
         if not raw:
-            return {"success": False, "message": "Вільних слотів немає"}
+            return {"success": False, "message": "Вільного часу немає"}
 
         # Групуємо слоти по датах
         dates_map: dict[str, list[dict]] = {}
@@ -379,7 +379,7 @@ async def handle_tool_call(
             if not matched_slots:
                 return {
                     "success": False,
-                    "message": f"На {requested_date} вільних слотів немає. "
+                    "message": f"На {requested_date} вільного часу немає. "
                                f"Доступні дати: {', '.join(dates_map.keys())}",
                 }
             # Групуємо слоти по частинах дня: ранок / обід / вечір
