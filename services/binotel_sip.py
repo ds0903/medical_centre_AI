@@ -261,7 +261,7 @@ _orig_trans = _RTPClient.trans
 
 def _ensure_opus_queue(rtp_client) -> "_queue.Queue":
     if not hasattr(rtp_client, "_opus_send_queue"):
-        rtp_client._opus_send_queue = _queue.Queue(maxsize=300)
+        rtp_client._opus_send_queue = _queue.Queue(maxsize=600)
     return rtp_client._opus_send_queue
 
 
