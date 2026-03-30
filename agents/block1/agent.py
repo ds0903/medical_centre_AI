@@ -235,7 +235,7 @@ class Block1Agent:
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             # VAD на стороні Gemini.
-            # END_SENSITIVITY_HIGH + silence_duration_ms=400:
+            # END_SENSITIVITY_HIGH + silence_duration_ms=500:
             #   - HIGH: Gemini швидше виявляє кінець репліки.
             #   - 400ms: страховка якщо наш VAD не спрацював першим.
             #     Наш webrtcvad надсилає activity_end після 300мс тиші → відповідь ще швидше.
@@ -244,7 +244,7 @@ class Block1Agent:
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=400,
+                    silence_duration_ms=600,
                 )
             ),
             # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
