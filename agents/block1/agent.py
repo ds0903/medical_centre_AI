@@ -1029,13 +1029,16 @@ class Block1Agent:
                                             # як Gemini інтегрує результат → глушимо Turn 1,
                                             # Turn 2 (ghost) з правильними датами зіграє замість нього.
                                             _suppress_slots_turn = True
-                                            # Race condition fix: Gemini надсилає аудіо Turn 1
-                                            # ДО того як tool result приходить → частковий список
-                                            # вже починає грати. Обрізаємо черги + скидаємо флаг
-                                            # щоб Turn 1 трактувався як ghost, Turn 2 — як реальний.
-                                            binotel_call.flush_audio()
+                                            # Не флашимо чергу: якщо AI вже сказала повну фразу
+                                            # (напр. "На жаль... Є дати... На яку зручніше?") і
+                                            # функцію викликала в кінці — flush обрізав би хвіст
+                                            # мовлення. _suppress_slots_turn блокує продовження
+                                            # після повернення функції — цього достатньо.
+                                            # Ризик: якщо AI галюцинує "немає слотів" до повернення
+                                            # функції — ці фрейми доіграють, але ghost-тур одразу
+                                            # виправить правильними датами.
                                             _turn_audio_played = False
-                                            logger.debug("[AGENT] get_available_slots(no date) → flush Turn 1 audio, suppress")
+                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, no flush")
                                     if fc.name == "end_call":
                                         self.call_result = result.get("result", "no_result")
                                         # Якщо одна з ключових дій вже виконана — гарантуємо
