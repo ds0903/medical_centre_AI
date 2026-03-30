@@ -72,5 +72,8 @@ INTERRUPTED_PAUSE_SEC = float(os.getenv("INTERRUPTED_PAUSE_SEC", "1.0"))
 # Логування розмови: [ПАЦІЄНТ] і [AI] в лог (true = показувати)
 GEMINI_LOGS = os.getenv("GEMINI_LOGS", "false").lower() == "true"
 
+# Transfer to operator: якщо false — transfer не відбувається (для тестування)
+TRANSFER_ENABLED = os.getenv("TRANSFER_ENABLED", "false").lower() == "true"
+
 # Логування дзвінків у файл logs/calls_YYYY-MM-DD.jsonl
 LOG_FILE = os.getenv("LOG_FILE", "false").lower() == "true"

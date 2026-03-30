@@ -34,7 +34,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -1348,7 +1348,10 @@ class Block1Agent:
                         logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
                 # Виконуємо transfer після того як AI договорила прощання
                 if _transfer_reason[0]:
-                    await binotel_call.transfer_to_operator(_transfer_reason[0])
+                    if TRANSFER_ENABLED:
+                        await binotel_call.transfer_to_operator(_transfer_reason[0])
+                    else:
+                        logger.debug(f"[AGENT] TRANSFER_ENABLED=false → пропускаємо transfer ({_transfer_reason[0]})")
             finally:
                 if _timer_task and not _timer_task.done():
                     _timer_task.cancel()
