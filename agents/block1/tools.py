@@ -22,6 +22,11 @@ _MONTHS_UA = [
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
 ]
 
+_WEEKDAYS_UA = [
+    "понеділок", "вівторок", "середа", "четвер",
+    "п'ятниця", "субота", "неділя",
+]
+
 
 def _fmt_dt(iso: str) -> str:
     dt = datetime.fromisoformat(iso)
@@ -75,6 +80,35 @@ def _natural_date_list(date_summaries: list[dict]) -> str:
             by_month[month] = []
             order.append(month)
         by_month[month].append(day_word)
+
+    segments = []
+    for month in order:
+        items = by_month[month]
+        if len(items) == 1:
+            segments.append(f"{items[0]} {month}")
+        else:
+            segments.append(f"{', '.join(items[:-1])} або {items[-1]} {month}")
+    return ", ".join(segments)
+
+
+def _natural_date_list_with_weekday(date_summaries: list[dict]) -> str:
+    """
+    Будує перелік дат з днями тижня для вимови AI.
+    Формат: "вівторок тринадцяте, середа чотирнадцяте або четвер п'ятнадцяте жовтня"
+    date_summaries повинен мати поля: date (ordinal), weekday (str).
+    """
+    by_month: dict[str, list[str]] = {}
+    order: list[str] = []
+    for d in date_summaries:
+        parts = d["date"].split()
+        day_word = parts[0]
+        month = parts[1] if len(parts) > 1 else ""
+        weekday = d.get("weekday", "")
+        entry = f"{weekday} {day_word}" if weekday else day_word
+        if month not in by_month:
+            by_month[month] = []
+            order.append(month)
+        by_month[month].append(entry)
 
     segments = []
     for month in order:
@@ -302,9 +336,12 @@ async def handle_tool_call(
 
         # Групуємо слоти по датах
         dates_map: dict[str, list[dict]] = {}
+        _dates_weekday: dict[str, str] = {}  # date_str → день тижня
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
             date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
+            if date_str not in _dates_weekday:
+                _dates_weekday[date_str] = _WEEKDAYS_UA[dt.weekday()]
             time_str = f"{dt.hour}:{dt.minute:02d}"  # без ведучого нуля: 8:30, 9:00
             period = _slot_period(dt.hour)
             slot = {
@@ -361,10 +398,12 @@ async def handle_tool_call(
 
             # Нечіткий пошук — "дванадцяте жовтня" або "12 жовтня" або просто "12"
             matched_slots = None
+            matched_date_key = ""
             _req = requested_date.lower().strip()
             for d, slots in dates_map.items():
                 if _req in d.lower() or d.lower() in _req:
                     matched_slots = slots
+                    matched_date_key = d
                     break
             if not matched_slots:
                 # Числовий fallback: AI передала "12" або "12 жовтня" → шукаємо ordinal ключ
@@ -373,6 +412,7 @@ async def handle_tool_call(
                     for d, slots in dates_map.items():
                         if _NUM_FROM_ORDINAL.get(d.split()[0]) == _req_day:
                             matched_slots = slots
+                            matched_date_key = d
                             break
                 except (ValueError, IndexError):
                     pass
@@ -435,15 +475,18 @@ async def handle_tool_call(
                     f"Тільки числа HH:MM, без словесного формату."
                 )
 
+            _matched_weekday = _dates_weekday.get(matched_date_key, "")
+            _date_with_weekday = f"{_matched_weekday} {requested_date}" if _matched_weekday else requested_date
             logger.info(f"[TOOL] get_available_slots(date={requested_date}) → {len(matched_slots)} слотів")
             result = {
                 "success": True,
                 "message": (
-                    f"На {requested_date} є {len(matched_slots)} вільних вікон: {periods_text}. "
+                    f"На {_date_with_weekday} є {len(matched_slots)} вільних вікон: {periods_text}. "
                     f"Якщо пацієнт хоче час якого немає в списку — скажи що такого немає і назви найближчий. "
                     f"{period_prompt}"
                 ),
                 "date": requested_date,
+                "weekday": _matched_weekday,
                 "slots": matched_slots,
                 "total_slots": len(matched_slots),
             }
@@ -459,13 +502,14 @@ async def handle_tool_call(
         for d, slots in list(dates_map.items())[:3]:
             date_summaries.append({
                 "date": d,
+                "weekday": _dates_weekday.get(d, ""),
                 "count": len(slots),
             })
-        dates_list = ", ".join(d["date"] for d in date_summaries)
+        dates_list = ", ".join(f"{d['weekday']} {d['date']}" for d in date_summaries)
         logger.info(
             f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
         )
-        natural = _natural_date_list(date_summaries)
+        natural = _natural_date_list_with_weekday(date_summaries)
         result = {
             "success": True,
             "message": (

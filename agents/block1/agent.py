@@ -88,22 +88,25 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
         return None, None
     try:
         from datetime import datetime as _dt
-        from agents.block1.tools import _ua_ordinal, _MONTHS_UA, _natural_date_list
+        from agents.block1.tools import _ua_ordinal, _MONTHS_UA, _WEEKDAYS_UA, _natural_date_list_with_weekday
 
         dates_map: dict[str, list] = {}
+        _dates_weekday: dict[str, str] = {}
         for item in raw_slots:
             d = _dt.fromisoformat(item["START_E"])
             date_str = f"{_ua_ordinal(d.day)} {_MONTHS_UA[d.month - 1]}"
+            if date_str not in _dates_weekday:
+                _dates_weekday[date_str] = _WEEKDAYS_UA[d.weekday()]
             dates_map.setdefault(date_str, []).append(item)
 
         if not dates_map:
             return None, None
 
         date_summaries = [
-            {"date": dt, "count": len(sl)}
+            {"date": dt, "weekday": _dates_weekday.get(dt, ""), "count": len(sl)}
             for dt, sl in list(dates_map.items())[:3]
         ]
-        natural = _natural_date_list(date_summaries)
+        natural = _natural_date_list_with_weekday(date_summaries)
 
         # Підказка для Gemini — система, не для пацієнта
         hint = (
