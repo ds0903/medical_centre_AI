@@ -530,13 +530,19 @@ async def handle_tool_call(
             f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
         )
         natural = _natural_date_list_with_weekday(date_summaries)
+        # Жорстка таблиця відповідності дата→день тижня для передачі в AI
+        weekday_table = "; ".join(
+            f"{d['date']} = {d['weekday']}" for d in date_summaries if d.get("weekday")
+        )
         result = {
             "success": True,
             "message": (
                 f"Скажи пацієнту ДОСЛІВНО цей перелік дат (не змінюй порядок і закінчення): «{natural}». "
                 f"НЕ ЗГАДУЙ конкретні часи зараз — тільки дати. "
                 f"Після переліку запитай на яку дату зручніше. "
-                f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи."
+                f"Коли пацієнт обере дату — виклич get_available_slots(date=...) щоб отримати конкретні часи. "
+                f"ТАБЛИЦЯ ДНІВ ТИЖНЯ (порахована Python, 100% точна — НЕ рахуй самостійно): {weekday_table}. "
+                f"Якщо пацієнт назве день тижня — знайди відповідну дату ТІЛЬКИ з цієї таблиці."
             ),
             "available_dates": date_summaries,
             "total_dates": len(date_summaries),
