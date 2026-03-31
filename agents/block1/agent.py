@@ -614,13 +614,18 @@ class Block1Agent:
                         # і ghost Turn 2 вважається "реальним" туром.
                         # Виняток: suppress завис понад 2.5с і пацієнт реально кричить (RMS > 2× поріг).
                         # Double-turn guard міг скинути _real_vad_pending → deadlock. Примусово звільняємо.
+                        # Додаткова умова: AI мовчить вже > 1.5с — щоб не звільняти suppress на луну AI.
+                        # Луна AI повертається протягом ~0-1.2с після того як AI замовкла.
+                        # Через 1.5с після кінця AI — будь-який голос є реальним пацієнтом, не ехо.
+                        _time_since_ai = time.time() - _last_ai_turn_end[0]
                         if (_suppress_next_audio[0]
                                 and _suppress_set_at[0] > 0
                                 and _chunk_rms > VAD_THRESHOLD * 2
-                                and time.time() - _suppress_set_at[0] > 2.5):
+                                and time.time() - _suppress_set_at[0] > 2.5
+                                and _time_since_ai > 1.5):
                             _suppress_next_audio[0] = False
                             _suppress_set_at[0] = 0.0
-                            logger.info("[AGENT] Suppress timeout: знято примусово (голос активний > 2.5с)")
+                            logger.info(f"[AGENT] Suppress timeout: знято примусово (голос > 2.5с, AI мовчить {_time_since_ai:.1f}с)")
                         _last_speech_ts[0] = time.time()
                         _eot_sent[0] = False  # нова мова → скидаємо флаг EOT
                     elif (not _eot_sent[0]
