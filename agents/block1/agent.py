@@ -319,6 +319,7 @@ class Block1Agent:
             # Дедуплікація по тексту запобігає тому що ghost тури скидають suppress
             # повторним input_transcription від того ж мовлення.
             _suppress_next_audio = [False]
+            _suppress_set_at = [0.0]        # час коли suppress був виставлений (для таймаута)
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
             _last_patient_said_time = [0.0]  # час останньої прийнятої транскрипції (для time-based dedup)
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
@@ -608,6 +609,15 @@ class Block1Agent:
                         # НЕ скидаємо _suppress_next_audio тут — тільки input_transcription скидає.
                         # Інакше VAD скидає suppress раніше ніж приходить транскрипція,
                         # і ghost Turn 2 вважається "реальним" туром.
+                        # Виняток: suppress завис понад 2.5с і пацієнт реально кричить (RMS > 2× поріг).
+                        # Double-turn guard міг скинути _real_vad_pending → deadlock. Примусово звільняємо.
+                        if (_suppress_next_audio[0]
+                                and _suppress_set_at[0] > 0
+                                and _chunk_rms > VAD_THRESHOLD * 2
+                                and time.time() - _suppress_set_at[0] > 2.5):
+                            _suppress_next_audio[0] = False
+                            _suppress_set_at[0] = 0.0
+                            logger.info("[AGENT] Suppress timeout: знято примусово (голос активний > 2.5с)")
                         _last_speech_ts[0] = time.time()
                         _eot_sent[0] = False  # нова мова → скидаємо флаг EOT
                     elif (not _eot_sent[0]
@@ -711,6 +721,7 @@ class Block1Agent:
                                         _last_patient_said_text[0] = _it_text
                                         _last_patient_said_time[0] = _it_now
                                         _suppress_next_audio[0] = False
+                                        _suppress_set_at[0] = 0.0
                                         _had_patient_said = True
                                         _patient_said_count[0] += 1
                                         _real_vad_pending[0] = False
@@ -914,6 +925,7 @@ class Block1Agent:
                                         # Gemini вже встигла згенерувати "Чудово! Перенесено" аудіо
                                         # поки обробляли tool call → flush SIP буфер і придушуємо
                                         _suppress_next_audio[0] = True
+                                        _suppress_set_at[0] = time.time()
                                         binotel_call.flush_audio()
                                         logger.info("[AGENT] reschedule block: flush аудіо + suppress щоб не грало 'Перенесено'")
                                         _batch.append(types.FunctionResponse(
@@ -1172,6 +1184,7 @@ class Block1Agent:
                             _last_ai_turn_end[0] = time.time()  # double-turn guard
                             if not _turn_was_interrupted:
                                 _suppress_next_audio[0] = True
+                                _suppress_set_at[0] = time.time()
                             # Watchdog: відлік починається від кінця ВІДТВОРЕННЯ, не від генерації.
                             # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
                             # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
