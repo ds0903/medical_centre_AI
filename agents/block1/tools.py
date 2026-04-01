@@ -168,6 +168,8 @@ TOOLS = [
                             type="STRING",
                             description=(
                                 "Дата для отримання доступного часу (напр. '12 жовтня'). "
+                                "Якщо пацієнт назвав день тижня ('понеділок') — "
+                                "передай саме день тижня: система автоматично знайде потрібну дату. "
                                 "Якщо не вказана — повертає тільки список доступних дат."
                             ),
                         ),
@@ -401,6 +403,16 @@ async def handle_tool_call(
                                 break
                     except (ValueError, IndexError):
                         pass
+                if not _found:
+                    # День тижня fallback: "понеділок" / "вівторок" / ... → конкретна дата
+                    for _d in _initial_call["result"].get("available_dates", []):
+                        if _d.get("weekday", "").lower() == _req_l:
+                            logger.info(
+                                f"[TOOL] get_available_slots: день тижня '{_req_l}' → дата '{_d['date']}'"
+                            )
+                            requested_date = _d["date"]
+                            _found = True
+                            break
                 if not _found:
                     _dates_str = ", ".join(_initial_dates) if _initial_dates else "відсутні"
                     logger.info(
