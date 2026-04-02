@@ -414,7 +414,11 @@ async def handle_tool_call(
                             _found = True
                             break
                 if not _found:
-                    _dates_str = ", ".join(_initial_dates) if _initial_dates else "відсутні"
+                    _available_dates = _initial_call["result"].get("available_dates", [])
+                    _dates_str = ", ".join(
+                        f"{d.get('weekday', '')} {d['date']}".strip()
+                        for d in _available_dates
+                    ) if _available_dates else "відсутні"
                     logger.info(
                         f"[TOOL] get_available_slots(date={requested_date}) → поза переліком → відхилено"
                     )
