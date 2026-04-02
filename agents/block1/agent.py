@@ -604,8 +604,11 @@ class Block1Agent:
                             logger.debug(f"[SNR] Фільтр: rms={_chunk_rms:.0f} < поріг={_noise_rms[0] * _SNR_RATIO:.0f} (шум={_noise_rms[0]:.0f} × {_SNR_RATIO})")
                     if _has_voice:
                         _snr_filtered_chunks[0] = 0  # голос пройшов → скидаємо лічильник фільтру
-                        _patient_spoke.set()
                         _patient_ever_spoke[0] = True
+                        # Не скидаємо silence monitor поки suppress активний —
+                        # інакше silence counter ніколи не досягне 3 (Gemini не чує пацієнта).
+                        if not _suppress_next_audio[0]:
+                            _patient_spoke.set()
                         _activity[0] = time.time()
                         _real_vad_pending[0] = True  # реальний голос → input_transcription може споживати
                         # НЕ скидаємо _suppress_next_audio тут — тільки input_transcription скидає.
@@ -619,7 +622,7 @@ class Block1Agent:
                         _time_since_ai = time.time() - _last_ai_turn_end[0]
                         if (_suppress_next_audio[0]
                                 and _suppress_set_at[0] > 0
-                                and _chunk_rms > VAD_THRESHOLD * 2
+                                and _chunk_rms > VAD_THRESHOLD * 1.5
                                 and time.time() - _suppress_set_at[0] > 2.5
                                 and _time_since_ai > 1.5):
                             _suppress_next_audio[0] = False
