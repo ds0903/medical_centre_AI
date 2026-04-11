@@ -320,6 +320,7 @@ class Block1Agent:
             _suppress_next_audio = [False]
             _suppress_set_at = [0.0]        # час коли suppress був виставлений (для таймаута)
             _ai_turn_active = [False]       # True поки Gemini генерує відповідь у цьому турі
+            _ai_turn_started_at = [0.0]    # час початку поточного туру (для watchdog grace period)
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
             _last_patient_said_time = [0.0]  # час останньої прийнятої транскрипції (для time-based dedup)
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
@@ -491,12 +492,14 @@ class Block1Agent:
                     if not _greeting_done.is_set():
                         continue  # не рахуємо бездіяльність поки грає привітання
                     idle = time.time() - _activity[0]
-                    # До першої репліки — коротший таймаут: Gemini може зависнути в idle після greeting
-                    _timeout = 6.0 if _patient_said_count[0] == 0 else WATCHDOG_TIMEOUT_SEC
-                    if idle < _timeout:
+                    if idle < WATCHDOG_TIMEOUT_SEC:
                         continue
                     if _ai_turn_active[0]:
-                        continue  # AI зараз генерує відповідь — watchdog не потрібен
+                        # Пропускаємо тільки якщо тур стартував нещодавно (AI реально генерує).
+                        # Якщо тур активний довше ніж WATCHDOG_TIMEOUT_SEC — щось зависло
+                        # (session.receive() блокує outer loop, _ai_turn_active вічно True).
+                        if time.time() - _ai_turn_started_at[0] < WATCHDOG_TIMEOUT_SEC:
+                            continue
                     _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
                     _watchdog_injected[0] += 1
                     if _watchdog_injected[0] >= 3:
@@ -680,6 +683,7 @@ class Block1Agent:
                         _ai_text_lower = ""   # текст AI цього туру (для перевірки ack vs full)
                         _ai_buf.clear()
                         _ai_turn_active[0] = True
+                        _ai_turn_started_at[0] = time.time()
                         async for resp in _live_session[0].receive():
                             turn_had_content = True
                             # Зберігаємо resumption handle для можливого reconnect під час дзвінка
