@@ -132,6 +132,24 @@ async def process_pending_calls() -> None:
     """
     logger.info("[CALLS] Починаємо обдзвін пацієнтів")
 
+    # Cleanup після краша: задачі що залишились в in_progress з попереднього запуску.
+    # attempts=0 → дзвінок не пішов (краш до generalCallID) → скидаємо в pending для retry.
+    # attempts≥1 → дзвінок реально пішов (краш під час розмови) → failed/no_result,
+    #              щоб не передзвонювати двічі.
+    async with get_session() as session:
+        result = await session.execute(
+            select(CallTask).where(CallTask.status == CallStatus.in_progress)
+        )
+        stuck = result.scalars().all()
+        for t in stuck:
+            if t.attempts == 0:
+                t.status = CallStatus.pending
+                logger.warning(f"[CALLS] Краш до дзвінка → pending: {t.patient_name}")
+            else:
+                t.status = CallStatus.failed
+                t.result = CallResult.no_result
+                logger.warning(f"[CALLS] Краш під час дзвінка → failed: {t.patient_name}")
+
     _kyiv = ZoneInfo("Europe/Kyiv")
 
     passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
@@ -180,14 +198,18 @@ async def process_pending_calls() -> None:
     logger.info("[CALLS] Обдзвін завершено")
 
 
-async def _process_single_call(task: CallTask) -> None:
-    """Виконати один дзвінок пацієнту (з таймаутом)."""
-
-    # Позначаємо як "в процесі"
+async def _mark_in_progress(task: CallTask) -> None:
+    """Позначити задачу як in_progress і збільшити лічильник спроб.
+    Викликається ПІСЛЯ того як Binotel підтвердив дзвінок (generalCallID отримано).
+    """
     async with get_session() as session:
         db_task = await session.get(CallTask, task.id)
         db_task.status = CallStatus.in_progress
         db_task.attempts += 1
+
+
+async def _process_single_call(task: CallTask) -> None:
+    """Виконати один дзвінок пацієнту (з таймаутом)."""
 
     visit_context = {
         "visit_id": task.visit_id,
@@ -217,6 +239,7 @@ async def _process_single_call(task: CallTask) -> None:
 async def _execute_call(task: CallTask, visit_context: dict) -> None:
     """Внутрішня логіка одного дзвінка (обгорнута в таймаут _process_single_call)."""
     if DEBUG:
+        await _mark_in_progress(task)
         agent = Block1Agent(visit_context)
         call_result = await agent.run()
         call_duration = agent.call_duration
@@ -237,6 +260,10 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
 
         try:
             binotel_call = await call_task
+            # Binotel підтвердив дзвінок (generalCallID отримано) — тепер рахуємо спробу.
+            # Якщо initiate_call кинув виняток (до generalCallID) — сюди не доходимо,
+            # спроба НЕ рахується і задача залишається pending для retry.
+            await _mark_in_progress(task)
 
             if binotel_call is None:
                 warmup_task.cancel()
