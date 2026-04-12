@@ -1026,12 +1026,23 @@ class Block1Agent:
                                                 logger.debug(f"[AGENT] end_call({_result}) при state=1 — дозволено (AI здалась)")
                                                 # fall through — end_call виконається нижче
                                             else:
-                                                logger.warning(f"[AGENT] end_call({_result}) заблоковано — чекаємо підтвердження переносу")
+                                                # confirmed або інше: пацієнт міг переплутати що підтверджує.
+                                                # Якщо ми запитали "Переносимо на X. Все вірно?" і русло
+                                                # розмови змінилось — пацієнт думає що підтвердив перенос,
+                                                # але AI викликала confirm_visit (оригінал). Треба перепитати.
+                                                _rargs = _pending_reschedule_args[0]
+                                                _slot_hint = f"на {_rargs.get('slot_id', 'новий час')}" if _rargs else "на запропонований час"
+                                                logger.warning(f"[AGENT] end_call({_result}) при state=1 — перепитуємо пацієнта")
                                                 _batch.append(types.FunctionResponse(
                                                     id=fc.id, name=fc.name,
                                                     response={
                                                         "success": False,
-                                                        "message": "НЕ завершуй дзвінок. Ти запитав пацієнта про підтвердження переносу — мовчки чекай відповідь.",
+                                                        "message": (
+                                                            f"НЕ завершуй дзвінок. Уточни чітко: "
+                                                            f"«Отже, ми переносимо ваш запис {_slot_hint} — "
+                                                            f"чи ви залишаєте оригінальний час?» "
+                                                            f"Чекай однозначної відповіді."
+                                                        ),
                                                     },
                                                 ))
                                                 continue
