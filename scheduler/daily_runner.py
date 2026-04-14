@@ -110,7 +110,7 @@ async def fetch_and_schedule_calls() -> None:
                 patient_name=visit["patient_name"],
                 patient_phone=visit["patient_phone"],
                 doctor_name=visit["doctor_name"],
-                doctor_id=visit["doctor_id"],
+                place_id=visit["place_id"],
                 visit_datetime=datetime.fromisoformat(visit["visit_datetime"]),
                 message=visit.get("message", ""),
                 status=CallStatus.pending,
@@ -216,7 +216,7 @@ async def _process_single_call(task: CallTask) -> None:
         "patient_name": task.patient_name,
         "patient_phone": task.patient_phone,
         "doctor_name": task.doctor_name,
-        "doctor_id": task.doctor_id,
+        "place_id": task.place_id,
         "visit_datetime": task.visit_datetime.isoformat(),
         "message": task.message or "",
     }

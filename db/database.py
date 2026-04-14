@@ -81,6 +81,17 @@ async def _migrate(conn) -> None:
         "ALTER TYPE callresult ADD VALUE IF NOT EXISTS 'transferred'"
     ))
 
+    # Перейменувати doctor_id → place_id (IDPOINT — це точка клініки, не лікар)
+    for table in ("call_tasks", "call_history"):
+        exists = await conn.execute(text(
+            f"SELECT 1 FROM pg_attribute "
+            f"WHERE attrelid = '{table}'::regclass AND attname = 'doctor_id' AND NOT attisdropped"
+        ))
+        if exists.scalar():
+            await conn.execute(text(
+                f"ALTER TABLE {table} RENAME COLUMN doctor_id TO place_id"
+            ))
+
 
 async def close_db() -> None:
     """Закрити з'єднання з БД."""

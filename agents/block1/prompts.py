@@ -46,18 +46,27 @@ def _get_greeting() -> str:
     return "Доброго вечора"
 
 
+_CLINIC_ADDRESSES: dict[str, str] = {
+    "1": "Сонячний мікрорайон, 59, Кривий Ріг",
+    "3": "вулиця Пушкіна, 13-О, Кривий Ріг",
+}
+
+
 def build_system_prompt(visit: dict) -> str:
     """
     Завантажує промпт з prompts.yaml та підставляє дані конкретного візиту.
 
     Args:
         visit: dict з ключами visit_id, patient_name, doctor_name,
-               doctor_id, visit_datetime
+               place_id, visit_datetime
     """
     with open(_PROMPTS_PATH, "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
 
     template: str = prompts["block1_reminder"]["system"]
+
+    place_id = str(visit.get("place_id", ""))
+    clinic_address = _CLINIC_ADDRESSES.get(place_id, "")
 
     return template.format(
         patient_name=visit["patient_name"],
@@ -68,4 +77,5 @@ def build_system_prompt(visit: dict) -> str:
         message=visit.get("message", ""),
         greeting=_get_greeting(),
         today_date=_get_today_date(),
+        clinic_address=clinic_address,
     )
