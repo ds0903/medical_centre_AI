@@ -77,6 +77,9 @@ async def _migrate(conn) -> None:
     await conn.execute(text(
         "ALTER TYPE callresult ADD VALUE IF NOT EXISTS 'rescheduled'"
     ))
+    await conn.execute(text(
+        "ALTER TYPE callresult ADD VALUE IF NOT EXISTS 'transferred'"
+    ))
 
 
 async def close_db() -> None:

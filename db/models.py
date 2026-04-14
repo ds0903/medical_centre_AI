@@ -24,6 +24,7 @@ class CallResult(enum.Enum):
     rescheduled = "rescheduled" # Перенесено на інший час
     no_result = "no_result"     # Не зрозумів / не міг говорити
     no_answer = "no_answer"     # Не відповів
+    transferred = "transferred" # Передано менеджеру
 
 
 class CallTask(Base):

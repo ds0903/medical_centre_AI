@@ -258,7 +258,7 @@ async def update_event_status(event_id: str, status: int) -> None:
     TODO: уточнити endpoint та метод (POST / PATCH / PUT)
     TODO: уточнити формат авторизації (заголовок)
     """
-    _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 5: "Не додзвонились"}
+    _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 4: "Не додзвонились", 5: "Перенаправлено"}
     label = _STATUS_LABELS.get(status, str(status))
 
     if DEBUG:
