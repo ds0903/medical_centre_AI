@@ -34,7 +34,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED
+from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -519,6 +519,44 @@ class Block1Agent:
                         logger.error(f"[AGENT] Watchdog помилка send_client_content: {e!r}")
                         self._end_event.set()
                         return
+
+            async def _timeout_warning() -> None:
+                """За 60с до CALL_TIMEOUT_SEC інджектує попередження пацієнту.
+                Після попередження чекає рівно 60с → якщо дзвінок не завершився → no_result."""
+                # Чекаємо до моменту "CALL_TIMEOUT_SEC - 60с від старту дзвінка"
+                warn_at = start + CALL_TIMEOUT_SEC - 60
+                wait_sec = warn_at - time.time()
+                if wait_sec > 0:
+                    await asyncio.sleep(wait_sec)
+                if self._end_event.is_set():
+                    return
+
+                logger.warning(
+                    f"[AGENT] Timeout warning: залишилась 1 хвилина дзвінка"
+                )
+                try:
+                    _suppress_next_audio[0] = False
+                    await _live_session[0].send_client_content(
+                        turns={"parts": [{"text": (
+                            "УВАГА: до завершення дзвінка залишилась 1 хвилина. "
+                            "Скажи пацієнту природно, без паніки: "
+                            "'Вибачте, нам залишилась буквально хвилинка розмови — "
+                            "ви підтверджуєте свій запис чи бажаєте перенести?' "
+                            "Після цього мовчки чекай відповіді."
+                        )}]},
+                        turn_complete=True,
+                    )
+                except Exception as e:
+                    logger.error(f"[AGENT] Timeout warning помилка send: {e!r}")
+                    return
+
+                # Чекаємо ще 60с — якщо за цей час пацієнт не відповів / дзвінок не завершився
+                await asyncio.sleep(60)
+                if self._end_event.is_set():
+                    return
+                logger.warning("[AGENT] Timeout warning: 60с минуло — завершуємо з no_result")
+                self.call_result = "no_result"
+                self._end_event.set()
 
             async def _send_patient_audio() -> None:
                 _vad_buf = bytearray()  # буфер webrtcvad (потребує фіксовані 10мс = 320 байт)
@@ -1231,6 +1269,7 @@ class Block1Agent:
             send_task = asyncio.create_task(_send_patient_audio(), name="send_patient_audio")
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
             watchdog_task = asyncio.create_task(_watchdog(), name="watchdog")
+            timeout_warning_task = asyncio.create_task(_timeout_warning(), name="timeout_warning")
 
             # Fallback prefetch для cold path (warmup не запускався → кеш порожній).
             # Warmup path: кеш вже заповнений із warmup() → задача не потрібна.
@@ -1369,7 +1408,7 @@ class Block1Agent:
 
             try:
                 done, pending = await asyncio.wait(
-                    [send_task, recv_task, watchdog_task], return_when=asyncio.FIRST_COMPLETED
+                    [send_task, recv_task, watchdog_task, timeout_warning_task], return_when=asyncio.FIRST_COMPLETED
                 )
                 for t in done:
                     if t.cancelled():
@@ -1401,8 +1440,9 @@ class Block1Agent:
                 watchdog_task.cancel()
                 send_task.cancel()
                 recv_task.cancel()
-                results = await asyncio.gather(send_task, recv_task, watchdog_task, return_exceptions=True)
-                for name, r in zip(["send_task", "recv_task", "watchdog_task"], results):
+                timeout_warning_task.cancel()
+                results = await asyncio.gather(send_task, recv_task, watchdog_task, timeout_warning_task, return_exceptions=True)
+                for name, r in zip(["send_task", "recv_task", "watchdog_task", "timeout_warning_task"], results):
                     if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
                 # Закриваємо reconnect-CM якщо з'єднання перевстановлювалось під час дзвінка
