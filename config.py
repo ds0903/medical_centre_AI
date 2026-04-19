@@ -58,6 +58,10 @@ MAX_CALL_ATTEMPTS = int(os.getenv("MAX_CALL_ATTEMPTS", "3"))
 PAUSE_BETWEEN_CALLS_SEC = int(os.getenv("PAUSE_BETWEEN_CALLS_SEC", "30"))
 CALL_TIMEOUT_SEC = int(os.getenv("CALL_TIMEOUT_SEC", "300"))   # таймаут одного дзвінка (5 хв)
 
+# Whitelist номерів: якщо задано — дзвонимо тільки цим номерам (для тестування)
+_raw = os.getenv("ALLOWED_PHONES", "")
+ALLOWED_PHONES: list[str] = [p.strip() for p in _raw.split(",") if p.strip()]
+
 # Silence detection
 SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", os.getenv("SILENCE_TIMEOUT", "5.0")))   # секунд тиші → питаємо
 SILENCE_START_DELAY_SEC = float(os.getenv("SILENCE_START_DELAY_SEC", "1.0"))  # затримка після audio_delay (SIP jitter буфер)

@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from agents.block1.agent import Block1Agent
 from config import (
+    ALLOWED_PHONES,
     CALL_TIMEOUT_SEC,
     DAYS_BEFORE_VISIT,
     DEBUG,
@@ -166,7 +167,11 @@ async def process_pending_calls() -> None:
             logger.info(f"[CALLS] {label}: немає задач — завершуємо")
             break
 
-        logger.info(f"[CALLS] {label}: задач {len(tasks)}")
+        if ALLOWED_PHONES:
+            tasks = [t for t in tasks if t.patient_phone in ALLOWED_PHONES]
+            logger.info(f"[CALLS] {label}: після whitelist-фільтру залишилось {len(tasks)} задач")
+        else:
+            logger.info(f"[CALLS] {label}: задач {len(tasks)}")
         stopped_by_time = False
 
         for i, task in enumerate(tasks):
