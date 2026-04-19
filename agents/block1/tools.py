@@ -402,7 +402,10 @@ async def handle_tool_call(
                     try:
                         _req_day = int(_req_l.split()[0])
                         for _id in _initial_dates:
-                            if _NUM_FROM_ORDINAL.get(_id.split()[0]) == _req_day:
+                            # ordinal може бути складеним ("двадцять перше квітня") —
+                            # беремо всі слова крім останнього (місяця)
+                            _ordinal_part = " ".join(_id.split()[:-1])
+                            if _NUM_FROM_ORDINAL.get(_ordinal_part) == _req_day:
                                 _found = True
                                 break
                     except (ValueError, IndexError):
@@ -450,7 +453,8 @@ async def handle_tool_call(
                 try:
                     _req_day = int(_req.split()[0])
                     for d, slots in dates_map.items():
-                        if _NUM_FROM_ORDINAL.get(d.split()[0]) == _req_day:
+                        _ordinal_part = " ".join(d.split()[:-1])
+                        if _NUM_FROM_ORDINAL.get(_ordinal_part) == _req_day:
                             matched_slots = slots
                             matched_date_key = d
                             break
