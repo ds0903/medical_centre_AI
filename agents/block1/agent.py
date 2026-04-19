@@ -558,6 +558,18 @@ class Block1Agent:
                 self.call_result = "no_result"
                 self._end_event.set()
 
+            async def _sip_monitor() -> None:
+                """Моніторить стан SIP лінії — якщо пацієнт скинув трубку → одразу no_result.
+                Без цього система чекає silence timer (~45с) замість миттєвого завершення."""
+                await _greeting_done.wait()  # не перевіряємо під час привітання
+                while not self._end_event.is_set():
+                    await asyncio.sleep(1)
+                    if not binotel_call.is_active:
+                        logger.warning("[AGENT] SIP лінія скинута пацієнтом — завершуємо дзвінок")
+                        self.call_result = self.call_result or "no_result"
+                        self._end_event.set()
+                        return
+
             async def _send_patient_audio() -> None:
                 _vad_buf = bytearray()  # буфер webrtcvad (потребує фіксовані 10мс = 320 байт)
                 # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
@@ -1270,6 +1282,7 @@ class Block1Agent:
             recv_task = asyncio.create_task(_recv_and_handle(), name="recv_and_handle")
             watchdog_task = asyncio.create_task(_watchdog(), name="watchdog")
             timeout_warning_task = asyncio.create_task(_timeout_warning(), name="timeout_warning")
+            sip_monitor_task = asyncio.create_task(_sip_monitor(), name="sip_monitor")
 
             # Fallback prefetch для cold path (warmup не запускався → кеш порожній).
             # Warmup path: кеш вже заповнений із warmup() → задача не потрібна.
@@ -1408,7 +1421,7 @@ class Block1Agent:
 
             try:
                 done, pending = await asyncio.wait(
-                    [send_task, recv_task, watchdog_task, timeout_warning_task], return_when=asyncio.FIRST_COMPLETED
+                    [send_task, recv_task, watchdog_task, timeout_warning_task, sip_monitor_task], return_when=asyncio.FIRST_COMPLETED
                 )
                 for t in done:
                     if t.cancelled():
@@ -1441,8 +1454,9 @@ class Block1Agent:
                 send_task.cancel()
                 recv_task.cancel()
                 timeout_warning_task.cancel()
-                results = await asyncio.gather(send_task, recv_task, watchdog_task, timeout_warning_task, return_exceptions=True)
-                for name, r in zip(["send_task", "recv_task", "watchdog_task", "timeout_warning_task"], results):
+                sip_monitor_task.cancel()
+                results = await asyncio.gather(send_task, recv_task, watchdog_task, timeout_warning_task, sip_monitor_task, return_exceptions=True)
+                for name, r in zip(["send_task", "recv_task", "watchdog_task", "timeout_warning_task", "sip_monitor_task"], results):
                     if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                         logger.error(f"[AGENT] {name} exception (finally): {r!r}")
                 # Закриваємо reconnect-CM якщо з'єднання перевстановлювалось під час дзвінка
