@@ -15,7 +15,16 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from config import DEBUG, ENV, SCHEDULER_FETCH_HOUR, SKIP_FETCH
+from config import (
+    DEBUG,
+    ENV,
+    SCHEDULER_MORNING_FETCH_HOUR,
+    SCHEDULER_MORNING_CALL_END_HOUR,
+    SCHEDULER_EVENING_FETCH_HOUR,
+    SCHEDULER_EVENING_CALL_HOUR,
+    SCHEDULER_EVENING_CALL_END_HOUR,
+    SKIP_FETCH,
+)
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
     create_scheduler,
@@ -40,12 +49,10 @@ async def run_debug() -> None:
 
     await init_db()
 
-    # Якщо вже минув час fetch — запускаємо одразу
-    now = datetime.now(ZoneInfo("Europe/Kyiv"))
-    if now.hour >= SCHEDULER_FETCH_HOUR:
-        logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
-        await fetch_and_schedule_calls()
-        await process_pending_calls()
+    # В debug завжди запускаємо ранкову сесію одразу (shift=0, архів не потрібен)
+    logger.info("[MAIN] DEBUG — запускаємо ранкову сесію одразу")
+    await fetch_and_schedule_calls(shift=0)
+    await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
 
     # Планувальник для наступних щоденних запусків
     scheduler = create_scheduler()
@@ -70,13 +77,20 @@ async def run_production() -> None:
     if SKIP_FETCH:
         # Пропускаємо fetch — одразу дзвонимо по тому що є в БД
         logger.info("[MAIN] SKIP_FETCH=true — пропускаємо fetch, йдемо одразу дзвонити")
-        await process_pending_calls()
-    else:
-        # Якщо вже минув час fetch — запускаємо одразу, інакше чекаємо розкладу
         now = datetime.now(ZoneInfo("Europe/Kyiv"))
-        if now.hour >= SCHEDULER_FETCH_HOUR:
-            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_FETCH_HOUR}:00 — запускаємо fetch одразу")
-            await fetch_and_schedule_calls()
+        if now.hour >= SCHEDULER_EVENING_CALL_HOUR:
+            await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
+        else:
+            await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
+    else:
+        # Якщо вже минув час fetch — запускаємо відповідну сесію, інакше чекаємо розкладу
+        now = datetime.now(ZoneInfo("Europe/Kyiv"))
+        if now.hour >= SCHEDULER_EVENING_FETCH_HOUR:
+            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_EVENING_FETCH_HOUR}:00 — вечірній fetch")
+            await fetch_and_schedule_calls(shift=1)
+        elif now.hour >= SCHEDULER_MORNING_FETCH_HOUR:
+            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_MORNING_FETCH_HOUR}:00 — ранковий fetch")
+            await fetch_and_schedule_calls(shift=0)
 
     scheduler = create_scheduler()
     scheduler.start()

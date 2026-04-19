@@ -48,10 +48,15 @@ SKIP_FETCH = os.getenv("SKIP_FETCH", "false").lower() == "true"
 SKIP_SCHEDULER = os.getenv("SKIP_SCHEDULER", "false").lower() == "true"
 SKIP_POST = os.getenv("SKIP_POST", "false").lower() == "true"  # не надсилати POST-запити до API клініки (update_state, reschedule)
 
-SCHEDULER_FETCH_HOUR = int(os.getenv("SCHEDULER_FETCH_HOUR", "8"))
-SCHEDULER_CALL_HOUR = int(os.getenv("SCHEDULER_CALL_HOUR", "10"))
-SCHEDULER_CALL_END_HOUR = int(os.getenv("SCHEDULER_CALL_END_HOUR", "21"))
-DAYS_BEFORE_VISIT = int(os.getenv("DAYS_BEFORE_VISIT", "1"))
+# Планувальник — ранкова сесія (shift=0: дзвонимо сьогоднішнім пацієнтам)
+SCHEDULER_MORNING_FETCH_HOUR = int(os.getenv("SCHEDULER_MORNING_FETCH_HOUR", "8"))
+SCHEDULER_MORNING_CALL_HOUR = int(os.getenv("SCHEDULER_MORNING_CALL_HOUR", "9"))
+SCHEDULER_MORNING_CALL_END_HOUR = int(os.getenv("SCHEDULER_MORNING_CALL_END_HOUR", "13"))
+
+# Планувальник — вечірня сесія (shift=1: дзвонимо завтрашнім пацієнтам)
+SCHEDULER_EVENING_FETCH_HOUR = int(os.getenv("SCHEDULER_EVENING_FETCH_HOUR", "13"))
+SCHEDULER_EVENING_CALL_HOUR = int(os.getenv("SCHEDULER_EVENING_CALL_HOUR", "14"))
+SCHEDULER_EVENING_CALL_END_HOUR = int(os.getenv("SCHEDULER_EVENING_CALL_END_HOUR", "18"))
 
 # Дзвінки
 MAX_CALL_ATTEMPTS = int(os.getenv("MAX_CALL_ATTEMPTS", "3"))

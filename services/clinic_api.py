@@ -45,20 +45,22 @@ def _make_headers() -> dict:
 # Отримання даних
 # ---------------------------------------------------------------------------
 
-async def get_upcoming_visits(target_date: date) -> list[dict]:
+async def get_upcoming_visits(shift: int) -> list[dict]:
     """
     Отримати список записів на дзвінки з API клініки.
 
-    API: GET https://cabinet.mkom.ua/bridge/call/appointments
-    Повертає поля: ID, START_E, FINISH_E, CAPTION, LOCATION, MESSAGE,
-                   PATIENT, PATPHONE, EVENTSTATE, IDPOINT, NOTE, ONLINE_EVENT
+    shift=0 — ранкова сесія: витягує слоти на сьогодні (друга половина дня)
+    shift=1 — вечірня сесія: витягує слоти на завтра (перша половина дня)
+
+    API: POST https://cabinet.mkom.ua/bridge/call/listextractor  → {"fields": [shift]}
+         POST https://cabinet.mkom.ua/bridge/call/appointments   → список записів
 
     Returns: list of dicts з внутрішніми ключами:
         visit_id      : str  (= str(ID))
         patient_name  : str  (= PATIENT)
         patient_phone : str  (= PATPHONE)
         doctor_name   : str  (= CAPTION)
-        doctor_id     : str  (= str(IDPOINT))
+        place_id      : str  (= str(IDPOINT))
         visit_datetime: str  ISO 8601  (= START_E)
     """
     if DEBUG:
@@ -76,15 +78,15 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
             }
             for a in appointments
         ]
-        logger.debug(f"[DEBUG] Завантажено {len(visits)} записів з test_visits.json")
+        logger.debug(f"[DEBUG] Завантажено {len(visits)} записів з test_visits.json (shift={shift})")
         return visits
 
     async with aiohttp.ClientSession() as http:
-        # Крок 1: сформувати список на завтра
+        # Крок 1: сформувати список (shift=0 — сьогодні, shift=1 — завтра)
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/listextractor",
             headers=_make_headers(),
-            json={"fields": []},
+            json={"fields": [shift]},
         ) as resp:
             if resp.status >= 400:
                 body = await resp.text()
@@ -92,7 +94,7 @@ async def get_upcoming_visits(target_date: date) -> list[dict]:
             else:
                 extracted = await resp.json()
                 processed = extracted.get('PROCESSED', '?') if isinstance(extracted, dict) else extracted
-                logger.info(f"[API] listextractor → {processed}")
+                logger.info(f"[API] listextractor(shift={shift}) → {processed}")
 
         # Крок 2: отримати готовий список
         async with http.post(

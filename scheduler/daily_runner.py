@@ -20,13 +20,15 @@ from agents.block1.agent import Block1Agent
 from config import (
     ALLOWED_PHONES,
     CALL_TIMEOUT_SEC,
-    DAYS_BEFORE_VISIT,
     DEBUG,
     MAX_CALL_ATTEMPTS,
     PAUSE_BETWEEN_CALLS_SEC,
-    SCHEDULER_CALL_END_HOUR,
-    SCHEDULER_CALL_HOUR,
-    SCHEDULER_FETCH_HOUR,
+    SCHEDULER_EVENING_CALL_END_HOUR,
+    SCHEDULER_EVENING_CALL_HOUR,
+    SCHEDULER_EVENING_FETCH_HOUR,
+    SCHEDULER_MORNING_CALL_END_HOUR,
+    SCHEDULER_MORNING_CALL_HOUR,
+    SCHEDULER_MORNING_FETCH_HOUR,
     SKIP_SCHEDULER,
 )
 from db.database import get_session
@@ -78,16 +80,17 @@ async def _archive_call_tasks() -> None:
 # КРОК 1 — Щодня о 8:00: отримати список візитів та зберегти задачі
 # ---------------------------------------------------------------------------
 
-async def fetch_and_schedule_calls() -> None:
+async def fetch_and_schedule_calls(shift: int) -> None:
     """
-    Отримує візити на завтра (або через DAYS_BEFORE_VISIT днів)
-    та зберігає call_tasks у БД для кожного нового візиту.
+    Отримує список пацієнтів через API та зберігає call_tasks у БД.
+
+    shift=0 — ранкова сесія (пацієнти на сьогодні)
+    shift=1 — вечірня сесія (пацієнти на завтра)
     """
-    target_date = date.today() + timedelta(days=DAYS_BEFORE_VISIT)
-    logger.info(f"[FETCH] Отримуємо візити на {target_date}")
+    logger.info(f"[FETCH] Отримуємо записи (shift={shift})")
 
     try:
-        visits = await clinic_api.get_upcoming_visits(target_date)
+        visits = await clinic_api.get_upcoming_visits(shift)
     except Exception as e:
         logger.error(f"[FETCH] Помилка отримання візитів: {e}")
         return
@@ -127,9 +130,12 @@ async def fetch_and_schedule_calls() -> None:
 # КРОК 2 — Щодня о 10:00: обдзвонити всіх пацієнтів
 # ---------------------------------------------------------------------------
 
-async def process_pending_calls() -> None:
+async def process_pending_calls(call_end_hour: int, archive: bool = False) -> None:
     """Обробляє всі pending задачі — робить дзвінки пацієнтам.
     Після основного циклу — один повторний прохід по тих хто не відповів.
+
+    call_end_hour — година до якої дозволено запускати нові дзвінки
+    archive       — чи архівувати задачі після завершення (тільки після вечірньої сесії)
     """
     logger.info("[CALLS] Починаємо обдзвін пацієнтів")
 
@@ -176,9 +182,9 @@ async def process_pending_calls() -> None:
 
         for i, task in enumerate(tasks):
             now_hour = datetime.now(_kyiv).hour
-            if not SKIP_SCHEDULER and now_hour >= SCHEDULER_CALL_END_HOUR:
+            if not SKIP_SCHEDULER and now_hour >= call_end_hour:
                 logger.info(
-                    f"[CALLS] Кінець робочого часу ({SCHEDULER_CALL_END_HOUR}:00). "
+                    f"[CALLS] Кінець робочого часу ({call_end_hour}:00). "
                     f"Залишилось: {len(tasks) - i}. Зупиняємось."
                 )
                 stopped_by_time = True
@@ -198,9 +204,12 @@ async def process_pending_calls() -> None:
         from services import binotel as _binotel
         await _binotel.shutdown()
 
-    # Архівуємо всі задачі (виконані + ті кому не встигли зателефонувати)
-    await _archive_call_tasks()
-    logger.info("[CALLS] Обдзвін завершено")
+    # Архівуємо тільки після вечірньої сесії — кінець робочого дня
+    if archive:
+        await _archive_call_tasks()
+        logger.info("[CALLS] Обдзвін завершено (з архівуванням)")
+    else:
+        logger.info("[CALLS] Обдзвін завершено")
 
 
 async def _mark_in_progress(task: CallTask) -> None:
@@ -369,27 +378,55 @@ async def _save_error(task: CallTask, error_msg: str) -> None:
 # Планувальник (production)
 # ---------------------------------------------------------------------------
 
+async def _fetch_morning() -> None:
+    await fetch_and_schedule_calls(shift=0)
+
+async def _fetch_evening() -> None:
+    await fetch_and_schedule_calls(shift=1)
+
+async def _process_morning_calls() -> None:
+    await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
+
+async def _process_evening_calls() -> None:
+    await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
+
+
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
 
     scheduler.add_job(
-        fetch_and_schedule_calls,
-        CronTrigger(hour=SCHEDULER_FETCH_HOUR, minute=0),
-        id="fetch_visits",
-        name="Отримати візити та створити задачі",
+        _fetch_morning,
+        CronTrigger(hour=SCHEDULER_MORNING_FETCH_HOUR, minute=0),
+        id="fetch_morning",
+        name="Ранковий fetch (shift=0, сьогодні)",
         replace_existing=True,
     )
-
     scheduler.add_job(
-        process_pending_calls,
-        CronTrigger(hour=SCHEDULER_CALL_HOUR, minute=0),
-        id="process_calls",
-        name="Обдзвонити пацієнтів",
+        _process_morning_calls,
+        CronTrigger(hour=SCHEDULER_MORNING_CALL_HOUR, minute=0),
+        id="calls_morning",
+        name="Ранковий обдзвін (9-13)",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _fetch_evening,
+        CronTrigger(hour=SCHEDULER_EVENING_FETCH_HOUR, minute=0),
+        id="fetch_evening",
+        name="Вечірній fetch (shift=1, завтра)",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _process_evening_calls,
+        CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=0),
+        id="calls_evening",
+        name="Вечірній обдзвін (14-18)",
         replace_existing=True,
     )
 
     logger.info(
-        f"[SCHEDULER] Задачі: fetch о {SCHEDULER_FETCH_HOUR}:00, "
-        f"calls о {SCHEDULER_CALL_HOUR}:00 (Europe/Kyiv)"
+        f"[SCHEDULER] Ранок: fetch о {SCHEDULER_MORNING_FETCH_HOUR}:00, "
+        f"дзвінки о {SCHEDULER_MORNING_CALL_HOUR}:00–{SCHEDULER_MORNING_CALL_END_HOUR}:00 | "
+        f"Вечір: fetch о {SCHEDULER_EVENING_FETCH_HOUR}:00, "
+        f"дзвінки о {SCHEDULER_EVENING_CALL_HOUR}:00–{SCHEDULER_EVENING_CALL_END_HOUR}:00 (Europe/Kyiv)"
     )
     return scheduler
