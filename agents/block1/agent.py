@@ -495,10 +495,11 @@ class Block1Agent:
                     if idle < WATCHDOG_TIMEOUT_SEC:
                         continue
                     if _ai_turn_active[0]:
-                        # Пропускаємо тільки якщо тур стартував нещодавно (AI реально генерує).
-                        # Якщо тур активний довше ніж WATCHDOG_TIMEOUT_SEC — щось зависло
-                        # (session.receive() блокує outer loop, _ai_turn_active вічно True).
-                        if time.time() - _ai_turn_started_at[0] < WATCHDOG_TIMEOUT_SEC:
+                        # Ghost-тури можуть циклити і скидати _ai_turn_started_at кожну секунду,
+                        # тому grace period НЕ повинен дорівнювати WATCHDOG_TIMEOUT_SEC —
+                        # інакше watchdogніколи не спрацьовує при ghost-циклах.
+                        # 3с достатньо щоб AI встигла надіслати перший аудіо-chunk нового туру.
+                        if time.time() - _ai_turn_started_at[0] < 3.0:
                             continue
                     _activity[0] = time.time()  # скидаємо щоб не спрацював двічі підряд
                     _watchdog_injected[0] += 1
