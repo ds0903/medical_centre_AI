@@ -182,7 +182,7 @@ async def confirm_visit(visit_id: str) -> bool:
 
 
 async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
-    """POST /bridge/call/slotmover → перенести візит на новий слот, потім updatestate статус 4."""
+    """POST /bridge/call/slotmover → перенести візит на новий слот (статус 4 встановлює сам slotmover)."""
     if SKIP_POST:
         logger.info(f"[API] reschedule_visit (SKIP_POST): visit_id={visit_id}, slot_id={slot_id}")
         return True
@@ -194,15 +194,6 @@ async def reschedule_visit(visit_id: str, slot_id: str) -> bool:
         ) as resp:
             resp.raise_for_status()
             logger.info(f"[API] reschedule_visit → visit_id={visit_id}, slot_id={slot_id}")
-
-        async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/updatestate",
-            headers=_make_headers(),
-            json={"fields": [int(visit_id), 4]},
-        ) as resp:
-            resp.raise_for_status()
-            logger.info(f"[API] reschedule_visit updatestate → visit_id={visit_id}, status=4 (Перенесено)")
-
         return True
 
 
