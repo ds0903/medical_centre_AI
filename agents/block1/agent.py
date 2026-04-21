@@ -352,6 +352,11 @@ class Block1Agent:
             _transfer_reason = [""]
             # Час завершення останнього AI туру з реальним аудіо (для double-turn guard).
             _last_ai_turn_end = [0.0]
+            # True після suppress_timeout → наступний turn_complete не ресетить suppress.
+            # Причина: suppress_timeout означає що пацієнт говорив >2.5с без input_transcription.
+            # Без цього прапора ghost тур грає (suppress=False) → turn_complete → suppress=True одразу,
+            # і пацієнт знову не чутий. Прапор дає AI ще один тур щоб відповісти без блокування.
+            _suppress_timeout_fired = [False]
 
             # ── Reconnect механізм ────────────────────────────────────────────────────
             # Якщо Gemini WebSocket рветься під час активного дзвінка — перевстановлюємо
@@ -678,6 +683,7 @@ class Block1Agent:
                                 and _time_since_ai > 1.5):
                             _suppress_next_audio[0] = False
                             _suppress_set_at[0] = 0.0
+                            _suppress_timeout_fired[0] = True
                             logger.info(f"[AGENT] Suppress timeout: знято примусово (голос > 2.5с, AI мовчить {_time_since_ai:.1f}с)")
                         _last_speech_ts[0] = time.time()
                         _eot_sent[0] = False  # нова мова → скидаємо флаг EOT
@@ -1258,8 +1264,16 @@ class Block1Agent:
                             _ai_turn_active[0] = False          # тур завершено
                             _last_ai_turn_end[0] = time.time()  # double-turn guard
                             if not _turn_was_interrupted:
-                                _suppress_next_audio[0] = True
-                                _suppress_set_at[0] = time.time()
+                                if _suppress_timeout_fired[0]:
+                                    # Suppress timeout спрацював — пацієнт говорив без відповіді AI.
+                                    # Не ресетимо suppress: даємо наступному AI туру прозвучати
+                                    # без очікування input_transcription (яка може не прийти через
+                                    # погану якість аудіо). Прапор одноразовий — наступний turn_complete
+                                    # вже поведеться нормально.
+                                    _suppress_timeout_fired[0] = False
+                                else:
+                                    _suppress_next_audio[0] = True
+                                    _suppress_set_at[0] = time.time()
                             # Watchdog: відлік починається від кінця ВІДТВОРЕННЯ, не від генерації.
                             # Gemini надсилає аудіо за ~0-2с до того як пацієнт його дочув.
                             # Forward-date на тривалість аудіо → пацієнт отримує повний WATCHDOG_TIMEOUT_SEC.
