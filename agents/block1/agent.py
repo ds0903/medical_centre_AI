@@ -1319,9 +1319,8 @@ class Block1Agent:
                     try:
                         from services import clinic_api as _capi
                         _raw = await _capi.get_doctor_slots(visit_context["doctor_name"])
-                        if _raw:
-                            _call_cache["__raw_slots"] = _raw
-                            logger.debug(f"[AGENT] Cold prefetch: {len(_raw)} слотів кешовано")
+                        _call_cache["__raw_slots"] = _raw if _raw is not None else []
+                        logger.debug(f"[AGENT] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів кешовано")
                     except Exception as _e:
                         logger.debug(f"[AGENT] Cold prefetch failed (non-critical): {_e!r}")
                 asyncio.create_task(_prefetch_slots(), name="prefetch_slots")
@@ -1577,9 +1576,8 @@ class Block1Agent:
             try:
                 from services import clinic_api as _capi
                 _raw = await _capi.get_doctor_slots(self.visit.get("doctor_name", ""))
-                if _raw:
-                    self._prefetched_raw_slots = _raw
-                    logger.debug(f"[AGENT] Warmup prefetch: {len(_raw)} слотів кешовано")
+                self._prefetched_raw_slots = _raw if _raw is not None else []
+                logger.debug(f"[AGENT] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів кешовано")
             except Exception as _e:
                 logger.debug(f"[AGENT] Warmup prefetch failed (non-critical): {_e!r}")
 
