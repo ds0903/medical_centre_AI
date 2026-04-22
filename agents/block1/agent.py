@@ -84,8 +84,18 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
     cache_entry має той самий формат що повертає handle_tool_call("get_available_slots", {})
     → при кешованому хіті tool call відпрацьовує миттєво + date-validation консистентна.
     """
-    if not raw_slots:
+    if raw_slots is None:
         return None, None
+    if not raw_slots:
+        hint = (
+            "[SYSTEM_SLOTS] ⛔ ВІЛЬНИХ СЛОТІВ НЕМАЄ — API клініки повернув порожній список.\n"
+            "АБСОЛЮТНА ЗАБОРОНА: НЕ ВИГАДУЙ і НЕ НАЗИВАЙ жодних дат або часу для переносу.\n"
+            "Якщо пацієнт просить перенести або каже що не прийде:\n"
+            "1. Скажи: 'На жаль, вільного часу для переносу немає.'\n"
+            "2. Запитай: 'Можу з'єднати вас з менеджером, або залишити поточний запис. Що зручніше?'\n"
+            "НЕ пропонуй дат яких немає. НЕ кажи '22 квітня', '23 квітня' або будь-яку іншу дату."
+        )
+        return hint, None
     try:
         from datetime import datetime as _dt
         from agents.block1.tools import _ua_ordinal, _MONTHS_UA, _WEEKDAYS_UA, _natural_date_list_with_weekday
@@ -307,9 +317,12 @@ class Block1Agent:
             _timer_task: asyncio.Task | None = None     # _start_silence_timer task
             _call_cache: dict = {}  # захист від дублікатів tool calls
             # Seed від warmup prefetch (завантажено під час гудків → завжди готово)
-            if getattr(self, "_prefetched_raw_slots", None):
-                _call_cache["__raw_slots"] = self._prefetched_raw_slots
-                logger.debug(f"[AGENT] Prefetch seed: {len(self._prefetched_raw_slots)} слотів → _call_cache")
+            # is not None: сідаємо навіть порожній список [] щоб _build_slots_hint
+            # відправив Gemini хінт "слотів немає" і він не вигадував дати.
+            _raw_prefetch = getattr(self, "_prefetched_raw_slots", None)
+            if _raw_prefetch is not None:
+                _call_cache["__raw_slots"] = _raw_prefetch
+                logger.debug(f"[AGENT] Prefetch seed: {len(_raw_prefetch)} слотів → _call_cache")
             _activity = [time.time()]  # [0] = час останньої активності (для watchdog)
             _interrupted_pause_until = [0.0]  # до цього часу ігноруємо аудіо пацієнта (ехо-гейт)
             # Фільтр дублікатних турів: Gemini Live іноді генерує 2 тури на одну подію.
@@ -1407,14 +1420,13 @@ class Block1Agent:
 
                 async def _cold_inject_hint() -> None:
                     _raw = _raw_cold_snap
-                    if not _raw:
+                    if _raw is None:  # prefetch ще не виконувався → fetch зараз
                         try:
                             from services import clinic_api as _capi2
                             _raw = await asyncio.wait_for(
                                 _capi2.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
                             )
-                            if _raw:
-                                _call_cache["__raw_slots"] = _raw
+                            _call_cache["__raw_slots"] = _raw if _raw else []
                         except Exception:
                             pass
                     _sh_text, _sh_cache = _build_slots_hint(_raw)

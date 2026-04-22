@@ -371,14 +371,11 @@ async def handle_tool_call(
             }
 
         # Групуємо слоти по датах.
-        # Слоти в день візиту допустимі тільки якщо вони ПІЗНІШІ за час самого візиту.
         visit_dt = datetime.fromisoformat(visit_context["visit_datetime"])
         dates_map: dict[str, list[dict]] = {}
         _dates_weekday: dict[str, str] = {}  # date_str → день тижня
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
-            if dt.date() == visit_dt.date() and dt <= visit_dt:
-                continue  # той самий день але не пізніше — пропускаємо
             date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
             if date_str not in _dates_weekday:
                 _dates_weekday[date_str] = _WEEKDAYS_UA[dt.weekday()]
