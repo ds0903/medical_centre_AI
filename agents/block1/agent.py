@@ -891,8 +891,8 @@ class Block1Agent:
                                             _real_vad_pending[0] = False
                                         break
                                     # Ghost тур — НЕ виходимо з inner loop, чекаємо реальної відповіді пацієнта.
-                                    logger.debug("[AGENT] Ghost тур — продовжуємо читати сесію")
                                     # НЕ встановлюємо echo gate: ghost аудіо не відтворювалось →
+
                                     # луни немає → блокувати пацієнта не треба.
                                     # Без цього виправлення: turn_had_audio=True (бо Gemini надіслав аудіо)
                                     # → gate блокував _send_patient_audio → Gemini не чув пацієнта
@@ -1147,28 +1147,21 @@ class Block1Agent:
                                     # в тому ж батчі не блокувався (перевірка state==1 на рядку ~677).
                                     if fc.name == "reschedule_visit" and result.get("success"):
                                         _reschedule_state[0] = 2
-                                    if fc.name == "get_available_slots" and result.get("success"):
-                                        _slots_fetched = True
-                                        # Якщо повернуто конкретні слоти для дати — позначаємо:
-                                        # пацієнт вже пройшов вибір дати і часу
-                                        if result.get("date"):
-                                            _date_slots_fetched[0] = True
-                                        else:
-                                            # get_available_slots без дати (Step 1: список дат).
-                                            # Turn 1 часто галюцинує "вільних слотів немає" до того
-                                            # як Gemini інтегрує результат → глушимо Turn 1,
-                                            # Turn 2 (ghost) з правильними датами зіграє замість нього.
+                                    if fc.name == "get_available_slots":
+                                        if result.get("success"):
+                                            _slots_fetched = True
+                                            if result.get("date"):
+                                                _date_slots_fetched[0] = True
+                                        # Suppress Turn 1 завжди при get_available_slots БЕЗ дати —
+                                        # незалежно від success/failure. Gemini спекулятивно генерує
+                                        # Turn 1 до отримання результату: якщо success=True → галюцинує
+                                        # неправильні дати; якщо success=False ("немає слотів") → галюцинує
+                                        # дати яких немає. В обох випадках Turn 1 неправильний,
+                                        # Turn 2 (з реальним результатом) — правильний.
+                                        if not args.get("date"):
                                             _suppress_slots_turn = True
-                                            # Не флашимо чергу: якщо AI вже сказала повну фразу
-                                            # (напр. "На жаль... Є дати... На яку зручніше?") і
-                                            # функцію викликала в кінці — flush обрізав би хвіст
-                                            # мовлення. _suppress_slots_turn блокує продовження
-                                            # після повернення функції — цього достатньо.
-                                            # Ризик: якщо AI галюцинує "немає слотів" до повернення
-                                            # функції — ці фрейми доіграють, але ghost-тур одразу
-                                            # виправить правильними датами.
                                             _turn_audio_played = False
-                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, no flush")
+                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1 (success=%s)", result.get("success"))
                                     if fc.name == "transfer_to_operator":
                                         _transfer_reason[0] = result.get("reason", "")
                                         self.call_result = "transferred"
@@ -1371,27 +1364,16 @@ class Block1Agent:
                 else:
                     logger.info("[AGENT] Fresh warmup: suppress + echo gate встановлено")
                 _greeting_done.set()
-                # Slot hint injection — warmup path (background task, не блокує _greeting_done)
-                # Відправляємо ПІСЛЯ _greeting_done.set() щоб greeting тур оброблявся нормально.
-                # Slot hint response → ghost (suppress=True після greeting buffer) → inner loop
-                # чекає пацієнта → input_transcription → suppress=False → відповідь грає.
-                _slots_hint_w = _build_slots_hint(_call_cache.get("__raw_slots"))
-                if _slots_hint_w[0]:
-                    _sh_text_w, _sh_cache_w = _slots_hint_w
-
-                    async def _warmup_inject_hint() -> None:
-                        try:
-                            await _live_session[0].send_client_content(
-                                turns={"parts": [{"text": _sh_text_w}]},
-                                turn_complete=True,
-                            )
-                            if _sh_cache_w and "get_available_slots" not in _call_cache:
-                                _call_cache["get_available_slots"] = _sh_cache_w
-                            logger.info("[AGENT] Warmup: slot hint надіслано, кеш pre-populated")
-                        except Exception as _se:
-                            logger.debug(f"[AGENT] Warmup slot hint failed (non-critical): {_se!r}")
-
-                    asyncio.create_task(_warmup_inject_hint(), name="warmup_slot_hint")
+                # Кеш слотів — warmup path (без hint inject → без ghost туру).
+                # send_client_content(turn_complete=True) завжди тригерить ghost-відповідь Gemini.
+                # Ghost з датами/питаннями потрапляє в контекст → пацієнт своєю першою фразою
+                # "відповідає" на ghost → AI веде розмову в неправильному напрямку.
+                # Кешу достатньо: get_available_slots tool → cache hit ~0мс → Gemini не встигає
+                # галюцинувати до отримання реального результату.
+                _, _sh_cache_w = _build_slots_hint(_call_cache.get("__raw_slots"))
+                if _sh_cache_w and "get_available_slots" not in _call_cache:
+                    _call_cache["get_available_slots"] = _sh_cache_w
+                    logger.info("[AGENT] Warmup: кеш слотів pre-populated")
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
                 _activity[0] = time.time()  # watchdog рахує тільки після привітання
@@ -1412,12 +1394,11 @@ class Block1Agent:
                 enable_noise_profiling()
                 _activity[0] = time.time()
                 logger.info("[AGENT] Стрімінг розпочато")
-                # Slot hint injection — cold path (background task)
-                # Prefetch таск вже міг покласти __raw_slots в кеш (запускається перед greeting).
-                # Якщо ні — fetch синхронно в background task, не блокуємо основний потік.
+                # Кеш слотів — cold path (без hint inject → без ghost туру).
+                # Та сама логіка що і warmup: тільки кеш, без send_client_content.
                 _raw_cold_snap = _call_cache.get("__raw_slots")
 
-                async def _cold_inject_hint() -> None:
+                async def _cold_populate_cache() -> None:
                     _raw = _raw_cold_snap
                     if _raw is None:  # prefetch ще не виконувався → fetch зараз
                         try:
@@ -1425,24 +1406,15 @@ class Block1Agent:
                             _raw = await asyncio.wait_for(
                                 _capi2.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
                             )
-                            _call_cache["__raw_slots"] = _raw if _raw else []
+                            _call_cache["__raw_slots"] = _raw if _raw is not None else []
                         except Exception:
                             pass
-                    _sh_text, _sh_cache = _build_slots_hint(_raw)
-                    if not _sh_text:
-                        return
-                    try:
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": _sh_text}]},
-                            turn_complete=True,
-                        )
-                        if _sh_cache and "get_available_slots" not in _call_cache:
-                            _call_cache["get_available_slots"] = _sh_cache
-                        logger.info("[AGENT] Cold: slot hint надіслано, кеш pre-populated")
-                    except Exception as _se:
-                        logger.debug(f"[AGENT] Cold slot hint failed (non-critical): {_se!r}")
+                    _, _sh_cache = _build_slots_hint(_raw)
+                    if _sh_cache and "get_available_slots" not in _call_cache:
+                        _call_cache["get_available_slots"] = _sh_cache
+                        logger.info("[AGENT] Cold: кеш слотів pre-populated")
 
-                asyncio.create_task(_cold_inject_hint(), name="cold_slot_hint")
+                asyncio.create_task(_cold_populate_cache(), name="cold_populate_cache")
                 # Таймер стартує після turn_complete в _recv_and_handle
 
             try:
