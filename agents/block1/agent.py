@@ -852,9 +852,10 @@ class Block1Agent:
                                     if _draining:
                                         # Чекаємо поки AI договорить перед завершенням
                                         if turn_had_audio:
-                                            logger.info("[AGENT] AI завершив прощання — чекаємо 1с...")
+                                            _farewell_wait = 3.0 if self.call_result == "rescheduled" else 1.0
+                                            logger.info("[AGENT] AI завершив прощання — чекаємо %.0fс...", _farewell_wait)
                                             binotel_call.flush_encode_buffer()  # гарантуємо останній фрейм
-                                            await asyncio.sleep(1.0)
+                                            await asyncio.sleep(_farewell_wait)
                                         else:
                                             # end_call прийшов без аудіо в цьому турі — прощання
                                             # вже прозвучало в попередньому турі (напр. AI сказав
