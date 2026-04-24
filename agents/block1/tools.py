@@ -589,9 +589,22 @@ async def handle_tool_call(
         return result
 
     if function_name == "reschedule_visit":
+        slot_id = args.get("slot_id", "")
+        try:
+            int(slot_id)
+        except (ValueError, TypeError):
+            logger.error("[TOOL] reschedule_visit: невалідний slot_id=%r — AI не викликав get_available_slots(date=...)", slot_id)
+            return {
+                "success": False,
+                "message": (
+                    "ПОМИЛКА: slot_id невалідний — ти не викликала get_available_slots(date=...) для цієї дати. "
+                    "НЕГАЙНО виклич get_available_slots(date='[дата яку обрав пацієнт]') "
+                    "і використай реальний slot_id з отриманого списку slots[]."
+                ),
+            }
         success = await clinic_api.reschedule_visit(
             visit_id=args["visit_id"],
-            slot_id=args["slot_id"],
+            slot_id=slot_id,
         )
         result = {
             "success": success,
