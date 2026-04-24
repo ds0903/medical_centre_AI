@@ -1230,7 +1230,7 @@ class Block1Agent:
                             # +1.0с від turn_complete → сумарно 1.3-2.0с захисту від ехо.
                             _interrupted_pause_until[0] = max(
                                 _interrupted_pause_until[0],
-                                time.time() + 1.0,
+                                time.time() + 0.0,
                             )
                             # audio_delay = реальна тривалість аудіо туру.
                             # Gemini генерує швидше ніж real-time → на момент turn_complete
@@ -1352,7 +1352,7 @@ class Block1Agent:
                 # Gate = 1.5с (SIP jitter ~50мс + room echo decay ~800мс + запас 650мс).
                 # Greeting грає в real-time (sleep у циклі) → по виходу залишок відтворення ≈ 0 →
                 # потрібна тільки затримка затухання ехо кімнати.
-                _interrupted_pause_until[0] = time.time() + 1.5
+                _interrupted_pause_until[0] = time.time() + 0.0
                 # ────────────────────────────────────────────────────────────────────────
                 # Primer — тільки для stale сесії (відновленої через handle):
                 # нова сесія не має history привітання → треба повідомити Gemini.
