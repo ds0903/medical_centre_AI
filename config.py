@@ -67,6 +67,10 @@ CALL_TIMEOUT_SEC = int(os.getenv("CALL_TIMEOUT_SEC", "300"))   # таймаут 
 _raw = os.getenv("ALLOWED_PHONES", "")
 ALLOWED_PHONES: list[str] = [p.strip() for p in _raw.split(",") if p.strip()]
 
+# Дедуплікація телефонів: true (default) — 1 унікальний телефон = 1 дзвінок за сесію
+# false — дзвоним по кожному visit_id окремо (для тестування)
+DEDUP_PHONE_CALLS: bool = os.getenv("DEDUP_PHONE_CALLS", "true").lower() != "false"
+
 # Silence detection
 SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", os.getenv("SILENCE_TIMEOUT", "5.0")))   # секунд тиші → питаємо
 SILENCE_START_DELAY_SEC = float(os.getenv("SILENCE_START_DELAY_SEC", "1.0"))  # затримка після audio_delay (SIP jitter буфер)

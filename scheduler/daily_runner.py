@@ -21,6 +21,7 @@ from config import (
     ALLOWED_PHONES,
     CALL_TIMEOUT_SEC,
     DEBUG,
+    DEDUP_PHONE_CALLS,
     MAX_CALL_ATTEMPTS,
     PAUSE_BETWEEN_CALLS_SEC,
     SCHEDULER_EVENING_CALL_END_HOUR,
@@ -177,6 +178,25 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
             logger.info(f"[CALLS] {label}: після whitelist-фільтру залишилось {len(tasks)} задач")
         else:
             logger.info(f"[CALLS] {label}: задач {len(tasks)}")
+
+        # Дедуплікація по телефону: 1 унікальний номер = 1 дзвінок за сесію
+        linked_map: dict = {}  # primary task.id → [linked tasks]
+        if DEDUP_PHONE_CALLS:
+            seen: dict = {}
+            deduped: list = []
+            for task in tasks:
+                phone = task.patient_phone
+                if phone not in seen:
+                    seen[phone] = task
+                    deduped.append(task)
+                    linked_map[task.id] = []
+                else:
+                    linked_map[seen[phone].id].append(task)
+            skipped = len(tasks) - len(deduped)
+            if skipped:
+                logger.info(f"[CALLS] {label}: дедуп телефонів — прибрано {skipped} дублів")
+            tasks = deduped
+
         stopped_by_time = False
 
         for i, task in enumerate(tasks):
@@ -189,8 +209,13 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
                 stopped_by_time = True
                 break
 
-            logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name}")
-            await _process_single_call(task)
+            linked = linked_map.get(task.id, [])
+            if linked:
+                names = ", ".join(t.patient_name for t in linked)
+                logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name} (+linked: {names})")
+            else:
+                logger.info(f"[CALLS] [{i + 1}/{len(tasks)}] {task.patient_name}")
+            await _process_single_call(task, linked_tasks=linked)
 
             if i < len(tasks) - 1:
                 await asyncio.sleep(PAUSE_BETWEEN_CALLS_SEC)
@@ -221,7 +246,7 @@ async def _mark_in_progress(task: CallTask) -> None:
         db_task.attempts += 1
 
 
-async def _process_single_call(task: CallTask) -> None:
+async def _process_single_call(task: CallTask, linked_tasks: list | None = None) -> None:
     """Виконати один дзвінок пацієнту (з таймаутом)."""
 
     visit_context = {
@@ -234,9 +259,10 @@ async def _process_single_call(task: CallTask) -> None:
         "message": task.message or "",
     }
 
+    linked = linked_tasks or []
     try:
         await asyncio.wait_for(
-            _execute_call(task, visit_context),
+            _execute_call(task, visit_context, linked),
             timeout=CALL_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
@@ -244,13 +270,18 @@ async def _process_single_call(task: CallTask) -> None:
             f"[CALLS] Таймаут дзвінка ({CALL_TIMEOUT_SEC}с): {task.patient_name}"
         )
         await _save_error(task, f"Таймаут дзвінка ({CALL_TIMEOUT_SEC}с)")
+        for lt in linked:
+            await _skip_linked(lt)
     except Exception as e:
         logger.error(f"[CALLS] Помилка при дзвінку {task.patient_name}: {e}", exc_info=True)
         await _save_error(task, str(e))
+        for lt in linked:
+            await _skip_linked(lt)
 
 
-async def _execute_call(task: CallTask, visit_context: dict) -> None:
+async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list | None = None) -> None:
     """Внутрішня логіка одного дзвінка (обгорнута в таймаут _process_single_call)."""
+    linked = linked_tasks or []
     if DEBUG:
         await _mark_in_progress(task)
         agent = Block1Agent(visit_context)
@@ -286,6 +317,8 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
                     pass
                 logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
                 await _handle_no_answer(task)
+                for lt in linked:
+                    await _skip_linked(lt)
                 return
 
             await warmup_task
@@ -308,8 +341,14 @@ async def _execute_call(task: CallTask, visit_context: dict) -> None:
     # no_answer (one-way audio / пацієнт мовчить) → scheduler зробить retry
     if call_result == "no_answer":
         await _handle_no_answer(task)
+        for lt in linked:
+            await _skip_linked(lt)
         return
+
     await _save_result(task, call_result, call_duration)
+
+    for lt in linked:
+        await _skip_linked(lt)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +410,17 @@ async def _save_error(task: CallTask, error_msg: str) -> None:
         db_task.status = CallStatus.failed
         db_task.result = CallResult.no_result
         db_task.error_message = error_msg[:500]  # Обрізаємо щоб не переповнити поле
+
+
+async def _skip_linked(task: CallTask) -> None:
+    """Пропускаємо linked task — пацієнт має кілька записів, дзвінок вже відбувся по primary."""
+    logger.info(f"[CALLS] Пропускаємо linked: {task.patient_name} visit={task.visit_id}")
+    async with get_session() as session:
+        db_task = await session.get(CallTask, task.id)
+        db_task.status = CallStatus.completed
+        db_task.result = CallResult.no_result
+        db_task.operator_note = "пропущено: дублікат номера телефону"
+        db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---------------------------------------------------------------------------
