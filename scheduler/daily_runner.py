@@ -164,7 +164,7 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
         async with get_session() as session:
             result = await session.execute(
                 select(CallTask).where(CallTask.status == CallStatus.pending)
-                .order_by(CallTask.visit_datetime)
+                .order_by(CallTask.doctor_name, CallTask.visit_datetime)
             )
             tasks = result.scalars().all()
 
