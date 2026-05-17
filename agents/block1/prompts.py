@@ -51,20 +51,6 @@ _CLINIC_ADDRESSES: dict[str, str] = {
     "3": "вулиця Пушкіна, 13-О, Кривий Ріг",
 }
 
-_DOCTOR_NAME_MAP: list[tuple[str, str]] = [
-    ("МРТ",    "МРТ діагностика"),
-    ("МАМОЛ",  "Мамографія"),
-    ("ХОЛТЕР", "Холтер"),
-]
-
-
-def _normalize_doctor_name(name: str) -> str:
-    upper = name.upper()
-    for keyword, label in _DOCTOR_NAME_MAP:
-        if keyword in upper:
-            return label
-    return name
-
 
 def build_system_prompt(visit: dict) -> str:
     """
@@ -85,7 +71,7 @@ def build_system_prompt(visit: dict) -> str:
     return template.format(
         patient_name=visit["patient_name"],
         patient_phone=visit.get("patient_phone", ""),
-        doctor_name=_normalize_doctor_name(visit["doctor_name"]),
+        doctor_name=visit["doctor_name"],
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
         message=visit.get("message", ""),
