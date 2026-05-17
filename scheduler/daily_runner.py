@@ -356,12 +356,13 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
 # ---------------------------------------------------------------------------
 
 _RESULT_MAP = {
-    "confirmed":   CallResult.confirmed,
-    "cancelled":   CallResult.cancelled,
-    "rescheduled": CallResult.rescheduled,
-    "no_result":   CallResult.no_result,
-    "no_answer":   CallResult.no_answer,
-    "transferred": CallResult.transferred,
+    "confirmed":    CallResult.confirmed,
+    "cancelled":    CallResult.cancelled,
+    "rescheduled":  CallResult.rescheduled,
+    "no_result":    CallResult.no_result,
+    "no_answer":    CallResult.no_answer,
+    "transferred":  CallResult.transferred,
+    "wrong_number": CallResult.wrong_number,
 }
 
 # Маппінг результату дзвінка → STATUS для API клініки:
@@ -369,11 +370,12 @@ _RESULT_MAP = {
 # "rescheduled" відсутній — reschedule_visit() вже передає слот до API,
 # окремого update_event_status не потрібно.
 _STATUS_API_MAP = {
-    "confirmed": 1,
-    "cancelled": 2,
-    "no_result": 3,
-    "no_answer": 4,
-    "transferred": 5,
+    "confirmed":    1,
+    "cancelled":    2,
+    "no_result":    3,
+    "no_answer":    4,
+    "transferred":  5,
+    "wrong_number": 6,
 }
 
 

@@ -232,7 +232,10 @@ types.FunctionDeclaration(
                     "no_result — пацієнт не визначився або не зрозумів. "
                     "  Перед end_call(no_result) ОБОВ'ЯЗКОВО скажи вголос: "
                     "  'Вибачте, не вдалося порозумітись. Наш менеджер зв'яжеться з вами. На все добре!'; "
-                    "no_answer — пацієнт не відповів на дзвінок."
+                    "no_answer — пацієнт не відповів на дзвінок; "
+                    "wrong_number — пацієнт каже що не записувався або ви помилилися номером. "
+                    "  Перед end_call(wrong_number) ОБОВ'ЯЗКОВО скажи вголос: "
+                    "  'Добре, вибачте за турбування. На все добре!'"
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
@@ -240,7 +243,7 @@ types.FunctionDeclaration(
                         "result": types.Schema(
                             type="STRING",
                             description="Підсумок розмови",
-                            enum=["confirmed", "rescheduled", "cancelled", "no_result", "no_answer"],
+                            enum=["confirmed", "rescheduled", "cancelled", "no_result", "no_answer", "wrong_number"],
                         ),
                     },
                     required=["result"],
