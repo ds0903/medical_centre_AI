@@ -77,7 +77,7 @@ class CallHistory(Base):
     patient_name = Column(String, nullable=False)
     patient_phone = Column(String, nullable=False)
     doctor_name = Column(String, nullable=False)
-    place_id = Column(String, nullable=False)
+    place_id = Column(String, nullable=True)
     visit_datetime = Column(DateTime, nullable=False)
     message = Column(String, nullable=True)
 

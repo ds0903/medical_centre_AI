@@ -60,6 +60,7 @@ async def _archive_call_tasks() -> None:
                 patient_name=task.patient_name,
                 patient_phone=task.patient_phone,
                 doctor_name=task.doctor_name,
+                place_id=task.place_id or "",
                 visit_datetime=task.visit_datetime,
                 message=task.message,
                 status=task.status,
