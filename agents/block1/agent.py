@@ -857,11 +857,12 @@ class Block1Agent:
                                         else:
                                             # end_call прийшов без аудіо в цьому турі — прощання
                                             # вже прозвучало в попередньому турі (напр. AI сказав
-                                            # "До побачення!" до cancel_visit, потім end_call окремо).
-                                            # Даємо Opus RTP черзі відіграти залишок попереднього туру.
-                                            logger.info("[AGENT] end_call без аудіо — чекаємо 2с для Opus drain...")
+                                            # "До побачення!" до confirm_visit, потім end_call окремо).
+                                            # confirmed/rescheduled мають довге прощання з адресою → 5с.
+                                            _no_audio_wait = 5.0 if self.call_result in ("confirmed", "rescheduled") else 2.0
+                                            logger.info("[AGENT] end_call без аудіо — чекаємо %.0fс для Opus drain...", _no_audio_wait)
                                             binotel_call.flush_encode_buffer()
-                                            await asyncio.sleep(2.0)
+                                            await asyncio.sleep(_no_audio_wait)
                                         return
                                     # Double-turn guard: Gemini іноді генерує 2 тури підряд (~1-2с) без відповіді
                                     # пацієнта. VAD між турами ловить фоновий шум → _real_vad_pending=True →
