@@ -244,14 +244,12 @@ class Block1Agent:
             output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             # VAD на стороні Gemini.
-            # END_SENSITIVITY_HIGH + silence_duration_ms=500:
-            #   - HIGH: Gemini швидше виявляє кінець репліки.
-            #   - 400ms: страховка якщо наш VAD не спрацював першим.
-            #     Наш webrtcvad надсилає activity_end після 300мс тиші → відповідь ще швидше.
-            #     Gemini 400ms VAD — резервний fallback.
+            # START_SENSITIVITY_LOW: Gemini не реагує на тихі/короткі фонові звуки (TV, шум).
+            # END_SENSITIVITY_HIGH: швидко визначає кінець репліки після того як мову розпочато.
+            # Наш webrtcvad надсилає activity_end після 300мс тиші → відповідь ще швидше.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
                     silence_duration_ms=600,
                 )
@@ -594,7 +592,7 @@ class Block1Agent:
                 # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
                 _NOISE_ALPHA = 0.05    # швидкість адаптації (~20 chunks для стабілізації)
-                _SNR_RATIO = 1.5       # мін. SNR: голос повинен бути в 1.5x гучніше фону
+                _SNR_RATIO = 2.5       # мін. SNR: голос повинен бути в 2.5x гучніше фону (захист від TV/фону)
                 _snr_filtered_chunks = [0]  # лічильник відфільтрованих SNR чанків (для логу)
                 # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
                 # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
