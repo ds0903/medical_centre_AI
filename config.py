@@ -90,3 +90,7 @@ TRANSFER_ENABLED = os.getenv("TRANSFER_ENABLED", "false").lower() == "true"
 
 # Логування дзвінків у файл logs/calls_YYYY-MM-DD.jsonl
 LOG_FILE = os.getenv("LOG_FILE", "false").lower() == "true"
+
+# Google Sheets — довідник синонімів процедур
+SHEETS_ID  = os.getenv("SHEETS_ID", "")
+SHEETS_GID = os.getenv("SHEETS_GID", "0")

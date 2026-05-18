@@ -25,6 +25,7 @@ from config import (
     SCHEDULER_EVENING_CALL_END_HOUR,
     SKIP_FETCH,
 )
+from agents.block1.prompts import load_procedure_aliases
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
     create_scheduler,
@@ -48,6 +49,7 @@ async def run_debug() -> None:
     logger.info("=== ЗАПУСК У DEBUG РЕЖИМІ ===")
 
     await init_db()
+    await load_procedure_aliases()
 
     # В debug завжди запускаємо ранкову сесію одразу (shift=0, архів не потрібен)
     logger.info("[MAIN] DEBUG — запускаємо ранкову сесію одразу")
@@ -73,6 +75,7 @@ async def run_production() -> None:
     logger.info(f"=== ЗАПУСК У PRODUCTION РЕЖИМІ ===")
 
     await init_db()
+    await load_procedure_aliases()
 
     if SKIP_FETCH:
         # Пропускаємо fetch — одразу дзвонимо по тому що є в БД

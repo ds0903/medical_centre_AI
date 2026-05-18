@@ -3,11 +3,23 @@
 Промпт зберігається в prompts.yaml у корені проекту.
 """
 
+import logging
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+_procedure_aliases_cache: str = ""
+
+
+async def load_procedure_aliases() -> None:
+    """Завантажує довідник синонімів з Google Sheets і кешує в пам'яті."""
+    global _procedure_aliases_cache
+    from services.sheets_loader import fetch_procedure_aliases
+    _procedure_aliases_cache = await fetch_procedure_aliases()
 
 _PROMPTS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts.yaml")
 
@@ -68,7 +80,7 @@ def build_system_prompt(visit: dict) -> str:
     place_id = str(visit.get("place_id", ""))
     clinic_address = _CLINIC_ADDRESSES.get(place_id, "")
 
-    return template.format(
+    prompt = template.format(
         patient_name=visit["patient_name"],
         patient_phone=visit.get("patient_phone", ""),
         doctor_name=visit["doctor_name"],
@@ -79,3 +91,8 @@ def build_system_prompt(visit: dict) -> str:
         today_date=_get_today_date(),
         clinic_address=clinic_address,
     )
+
+    if _procedure_aliases_cache:
+        prompt += f"\n\n{_procedure_aliases_cache}"
+
+    return prompt
