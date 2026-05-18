@@ -592,7 +592,7 @@ class Block1Agent:
                 # Adaptive SNR: відсікає фоновий шум який webrtcvad помилково класифікує як голос
                 _noise_rms = [0.0]     # поточний рівень фонового шуму (адаптивний)
                 _NOISE_ALPHA = 0.05    # швидкість адаптації (~20 chunks для стабілізації)
-                _SNR_RATIO = 2.5       # мін. SNR: голос повинен бути в 2.5x гучніше фону (захист від TV/фону)
+                _SNR_RATIO = 2.0       # мін. SNR: голос повинен бути в 2.0x гучніше фону (захист від TV/фону)
                 _snr_filtered_chunks = [0]  # лічильник відфільтрованих SNR чанків (для логу)
                 # Pre-roll буфер: зберігаємо останні ~300мс аудіо під час echo gate.
                 # Коли gate спливає — відправляємо буфер першим, щоб Gemini почула
@@ -850,7 +850,7 @@ class Block1Agent:
                                     if _draining:
                                         # Чекаємо поки AI договорить перед завершенням
                                         if turn_had_audio:
-                                            _farewell_wait = 3.0 if self.call_result == "rescheduled" else 1.0
+                                            _farewell_wait = 5.0 if self.call_result in ("rescheduled", "confirmed") else 1.0
                                             logger.info("[AGENT] AI завершив прощання — чекаємо %.0fс...", _farewell_wait)
                                             binotel_call.flush_encode_buffer()  # гарантуємо останній фрейм
                                             await asyncio.sleep(_farewell_wait)
