@@ -251,6 +251,29 @@ types.FunctionDeclaration(
             ),
 
             types.FunctionDeclaration(
+                name="get_preparation_info",
+                description=(
+                    "Отримати інформацію про підготовку до процедури/послуги та її вартість. "
+                    "Викликати коли пацієнт питає: 'що взяти з собою', 'як підготуватись', "
+                    "'що потрібно', 'скільки коштує', 'яка ціна', 'що треба зробити перед прийомом'. "
+                    "НЕ викликати для запису — тільки для консультації."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "service_name": types.Schema(
+                            type="STRING",
+                            description=(
+                                "Назва процедури або послуги яку питає пацієнт. "
+                                "Передай офіційну назву або ключові слова (наприклад 'гастроентеролог', 'УЗД', 'ВГДС')."
+                            ),
+                        ),
+                    },
+                    required=["service_name"],
+                ),
+            ),
+
+            types.FunctionDeclaration(
                 name="transfer_to_operator",
                 description=(
                     "Перемкнути дзвінок на менеджера (лінія 914). "
@@ -640,6 +663,40 @@ async def handle_tool_call(
         result = {"success": True, "result": args.get("result", "no_result")}
         call_cache["end_call"] = result
         return result
+
+    if function_name == "get_preparation_info":
+        from services.sheets_loader import search_service
+        query = args.get("service_name", "")
+        matches = search_service(query)
+        if not matches:
+            return {
+                "found": False,
+                "message": (
+                    "Інформації про підготовку до цієї процедури немає. "
+                    "Скажи пацієнту: 'На жаль, детальної інформації про підготовку до цієї процедури у мене немає. "
+                    "Можу з'єднати з менеджером, або можете уточнити на рецепції при візиті.' "
+                    "НЕ вигадуй підготовку самостійно."
+                ),
+            }
+        parts = []
+        for m in matches:
+            line = f"• {m['name']}"
+            if m["price"]:
+                line += f" — {m['price']} грн"
+            if m["preparation"]:
+                line += f"\n  Підготовка: {m['preparation']}"
+            parts.append(line)
+        logger.info("[TOOL] get_preparation_info(%r) → %d збігів", query, len(matches))
+        return {
+            "found": True,
+            "message": (
+                "Розкажи пацієнту цю інформацію своїми словами (3-4 речення, природньо). "
+                "Після пояснення запитай: 'Ви плануєте прийти чи є питання щодо запису?' "
+                "НЕ пропонуй менеджера якщо пацієнт не просив.\n\n"
+                + "\n".join(parts)
+            ),
+            "results": matches,
+        }
 
     if function_name == "transfer_to_operator":
         reason = args.get("reason", "")

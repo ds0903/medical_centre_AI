@@ -26,6 +26,7 @@ from config import (
     SKIP_FETCH,
 )
 from agents.block1.prompts import load_procedure_aliases
+from services.sheets_loader import load_services_catalog
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
     create_scheduler,
@@ -50,6 +51,7 @@ async def run_debug() -> None:
 
     await init_db()
     await load_procedure_aliases()
+    await load_services_catalog()
 
     # В debug завжди запускаємо ранкову сесію одразу (shift=0, архів не потрібен)
     logger.info("[MAIN] DEBUG — запускаємо ранкову сесію одразу")
@@ -76,6 +78,7 @@ async def run_production() -> None:
 
     await init_db()
     await load_procedure_aliases()
+    await load_services_catalog()
 
     if SKIP_FETCH:
         # Пропускаємо fetch — одразу дзвонимо по тому що є в БД
