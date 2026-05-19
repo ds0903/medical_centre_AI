@@ -8,6 +8,7 @@
 import csv
 import io
 import logging
+import re
 
 import aiohttp
 
@@ -124,10 +125,13 @@ async def load_services_catalog() -> None:
     _services_cache = await fetch_services_catalog()
 
 
+_SPLIT_RE = re.compile(r"[\s\-\(\)/,\.]+")
+
+
 def search_service(query: str) -> list[dict]:
     """
-    Fuzzy пошук по _services_cache.
-    Розбиває query на слова і шукає рядки де всі слова є в назві послуги.
+    Пошук по _services_cache з матчингом по цілих словах.
+    "УЗД" не матчить "вуздечки" — тільки окреме слово або початок слова.
     Повертає до 3 найбільш релевантних збігів.
     """
     if not _services_cache:
@@ -140,8 +144,13 @@ def search_service(query: str) -> list[dict]:
 
     results: list[tuple[int, dict]] = []
     for item in _services_cache:
-        name_lower = item["name"].lower()
-        score = sum(1 for w in words if w in name_lower)
+        name_words = _SPLIT_RE.split(item["name"].lower())
+        # слово з query матчить якщо є слово в назві що з нього починається
+        # "гастроентеролог" матчить "гастроентеролога" (відмінок), але "узд" ≠ "вуздечки"
+        score = sum(
+            1 for w in words
+            if any(nw == w or nw.startswith(w) for nw in name_words if nw)
+        )
         if score > 0:
             results.append((score, item))
 
