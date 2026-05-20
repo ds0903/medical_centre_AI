@@ -693,16 +693,54 @@ async def handle_tool_call(
         logger.info("[TOOL] get_preparation_info(%r) → %d збігів", query, len(matches))
         for m in matches:
             logger.info("[TOOL]   • %s | %s грн | %s", m["name"], m["price"], m["preparation"][:120])
-        return {
-            "found": True,
-            "message": (
-                "Розкажи пацієнту цю інформацію своїми словами (3-4 речення, природньо). "
-                "Після пояснення запитай: 'Ви плануєте прийти чи є питання щодо запису?' "
-                "НЕ пропонуй менеджера якщо пацієнт не просив.\n\n"
-                + "\n".join(parts)
-            ),
-            "results": matches,
-        }
+
+        # Визначаємо чи результати точно відповідають запиту
+        query_words = [w.lower() for w in query.split() if len(w) > 2]
+        exact_matches = [
+            m for m in matches
+            if any(qw in m["name"].lower() for qw in query_words)
+        ]
+        irrelevant = [m for m in matches if m not in exact_matches]
+
+        if exact_matches:
+            parts_exact = []
+            for m in exact_matches:
+                line = f"• {m['name']}"
+                if m["price"]:
+                    line += f" — {m['price']} грн"
+                if m["preparation"]:
+                    line += f"\n  Підготовка: {m['preparation']}"
+                parts_exact.append(line)
+            alt = ""
+            if irrelevant:
+                alt_names = ", ".join(m["name"] for m in irrelevant[:2])
+                alt = f"\n\nТакож знайдено (схожі): {alt_names}"
+            return {
+                "found": True,
+                "query": query,
+                "message": (
+                    f"Знайдено послуги за запитом '{query}':\n\n"
+                    + "\n".join(parts_exact)
+                    + alt
+                    + "\n\nРозкажи пацієнту цю інформацію природньою мовою (2-3 речення). "
+                    "Після пояснення: 'Ви плануєте прийти чи є ще питання?'"
+                ),
+                "results": exact_matches,
+            }
+        else:
+            # Знайдено лише часткові збіги — запитане недоступне
+            alt_names = ", ".join(m["name"] for m in matches[:2])
+            return {
+                "found": False,
+                "query": query,
+                "message": (
+                    f"Послугу '{query}' не знайдено в каталозі клініки. "
+                    f"Схожі доступні послуги: {alt_names}. "
+                    f"Скажи пацієнту: '{query} у нас немає, але є наприклад {alt_names}. "
+                    "Якщо потрібна інша послуга — можу з'єднати з менеджером.'"
+                ),
+                "results": [],
+            }
 
     if function_name == "transfer_to_operator":
         reason = args.get("reason", "")
