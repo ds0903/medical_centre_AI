@@ -95,4 +95,21 @@ def build_system_prompt(visit: dict) -> str:
     if _procedure_aliases_cache:
         prompt += f"\n\n{_procedure_aliases_cache}"
 
+    # Підготовка до ПОТОЧНОГО прийому — шукаємо один раз при старті, вбудовуємо в промпт
+    from services.sheets_loader import search_service
+    matches = search_service(visit["doctor_name"])
+    if matches:
+        lines = []
+        for m in matches:
+            line = f"• {m['name']}"
+            if m["price"]:
+                line += f" — {m['price']} грн"
+            if m["preparation"]:
+                line += f"\n  Підготовка: {m['preparation']}"
+            lines.append(line)
+        prompt += (
+            "\n\nПІДГОТОВКА ДО ПОТОЧНОГО ПРИЙОМУ (вже знайдено — відповідай БЕЗ виклику get_preparation_info):\n"
+            + "\n".join(lines)
+        )
+
     return prompt
