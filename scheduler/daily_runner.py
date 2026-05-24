@@ -250,11 +250,15 @@ async def _mark_in_progress(task: CallTask) -> None:
 async def _process_single_call(task: CallTask, linked_tasks: list | None = None) -> None:
     """Виконати один дзвінок пацієнту (з таймаутом)."""
 
+    from services.clinic_api import _parse_caption
+    _, doctor_specialization = _parse_caption(task.doctor_name)
+
     visit_context = {
         "visit_id": task.visit_id,
         "patient_name": task.patient_name,
         "patient_phone": task.patient_phone,
         "doctor_name": task.doctor_name,
+        "doctor_specialization": doctor_specialization,
         "place_id": task.place_id,
         "visit_datetime": task.visit_datetime.isoformat(),
         "message": task.message or "",

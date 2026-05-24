@@ -33,6 +33,16 @@ def _load_test_data() -> dict:
         return json.load(f)
 
 
+def _parse_caption(caption: str) -> tuple[str, str]:
+    """CAPTION = 'Прізвище Ім'я По-батькові Спеціалізація' → (повне ПІБ, спеціалізація).
+    Fallback: якщо < 4 слів — повертає (caption, caption).
+    """
+    parts = caption.strip().split(" ", 3)
+    if len(parts) >= 4:
+        return " ".join(parts[:3]), parts[3]
+    return caption, caption
+
+
 def _make_headers() -> dict:
     return {
         "Bearer": CLINIC_API_KEY,
@@ -56,25 +66,27 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
          POST https://cabinet.mkom.ua/bridge/call/appointments   → список записів
 
     Returns: list of dicts з внутрішніми ключами:
-        visit_id      : str  (= str(ID))
-        patient_name  : str  (= PATIENT)
-        patient_phone : str  (= PATPHONE)
-        doctor_name   : str  (= CAPTION)
-        place_id      : str  (= str(IDPOINT))
-        visit_datetime: str  ISO 8601  (= START_E)
+        visit_id             : str  (= str(ID))
+        patient_name         : str  (= PATIENT)
+        patient_phone        : str  (= PATPHONE)
+        doctor_name          : str  (= CAPTION повністю, для DB та sheets-пошуку)
+        doctor_specialization: str  (= все після 3-го пробілу CAPTION)
+        place_id             : str  (= str(IDPOINT))
+        visit_datetime       : str  ISO 8601  (= START_E)
     """
     if DEBUG:
         data = _load_test_data()
         appointments = data.get("appointments", [])
         visits = [
             {
-                "visit_id":       str(a["ID"]),
-                "patient_name":   a["PATIENT"],
-                "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
-                "doctor_name":    a["CAPTION"],
-                "place_id":       str(a["IDPOINT"]),
-                "visit_datetime": a["START_E"],
-                "message":        a.get("MESSAGE") or "",
+                "visit_id":              str(a["ID"]),
+                "patient_name":          a["PATIENT"],
+                "patient_phone":         a["PATPHONE"].replace("-", "").replace(" ", ""),
+                "doctor_name":           a["CAPTION"],
+                "doctor_specialization": _parse_caption(a["CAPTION"])[1],
+                "place_id":              str(a["IDPOINT"]),
+                "visit_datetime":        a["START_E"],
+                "message":               a.get("MESSAGE") or "",
             }
             for a in appointments
         ]
@@ -109,13 +121,14 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
             logger.info(f"[API] appointments → {len(appointments)} записів")
             return [
                 {
-                    "visit_id":       str(a["ID"]),
-                    "patient_name":   a["PATIENT"],
-                    "patient_phone":  a["PATPHONE"].replace("-", "").replace(" ", ""),
-                    "doctor_name":    a["CAPTION"],
-                    "place_id":       str(a["IDPOINT"]),
-                    "visit_datetime": a["START_E"],
-                    "message":        a.get("MESSAGE") or "",
+                    "visit_id":              str(a["ID"]),
+                    "patient_name":          a["PATIENT"],
+                    "patient_phone":         a["PATPHONE"].replace("-", "").replace(" ", ""),
+                    "doctor_name":           a["CAPTION"],
+                    "doctor_specialization": _parse_caption(a["CAPTION"])[1],
+                    "place_id":              str(a["IDPOINT"]),
+                    "visit_datetime":        a["START_E"],
+                    "message":               a.get("MESSAGE") or "",
                 }
                 for a in appointments
             ]
