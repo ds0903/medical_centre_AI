@@ -97,12 +97,60 @@ def _format_linked_visits(linked: list) -> str:
     return "\n".join(lines)
 
 
+def _fetch_preparation(doctor_name: str) -> tuple[str, str]:
+    """
+    Шукає підготовку в каталозі.
+    Повертає (full_block, brief) де:
+      full_block — для вбудовування в промпт (відповіді на питання пацієнта)
+      brief      — 1 речення для прощального тексту (порожній якщо не знайдено)
+    """
+    from services.sheets_loader import search_service
+    matches = search_service(doctor_name)
+    if not matches:
+        logger.info(f"[PROMPT] Підготовка НЕ знайдена для '{doctor_name}'")
+        return "", ""
+
+    lines = []
+    brief = ""
+    for m in matches:
+        line = f"• {m['name']}"
+        if m["price"]:
+            line += f" — {m['price']} грн"
+        if m["preparation"]:
+            line += f"\n  Підготовка: {m['preparation']}"
+            if not brief:
+                brief = m["preparation"]
+        lines.append(line)
+
+    full_block = (
+        "\n\nПІДГОТОВКА ДО ПОТОЧНОГО ПРИЙОМУ (вже знайдено — відповідай БЕЗ виклику get_preparation_info):\n"
+        + "\n".join(lines)
+    )
+    logger.info(f"[PROMPT] Підготовка знайдена для '{doctor_name}': {len(matches)} позицій")
+    return full_block, brief
+
+
+def _build_confirmation_farewell(brief: str, clinic_address: str, multi: bool = False) -> str:
+    """Pre-built прощальний текст при підтвердженні."""
+    parts = []
+    if brief:
+        parts.append(f"До речі, щодо підготовки: {brief}.")
+    record_word = "Ваші записи підтверджено" if multi else "Ваш запис підтверджено"
+    if clinic_address:
+        parts.append(f"Чудово! {record_word}. Чекаємо вас за адресою: {clinic_address}. На все добре!")
+    else:
+        parts.append(f"Чудово! {record_word}. Чекаємо вас! На все добре!")
+    return " ".join(parts)
+
+
 def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
     """Спрощений промпт для дзвінка коли пацієнт має 2+ записів."""
     with open(_PROMPTS_MULTI_PATH, "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
     template: str = prompts["block1_reminder_multi"]["system"]
-    return template.format(
+    full_block, brief = _fetch_preparation(visit["doctor_name"])
+    confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=True)
+    prompt = template.format(
         patient_name=visit["patient_name"],
         patient_phone=visit.get("patient_phone", ""),
         visit_id=visit["visit_id"],
@@ -110,7 +158,11 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
         greeting=_get_greeting(),
         today_date=_get_today_date(),
         reminder_list=_format_reminder_list(visit),
+        confirmation_farewell=confirmation_farewell,
     )
+    if full_block:
+        prompt += full_block
+    return prompt
 
 
 def build_system_prompt(visit: dict) -> str:
@@ -124,6 +176,9 @@ def build_system_prompt(visit: dict) -> str:
 
     if linked:
         return _build_multi_prompt(visit, clinic_address)
+
+    full_block, brief = _fetch_preparation(visit["doctor_name"])
+    confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=False)
 
     with open(_PROMPTS_PATH, "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
@@ -142,26 +197,12 @@ def build_system_prompt(visit: dict) -> str:
         today_date=_get_today_date(),
         clinic_address=clinic_address,
         linked_visits_block="",
+        confirmation_farewell=confirmation_farewell,
     )
 
     if _procedure_aliases_cache:
         prompt += f"\n\n{_procedure_aliases_cache}"
 
-    # Підготовка до ПОТОЧНОГО прийому — шукаємо один раз при старті, вбудовуємо в промпт
-    from services.sheets_loader import search_service
-    matches = search_service(visit["doctor_name"])
-    if matches:
-        lines = []
-        for m in matches:
-            line = f"• {m['name']}"
-            if m["price"]:
-                line += f" — {m['price']} грн"
-            if m["preparation"]:
-                line += f"\n  Підготовка: {m['preparation']}"
-            lines.append(line)
-        prompt += (
-            "\n\nПІДГОТОВКА ДО ПОТОЧНОГО ПРИЙОМУ (вже знайдено — відповідай БЕЗ виклику get_preparation_info):\n"
-            + "\n".join(lines)
-        )
-
+    if full_block:
+        prompt += full_block
     return prompt
