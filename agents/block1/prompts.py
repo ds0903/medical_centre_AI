@@ -132,15 +132,11 @@ def _fetch_preparation(doctor_name: str) -> tuple[str, str]:
 
 def _build_confirmation_farewell(brief: str, clinic_address: str, multi: bool = False) -> str:
     """Pre-built прощальний текст при підтвердженні."""
-    parts = []
-    if brief:
-        parts.append(f"До речі, щодо підготовки: {brief}.")
     record_word = "Ваші записи підтверджено" if multi else "Ваш запис підтверджено"
+    prep_part = f" До речі, щодо підготовки: {brief}." if brief else ""
     if clinic_address:
-        parts.append(f"Чудово! {record_word}. Чекаємо вас за адресою: {clinic_address}. На все добре!")
-    else:
-        parts.append(f"Чудово! {record_word}. Чекаємо вас! На все добре!")
-    return " ".join(parts)
+        return f"Чудово! {record_word}.{prep_part} Чекаємо вас за адресою: {clinic_address}. На все добре!"
+    return f"Чудово! {record_word}.{prep_part} Чекаємо вас! На все добре!"
 
 
 def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
@@ -149,6 +145,7 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
         prompts = yaml.safe_load(f)
     template: str = prompts["block1_reminder_multi"]["system"]
     full_block, brief = _fetch_preparation(visit["doctor_name"])
+    visit["_has_preparation"] = bool(brief)
     confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=True)
     prompt = template.format(
         patient_name=visit["patient_name"],
@@ -178,6 +175,7 @@ def build_system_prompt(visit: dict) -> str:
         return _build_multi_prompt(visit, clinic_address)
 
     full_block, brief = _fetch_preparation(visit["doctor_name"])
+    visit["_has_preparation"] = bool(brief)
     confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=False)
 
     with open(_PROMPTS_PATH, "r", encoding="utf-8") as f:
