@@ -198,6 +198,15 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
             skipped = len(tasks) - len(deduped)
             if skipped:
                 logger.info(f"[CALLS] {label}: дедуп телефонів — прибрано {skipped} дублів")
+            for primary_task in deduped:
+                total = 1 + len(linked_map[primary_task.id])
+                if total > 1:
+                    specs = [primary_task.doctor_specialization or primary_task.doctor_name] + [
+                        lt.doctor_specialization or lt.doctor_name for lt in linked_map[primary_task.id]
+                    ]
+                    logger.info(
+                        f"[CALLS] Номер {primary_task.patient_phone}: {total} записів → {specs}"
+                    )
             tasks = deduped
 
         stopped_by_time = False
@@ -264,6 +273,7 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
                 "doctor_specialization": lt_spec,
                 "visit_datetime": lt.visit_datetime.isoformat(),
             })
+        logger.info(f"[CALLS] linked_visits для промпту: {[v['doctor_specialization'] for v in linked_visit_list]}")
 
     visit_context = {
         "visit_id": task.visit_id,

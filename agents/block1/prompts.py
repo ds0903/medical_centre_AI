@@ -22,6 +22,7 @@ async def load_procedure_aliases() -> None:
     _procedure_aliases_cache = await fetch_procedure_aliases()
 
 _PROMPTS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts.yaml")
+_PROMPTS_MULTI_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts_multi.yaml")
 
 _MONTHS_UA = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",
@@ -64,6 +65,26 @@ _CLINIC_ADDRESSES: dict[str, str] = {
 }
 
 
+def _format_visit_time(iso_datetime: str) -> str:
+    dt = datetime.fromisoformat(iso_datetime)
+    return f"{dt.hour}:{dt.minute:02d}"
+
+
+def _format_reminder_list(visit: dict) -> str:
+    """Готовий текст для multi-visit промпту — перелік всіх записів."""
+    doctor_spec = visit.get("doctor_specialization", visit["doctor_name"])
+    linked = visit.get("linked_visits", [])
+    items = [f"[до/на] {doctor_spec} о {_format_visit_time(visit['visit_datetime'])}"]
+    for v in linked:
+        items.append(f"[до/на] {v['doctor_specialization']} о {_format_visit_time(v['visit_datetime'])}")
+    count = len(items)
+    lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} в цей день:"]
+    for item in items:
+        lines.append(f" — {item}")
+    lines.append("Ви плануєте прийти на всі?")
+    return "\n    ".join(lines)
+
+
 def _format_linked_visits(linked: list) -> str:
     if not linked:
         return ""
@@ -76,22 +97,38 @@ def _format_linked_visits(linked: list) -> str:
     return "\n".join(lines)
 
 
+def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
+    """Спрощений промпт для дзвінка коли пацієнт має 2+ записів."""
+    with open(_PROMPTS_MULTI_PATH, "r", encoding="utf-8") as f:
+        prompts = yaml.safe_load(f)
+    template: str = prompts["block1_reminder_multi"]["system"]
+    return template.format(
+        patient_name=visit["patient_name"],
+        patient_phone=visit.get("patient_phone", ""),
+        visit_id=visit["visit_id"],
+        clinic_address=clinic_address,
+        greeting=_get_greeting(),
+        today_date=_get_today_date(),
+        reminder_list=_format_reminder_list(visit),
+    )
+
+
 def build_system_prompt(visit: dict) -> str:
     """
-    Завантажує промпт з prompts.yaml та підставляє дані конкретного візиту.
-
-    Args:
-        visit: dict з ключами visit_id, patient_name, doctor_name,
-               place_id, visit_datetime
+    Завантажує промпт та підставляє дані візиту.
+    Якщо linked_visits не порожній — використовує спрощений multi-visit промпт.
     """
+    place_id = str(visit.get("place_id", ""))
+    clinic_address = _CLINIC_ADDRESSES.get(place_id, "")
+    linked = visit.get("linked_visits", [])
+
+    if linked:
+        return _build_multi_prompt(visit, clinic_address)
+
     with open(_PROMPTS_PATH, "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
 
     template: str = prompts["block1_reminder"]["system"]
-
-    place_id = str(visit.get("place_id", ""))
-    clinic_address = _CLINIC_ADDRESSES.get(place_id, "")
-    linked_visits_block = _format_linked_visits(visit.get("linked_visits", []))
 
     prompt = template.format(
         patient_name=visit["patient_name"],
@@ -104,7 +141,7 @@ def build_system_prompt(visit: dict) -> str:
         greeting=_get_greeting(),
         today_date=_get_today_date(),
         clinic_address=clinic_address,
-        linked_visits_block=linked_visits_block,
+        linked_visits_block="",
     )
 
     if _procedure_aliases_cache:
