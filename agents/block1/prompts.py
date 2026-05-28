@@ -64,6 +64,18 @@ _CLINIC_ADDRESSES: dict[str, str] = {
 }
 
 
+def _format_linked_visits(linked: list) -> str:
+    if not linked:
+        return ""
+    # First line has no leading spaces — template `    {linked_visits_block}` adds 4.
+    # Subsequent lines need their own 4-space indent since they're new lines after substitution.
+    lines = ["ДОДАТКОВІ ЗАПИСИ ЦЬОГО ПАЦІЄНТА (той самий день):"]
+    for v in linked:
+        lines.append(f"      • {v['doctor_specialization']} — {_format_visit_date(v['visit_datetime'])}")
+    lines.append("    ⚠ СЦЕНАРІЙ ДЛЯ КІЛЬКОХ ЗАПИСІВ — застосовуй обов'язково (дивись нижче).")
+    return "\n".join(lines)
+
+
 def build_system_prompt(visit: dict) -> str:
     """
     Завантажує промпт з prompts.yaml та підставляє дані конкретного візиту.
@@ -79,6 +91,7 @@ def build_system_prompt(visit: dict) -> str:
 
     place_id = str(visit.get("place_id", ""))
     clinic_address = _CLINIC_ADDRESSES.get(place_id, "")
+    linked_visits_block = _format_linked_visits(visit.get("linked_visits", []))
 
     prompt = template.format(
         patient_name=visit["patient_name"],
@@ -91,6 +104,7 @@ def build_system_prompt(visit: dict) -> str:
         greeting=_get_greeting(),
         today_date=_get_today_date(),
         clinic_address=clinic_address,
+        linked_visits_block=linked_visits_block,
     )
 
     if _procedure_aliases_cache:

@@ -255,6 +255,16 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
     from services.clinic_api import _parse_caption
     doctor_specialization = task.doctor_specialization or _parse_caption(task.doctor_name)[1]
 
+    linked_visit_list = []
+    if linked_tasks:
+        for lt in linked_tasks:
+            lt_spec = lt.doctor_specialization or _parse_caption(lt.doctor_name)[1]
+            linked_visit_list.append({
+                "visit_id": lt.visit_id,
+                "doctor_specialization": lt_spec,
+                "visit_datetime": lt.visit_datetime.isoformat(),
+            })
+
     visit_context = {
         "visit_id": task.visit_id,
         "patient_name": task.patient_name,
@@ -264,6 +274,7 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
         "place_id": task.place_id,
         "visit_datetime": task.visit_datetime.isoformat(),
         "message": task.message or "",
+        "linked_visits": linked_visit_list,
     }
 
     linked = linked_tasks or []
@@ -355,7 +366,12 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
     await _save_result(task, call_result, call_duration)
 
     for lt in linked:
-        await _skip_linked(lt)
+        if call_result == "confirmed":
+            await _confirm_linked_db(lt)
+        elif call_result == "transferred":
+            await _transfer_linked_db(lt)
+        else:
+            await _skip_linked(lt)
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +445,28 @@ async def _skip_linked(task: CallTask) -> None:
         db_task.status = CallStatus.completed
         db_task.result = CallResult.no_result
         db_task.operator_note = "пропущено: дублікат номера телефону"
+        db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _confirm_linked_db(task: CallTask) -> None:
+    """Позначити linked task як confirmed у БД (без API-запиту — API викликається тільки по primary)."""
+    logger.info(f"[CALLS] Linked confirmed: {task.patient_name} visit={task.visit_id}")
+    async with get_session() as session:
+        db_task = await session.get(CallTask, task.id)
+        db_task.status = CallStatus.completed
+        db_task.result = CallResult.confirmed
+        db_task.operator_note = "підтверджено разом з основним записом"
+        db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _transfer_linked_db(task: CallTask) -> None:
+    """Позначити linked task як transferred у БД (без API-запиту)."""
+    logger.info(f"[CALLS] Linked transferred: {task.patient_name} visit={task.visit_id}")
+    async with get_session() as session:
+        db_task = await session.get(CallTask, task.id)
+        db_task.status = CallStatus.completed
+        db_task.result = CallResult.transferred
+        db_task.operator_note = "передано оператору разом з основним записом"
         db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
 
