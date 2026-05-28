@@ -60,6 +60,7 @@ async def _archive_call_tasks() -> None:
                 patient_name=task.patient_name,
                 patient_phone=task.patient_phone,
                 doctor_name=task.doctor_name,
+                doctor_specialization=task.doctor_specialization,
                 place_id=task.place_id or "",
                 visit_datetime=task.visit_datetime,
                 message=task.message,
@@ -115,6 +116,7 @@ async def fetch_and_schedule_calls(shift: int) -> None:
                 patient_name=visit["patient_name"],
                 patient_phone=visit["patient_phone"],
                 doctor_name=visit["doctor_name"],
+                doctor_specialization=visit.get("doctor_specialization", ""),
                 place_id=visit["place_id"],
                 visit_datetime=datetime.fromisoformat(visit["visit_datetime"]),
                 message=visit.get("message", ""),
@@ -251,7 +253,7 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
     """Виконати один дзвінок пацієнту (з таймаутом)."""
 
     from services.clinic_api import _parse_caption
-    _, doctor_specialization = _parse_caption(task.doctor_name)
+    doctor_specialization = task.doctor_specialization or _parse_caption(task.doctor_name)[1]
 
     visit_context = {
         "visit_id": task.visit_id,

@@ -40,6 +40,7 @@ class CallTask(Base):
     patient_name = Column(String, nullable=False)
     patient_phone = Column(String, nullable=False)
     doctor_name = Column(String, nullable=False)
+    doctor_specialization = Column(String, nullable=True)
     place_id = Column(String, nullable=False)
     visit_datetime = Column(DateTime, nullable=False)
 
@@ -77,6 +78,7 @@ class CallHistory(Base):
     patient_name = Column(String, nullable=False)
     patient_phone = Column(String, nullable=False)
     doctor_name = Column(String, nullable=False)
+    doctor_specialization = Column(String, nullable=True)
     place_id = Column(String, nullable=True)
     visit_datetime = Column(DateTime, nullable=False)
     message = Column(String, nullable=True)
