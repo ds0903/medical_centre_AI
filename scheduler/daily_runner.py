@@ -344,9 +344,11 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
                 except (asyncio.CancelledError, Exception):
                     pass
                 logger.warning(f"[CALLS] Не відповів: {task.patient_name}")
-                await _handle_no_answer(task)
-                for lt in linked:
-                    await _skip_linked(lt)
+                will_retry = await _handle_no_answer(task)
+                if not will_retry:
+                    for lt in linked:
+                        await _skip_linked(lt)
+                # else: linked залишаються pending — retry-прохід згрупує їх знову через dedup
                 return
 
             await warmup_task
@@ -368,9 +370,11 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
 
     # no_answer (one-way audio / пацієнт мовчить) → scheduler зробить retry
     if call_result == "no_answer":
-        await _handle_no_answer(task)
-        for lt in linked:
-            await _skip_linked(lt)
+        will_retry = await _handle_no_answer(task)
+        if not will_retry:
+            for lt in linked:
+                await _skip_linked(lt)
+        # else: linked залишаються pending — retry-прохід згрупує їх знову через dedup
         return
 
     await _save_result(task, call_result, call_duration)
@@ -426,7 +430,8 @@ async def _save_result(task: CallTask, result_str: str, duration: float) -> None
         await clinic_api.update_event_status(task.visit_id, api_status)
 
 
-async def _handle_no_answer(task: CallTask) -> None:
+async def _handle_no_answer(task: CallTask) -> bool:
+    """Повертає True якщо буде retry, False якщо спроби вичерпано."""
     async with get_session() as session:
         db_task = await session.get(CallTask, task.id)
         if db_task.attempts >= MAX_CALL_ATTEMPTS:
@@ -434,9 +439,11 @@ async def _handle_no_answer(task: CallTask) -> None:
             db_task.result = CallResult.no_answer
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
             await clinic_api.update_event_status(task.visit_id, 4)
+            return False
         else:
             db_task.status = CallStatus.pending  # Спробуємо ще раз наступного разу
             logger.info(f"[CALLS] Спроба {db_task.attempts}/{MAX_CALL_ATTEMPTS} для {task.patient_name}")
+            return True
 
 
 async def _save_error(task: CallTask, error_msg: str) -> None:
