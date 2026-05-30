@@ -123,7 +123,7 @@ def _fetch_preparation(doctor_name: str) -> tuple[str, str]:
         lines.append(line)
 
     full_block = (
-        "\n\nПІДГОТОВКА ДО ПОТОЧНОГО ПРИЙОМУ (вже знайдено — відповідай БЕЗ виклику get_preparation_info):\n"
+        f"\n\nПІДГОТОВКА ДО ПРИЙОМУ «{doctor_name}» (вже знайдено — ⚠ ЗАБОРОНЕНО викликати get_preparation_info, відповідай звідси):\n"
         + "\n".join(lines)
     )
     logger.info(f"[PROMPT] Підготовка знайдена для '{doctor_name}': {len(matches)} позицій")
@@ -144,9 +144,12 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
     with open(_PROMPTS_MULTI_PATH, "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
     template: str = prompts["block1_reminder_multi"]["system"]
-    full_block, brief = _fetch_preparation(visit["doctor_name"])
+
+    # Prefetch підготовки для primary лікаря (brief для farewell)
+    primary_full_block, brief = _fetch_preparation(visit["doctor_name"])
     visit["_has_preparation"] = bool(brief)
     confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=True)
+
     prompt = template.format(
         patient_name=visit["patient_name"],
         patient_phone=visit.get("patient_phone", ""),
@@ -157,8 +160,19 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
         reminder_list=_format_reminder_list(visit),
         confirmation_farewell=confirmation_farewell,
     )
-    if full_block:
-        prompt += full_block
+
+    # Вставляємо підготовку primary лікаря
+    if primary_full_block:
+        prompt += primary_full_block
+
+    # Вставляємо підготовку linked лікарів (якщо є)
+    for lv in visit.get("linked_visits", []):
+        lv_name = lv.get("doctor_name", lv.get("doctor_specialization", ""))
+        if lv_name:
+            lv_full_block, _ = _fetch_preparation(lv_name)
+            if lv_full_block:
+                prompt += lv_full_block
+
     return prompt
 
 

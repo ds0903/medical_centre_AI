@@ -270,6 +270,7 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
             lt_spec = lt.doctor_specialization or _parse_caption(lt.doctor_name)[1]
             linked_visit_list.append({
                 "visit_id": lt.visit_id,
+                "doctor_name": lt.doctor_name,
                 "doctor_specialization": lt_spec,
                 "visit_datetime": lt.visit_datetime.isoformat(),
             })
