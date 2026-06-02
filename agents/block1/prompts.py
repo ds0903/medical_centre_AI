@@ -114,8 +114,6 @@ def _fetch_preparation(doctor_name: str) -> tuple[str, str]:
     brief = ""
     for m in matches:
         line = f"• {m['name']}"
-        if m["price"]:
-            line += f" — {m['price']} грн"
         if m["preparation"]:
             line += f"\n  Підготовка: {m['preparation']}"
             if not brief:

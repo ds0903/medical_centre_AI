@@ -492,6 +492,21 @@ async def _transfer_linked_db(task: CallTask) -> None:
 # Планувальник (production)
 # ---------------------------------------------------------------------------
 
+async def _cleanup_logs() -> None:
+    from pathlib import Path
+    log_dir = Path("logs")
+    if not log_dir.exists():
+        return
+    deleted = 0
+    for f in log_dir.glob("calls_*.jsonl"):
+        try:
+            f.unlink()
+            deleted += 1
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Не вдалось видалити {f.name}: {e}")
+    logger.info(f"[CLEANUP] Видалено {deleted} лог-файлів дзвінків")
+
+
 async def _fetch_morning() -> None:
     await fetch_and_schedule_calls(shift=0)
 
@@ -534,6 +549,13 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=0),
         id="calls_evening",
         name="Вечірній обдзвін (14-18)",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _cleanup_logs,
+        CronTrigger(hour=0, minute=0),
+        id="cleanup_logs",
+        name="Очищення лог-файлів дзвінків (00:00)",
         replace_existing=True,
     )
 

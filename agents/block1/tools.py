@@ -685,8 +685,6 @@ async def handle_tool_call(
         parts = []
         for m in matches:
             line = f"• {m['name']}"
-            if m["price"]:
-                line += f" — {m['price']} грн"
             if m["preparation"]:
                 line += f"\n  Підготовка: {m['preparation']}"
             parts.append(line)
@@ -706,8 +704,6 @@ async def handle_tool_call(
             parts_exact = []
             for m in exact_matches:
                 line = f"• {m['name']}"
-                if m["price"]:
-                    line += f" — {m['price']} грн"
                 if m["preparation"]:
                     line += f"\n  Підготовка: {m['preparation']}"
                 parts_exact.append(line)
