@@ -138,7 +138,7 @@ async def check_call_enabled(visit_id: str) -> bool:
     """POST /bridge/call/ai_checkstate → ENABLED: 0=не дзвонити, 1=дзвонити.
     На помилці — fallback True (краще зателефонувати ніж пропустити).
     """
-    if DEBUG:
+    if DEBUG or SKIP_POST:
         return True
     async with aiohttp.ClientSession() as http:
         try:
