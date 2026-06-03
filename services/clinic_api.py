@@ -134,6 +134,32 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
             ]
 
 
+async def check_call_enabled(visit_id: str) -> bool:
+    """POST /bridge/call/ai_checkstate → ENABLED: 0=не дзвонити, 1=дзвонити.
+    На помилці — fallback True (краще зателефонувати ніж пропустити).
+    """
+    if DEBUG:
+        return True
+    async with aiohttp.ClientSession() as http:
+        try:
+            async with http.post(
+                f"{CLINIC_API_URL}/bridge/call/ai_checkstate",
+                headers=_make_headers(),
+                json={"fields": [int(visit_id)]},
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.warning(f"[API] ai_checkstate HTTP {resp.status} → fallback=True: {body[:200]}")
+                    return True
+                data = await resp.json()
+                enabled = int(data.get("ENABLED", 1))
+                logger.info(f"[API] ai_checkstate visit={visit_id} → ENABLED={enabled}")
+                return enabled == 1
+        except Exception as e:
+            logger.warning(f"[API] ai_checkstate помилка → fallback=True: {e}")
+            return True
+
+
 async def get_doctor_slots(doctor_name: str) -> list[dict]:
     """
     Отримати вільні слоти для запису до лікаря.

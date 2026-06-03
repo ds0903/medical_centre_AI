@@ -16,6 +16,7 @@ class CallStatus(enum.Enum):
     in_progress = "in_progress"   # Дзвінок в процесі
     completed = "completed"       # Завершено успішно
     failed = "failed"             # Не вдалося (вичерпано спроби)
+    skipped = "skipped"           # Пропущено (ENABLED=0 від ai_checkstate)
 
 
 class CallResult(enum.Enum):

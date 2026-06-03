@@ -67,9 +67,13 @@ async def main() -> None:
 
     async with engine.begin() as conn:
         # Показуємо таблиці
-        from sqlalchemy import inspect
+        from sqlalchemy import inspect, text
         tables = await conn.run_sync(lambda c: inspect(c).get_table_names())
         logger.info(f"Таблиці в БД: {tables}")
+
+        # Enum значення
+        await conn.execute(text("ALTER TYPE callstatus ADD VALUE IF NOT EXISTS 'skipped'"))
+        logger.info("[MIGRATION] callstatus enum: 'skipped' — OK")
 
         # Перевіряємо і додаємо відсутні колонки
         await ensure_columns(conn)

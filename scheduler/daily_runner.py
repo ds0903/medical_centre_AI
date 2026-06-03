@@ -261,6 +261,14 @@ async def _mark_in_progress(task: CallTask) -> None:
 async def _process_single_call(task: CallTask, linked_tasks: list | None = None) -> None:
     """Виконати один дзвінок пацієнту (з таймаутом)."""
 
+    # Перевіряємо чи слот ще актуальний перед дзвінком
+    enabled = await clinic_api.check_call_enabled(task.visit_id)
+    if not enabled:
+        await _skip_by_checkstate(task)
+        for lt in (linked_tasks or []):
+            await _skip_by_checkstate(lt)
+        return
+
     from services.clinic_api import _parse_caption
     doctor_specialization = task.doctor_specialization or _parse_caption(task.doctor_name)[1]
 
@@ -453,6 +461,17 @@ async def _save_error(task: CallTask, error_msg: str) -> None:
         db_task.status = CallStatus.failed
         db_task.result = CallResult.no_result
         db_task.error_message = error_msg[:500]  # Обрізаємо щоб не переповнити поле
+
+
+async def _skip_by_checkstate(task: CallTask) -> None:
+    """Пропустити задачу бо ai_checkstate повернув ENABLED=0."""
+    logger.info(f"[CALLS] ENABLED=0 — пропускаємо: {task.patient_name} visit={task.visit_id}")
+    async with get_session() as session:
+        db_task = await session.get(CallTask, task.id)
+        db_task.status = CallStatus.skipped
+        db_task.attempts = MAX_CALL_ATTEMPTS
+        db_task.operator_note = "пропущено: ENABLED=0 (ai_checkstate)"
+        db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def _skip_linked(task: CallTask) -> None:
