@@ -521,39 +521,40 @@ async def _process_evening_calls() -> None:
 
 
 def create_scheduler() -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
+    _tz = ZoneInfo("Europe/Kyiv")
+    scheduler = AsyncIOScheduler(timezone=_tz)
 
     scheduler.add_job(
         _fetch_morning,
-        CronTrigger(hour=SCHEDULER_MORNING_FETCH_HOUR, minute=0),
+        CronTrigger(hour=SCHEDULER_MORNING_FETCH_HOUR, minute=0, timezone=_tz),
         id="fetch_morning",
         name="Ранковий fetch (shift=0, сьогодні)",
         replace_existing=True,
     )
     scheduler.add_job(
         _process_morning_calls,
-        CronTrigger(hour=SCHEDULER_MORNING_CALL_HOUR, minute=0),
+        CronTrigger(hour=SCHEDULER_MORNING_CALL_HOUR, minute=0, timezone=_tz),
         id="calls_morning",
         name="Ранковий обдзвін (9-13)",
         replace_existing=True,
     )
     scheduler.add_job(
         _fetch_evening,
-        CronTrigger(hour=SCHEDULER_EVENING_FETCH_HOUR, minute=0),
+        CronTrigger(hour=SCHEDULER_EVENING_FETCH_HOUR, minute=0, timezone=_tz),
         id="fetch_evening",
         name="Вечірній fetch (shift=1, завтра)",
         replace_existing=True,
     )
     scheduler.add_job(
         _process_evening_calls,
-        CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=0),
+        CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=0, timezone=_tz),
         id="calls_evening",
         name="Вечірній обдзвін (14-18)",
         replace_existing=True,
     )
     scheduler.add_job(
         _cleanup_logs,
-        CronTrigger(hour=0, minute=0),
+        CronTrigger(hour=0, minute=0, timezone=_tz),
         id="cleanup_logs",
         name="Очищення лог-файлів дзвінків (00:00)",
         replace_existing=True,
