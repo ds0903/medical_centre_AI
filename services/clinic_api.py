@@ -152,7 +152,12 @@ async def check_call_enabled(visit_id: str) -> bool:
                     logger.warning(f"[API] ai_checkstate HTTP {resp.status} → fallback=True: {body[:200]}")
                     return True
                 data = await resp.json()
-                enabled = int(data.get("ENABLED", 1))
+                logger.info(f"[API] ai_checkstate raw → {data}")
+                if isinstance(data, list):
+                    item = data[0] if data else {}
+                    enabled = int(item.get("ENABLED", 1) if isinstance(item, dict) else item)
+                else:
+                    enabled = int(data.get("ENABLED", 1))
                 logger.info(f"[API] ai_checkstate visit={visit_id} → ENABLED={enabled}")
                 return enabled == 1
         except Exception as e:
