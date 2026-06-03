@@ -508,16 +508,24 @@ async def _cleanup_logs() -> None:
 
 
 async def _fetch_morning() -> None:
+    from scheduler.daily_state import mark_done
     await fetch_and_schedule_calls(shift=0)
+    mark_done("morning_fetch_done")
 
 async def _fetch_evening() -> None:
+    from scheduler.daily_state import mark_done
     await fetch_and_schedule_calls(shift=1)
+    mark_done("evening_fetch_done")
 
 async def _process_morning_calls() -> None:
+    from scheduler.daily_state import mark_done
     await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
+    mark_done("morning_calls_done")
 
 async def _process_evening_calls() -> None:
+    from scheduler.daily_state import mark_done
     await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
+    mark_done("evening_calls_done")
 
 
 def create_scheduler() -> AsyncIOScheduler:

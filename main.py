@@ -19,11 +19,13 @@ from config import (
     DEBUG,
     ENV,
     SCHEDULER_MORNING_FETCH_HOUR,
+    SCHEDULER_MORNING_CALL_HOUR,
     SCHEDULER_MORNING_CALL_END_HOUR,
     SCHEDULER_EVENING_FETCH_HOUR,
     SCHEDULER_EVENING_CALL_HOUR,
     SCHEDULER_EVENING_CALL_END_HOUR,
     SKIP_FETCH,
+    SKIP_SCHEDULER,
 )
 from agents.block1.prompts import load_procedure_aliases
 from services.sheets_loader import load_services_catalog
@@ -81,15 +83,15 @@ async def run_production() -> None:
     await load_services_catalog()
 
     if SKIP_FETCH:
-        # Пропускаємо fetch — одразу дзвонимо по тому що є в БД
+        # Пропускаємо fetch — одразу дзвонимо по тому що є в БД (ручний режим)
         logger.info("[MAIN] SKIP_FETCH=true — пропускаємо fetch, йдемо одразу дзвонити")
         now = datetime.now(ZoneInfo("Europe/Kyiv"))
         if now.hour >= SCHEDULER_EVENING_CALL_HOUR:
             await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
         else:
             await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
-    else:
-        # Якщо вже минув час fetch — запускаємо відповідну сесію, інакше чекаємо розкладу
+    elif SKIP_SCHEDULER:
+        # Графік вимкнено — одразу fetch + дзвінки без state
         now = datetime.now(ZoneInfo("Europe/Kyiv"))
         if now.hour >= SCHEDULER_EVENING_FETCH_HOUR:
             logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_EVENING_FETCH_HOUR}:00 — вечірній fetch")
@@ -97,6 +99,34 @@ async def run_production() -> None:
         elif now.hour >= SCHEDULER_MORNING_FETCH_HOUR:
             logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_MORNING_FETCH_HOUR}:00 — ранковий fetch")
             await fetch_and_schedule_calls(shift=0)
+    else:
+        # Графік увімкнено — перевіряємо state і відновлюємо після рестарту
+        from scheduler.daily_state import is_done, mark_done, get_state
+        now = datetime.now(ZoneInfo("Europe/Kyiv"))
+        hour = now.hour
+        state = get_state()
+        logger.info(f"[MAIN] State сьогодні: {state}")
+
+        if hour >= SCHEDULER_EVENING_FETCH_HOUR:
+            # Вечірня зона
+            if not state["evening_fetch_done"]:
+                logger.info(f"[MAIN] Час {now.strftime('%H:%M')} — вечірній fetch (не виконувався)")
+                await fetch_and_schedule_calls(shift=1)
+                mark_done("evening_fetch_done")
+            if SCHEDULER_EVENING_CALL_HOUR <= hour < SCHEDULER_EVENING_CALL_END_HOUR and not state["evening_calls_done"]:
+                logger.info("[MAIN] Відновлення після рестарту — вечірній обдзвін")
+                await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
+                mark_done("evening_calls_done")
+        elif hour >= SCHEDULER_MORNING_FETCH_HOUR:
+            # Ранкова зона
+            if not state["morning_fetch_done"]:
+                logger.info(f"[MAIN] Час {now.strftime('%H:%M')} — ранковий fetch (не виконувався)")
+                await fetch_and_schedule_calls(shift=0)
+                mark_done("morning_fetch_done")
+            if SCHEDULER_MORNING_CALL_HOUR <= hour < SCHEDULER_MORNING_CALL_END_HOUR and not state["morning_calls_done"]:
+                logger.info("[MAIN] Відновлення після рестарту — ранковий обдзвін")
+                await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
+                mark_done("morning_calls_done")
 
     scheduler = create_scheduler()
     scheduler.start()
