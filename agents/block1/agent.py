@@ -583,7 +583,18 @@ class Block1Agent:
                     await asyncio.sleep(1)
                     if not binotel_call.is_active:
                         logger.warning("[AGENT] SIP лінія скинута пацієнтом — завершуємо дзвінок")
-                        self.call_result = self.call_result or "no_result"
+                        if self.call_result in (None, "no_result"):
+                            if _call_cache.get("reschedule_visit", {}).get("success"):
+                                self.call_result = "rescheduled"
+                                logger.warning("[AGENT] SIP drop: reschedule_visit вже виконано → rescheduled")
+                            elif _call_cache.get("confirm_visit", {}).get("success"):
+                                self.call_result = "confirmed"
+                                logger.warning("[AGENT] SIP drop: confirm_visit вже виконано → confirmed")
+                            elif _call_cache.get("cancel_visit", {}).get("success"):
+                                self.call_result = "cancelled"
+                                logger.warning("[AGENT] SIP drop: cancel_visit вже виконано → cancelled")
+                            else:
+                                self.call_result = "no_result"
                         self._end_event.set()
                         return
 
