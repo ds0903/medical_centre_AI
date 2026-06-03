@@ -593,7 +593,26 @@ class Block1Agent:
                             elif _call_cache.get("cancel_visit", {}).get("success"):
                                 self.call_result = "cancelled"
                                 logger.warning("[AGENT] SIP drop: cancel_visit вже виконано → cancelled")
-                            else:
+                            elif _last_patient_said_text[0]:
+                                classified = await self._classify_last_phrase(_last_patient_said_text[0])
+                                logger.info(f"[AGENT] SIP drop classify: '{_last_patient_said_text[0]}' → {classified}")
+                                if classified == "confirmed":
+                                    try:
+                                        from services import clinic_api as _capi
+                                        await _capi.confirm_visit(str(self.visit["visit_id"]))
+                                    except Exception as _ce:
+                                        logger.warning(f"[AGENT] SIP drop confirm_visit API: {_ce!r}")
+                                    self.call_result = "confirmed"
+                                elif classified == "cancelled":
+                                    try:
+                                        from services import clinic_api as _capi
+                                        await _capi.cancel_visit(str(self.visit["visit_id"]))
+                                    except Exception as _ce:
+                                        logger.warning(f"[AGENT] SIP drop cancel_visit API: {_ce!r}")
+                                    self.call_result = "cancelled"
+                                else:
+                                    self.call_result = "no_result"
+                        else:
                                 self.call_result = "no_result"
                         self._end_event.set()
                         return
@@ -1478,6 +1497,18 @@ class Block1Agent:
                         await asyncio.wait_for(_live_cm[0].__aexit__(None, None, None), timeout=3.0)
                     except Exception:
                         pass
+                # Страховка: якщо SIP впав до того як _sip_monitor встиг спрацювати,
+                # але API-інструмент вже був викликаний — відновлюємо правильний результат.
+                if self.call_result in (None, "no_result"):
+                    if _call_cache.get("reschedule_visit", {}).get("success"):
+                        self.call_result = "rescheduled"
+                        logger.warning("[AGENT] finally: reschedule_visit в кеші → rescheduled")
+                    elif _call_cache.get("confirm_visit", {}).get("success"):
+                        self.call_result = "confirmed"
+                        logger.warning("[AGENT] finally: confirm_visit в кеші → confirmed")
+                    elif _call_cache.get("cancel_visit", {}).get("success"):
+                        self.call_result = "cancelled"
+                        logger.warning("[AGENT] finally: cancel_visit в кеші → cancelled")
 
         warmup_session = getattr(self, '_warmup_session', None)
         warmup_cm = getattr(self, '_warmup_cm', None)
@@ -1746,6 +1777,37 @@ class Block1Agent:
                     pass
             if not prefetch_task.done():
                 prefetch_task.cancel()
+
+    # ------------------------------------------------------------------
+    # Класифікація останньої фрази при SIP drop
+    # ------------------------------------------------------------------
+
+    async def _classify_last_phrase(self, phrase: str) -> str:
+        """Gemini text API: аналізує останню фразу пацієнта → confirmed/cancelled/no_result."""
+        if not phrase or len(phrase.strip()) < 2:
+            return "no_result"
+        prompt = (
+            f"Пацієнту зателефонували нагадати про запис до лікаря і запитали чи він прийде.\n"
+            f"Пацієнт сказав: \"{phrase}\"\n\n"
+            f"Визнач намір. Відповідь ТІЛЬКИ одне слово:\n"
+            f"confirmed — підтверджує (так/приду/буду/да/yes/ок/прийду)\n"
+            f"cancelled — скасовує (ні/не прийду/скасуйте/нет/відміняйте)\n"
+            f"no_result — незрозуміло або не по темі"
+        )
+        try:
+            resp = await self.client.aio.models.generate_content(
+                model="gemini-2.0-flash-001",
+                contents=prompt,
+            )
+            text = (resp.text or "").strip().lower()
+            if "confirmed" in text:
+                return "confirmed"
+            if "cancelled" in text:
+                return "cancelled"
+            return "no_result"
+        except Exception as _e:
+            logger.warning(f"[AGENT] classify_phrase помилка: {_e!r}")
+            return "no_result"
 
     # ------------------------------------------------------------------
     # Публічний інтерфейс
