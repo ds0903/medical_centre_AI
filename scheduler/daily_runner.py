@@ -26,10 +26,14 @@ from config import (
     PAUSE_BETWEEN_CALLS_SEC,
     SCHEDULER_EVENING_CALL_END_HOUR,
     SCHEDULER_EVENING_CALL_HOUR,
+    SCHEDULER_EVENING_CALL_MINUTE,
     SCHEDULER_EVENING_FETCH_HOUR,
+    SCHEDULER_EVENING_FETCH_MINUTE,
     SCHEDULER_MORNING_CALL_END_HOUR,
     SCHEDULER_MORNING_CALL_HOUR,
+    SCHEDULER_MORNING_CALL_MINUTE,
     SCHEDULER_MORNING_FETCH_HOUR,
+    SCHEDULER_MORNING_FETCH_MINUTE,
     SKIP_SCHEDULER,
 )
 from db.database import get_session
@@ -553,30 +557,30 @@ def create_scheduler() -> AsyncIOScheduler:
 
     scheduler.add_job(
         _fetch_morning,
-        CronTrigger(hour=SCHEDULER_MORNING_FETCH_HOUR, minute=0, timezone=_tz),
+        CronTrigger(hour=SCHEDULER_MORNING_FETCH_HOUR, minute=SCHEDULER_MORNING_FETCH_MINUTE, timezone=_tz),
         id="fetch_morning",
         name="Ранковий fetch (shift=0, сьогодні)",
         replace_existing=True,
     )
     scheduler.add_job(
         _process_morning_calls,
-        CronTrigger(hour=SCHEDULER_MORNING_CALL_HOUR, minute=0, timezone=_tz),
+        CronTrigger(hour=SCHEDULER_MORNING_CALL_HOUR, minute=SCHEDULER_MORNING_CALL_MINUTE, timezone=_tz),
         id="calls_morning",
-        name="Ранковий обдзвін (9-13)",
+        name=f"Ранковий обдзвін ({SCHEDULER_MORNING_CALL_HOUR}:{SCHEDULER_MORNING_CALL_MINUTE:02d}-{SCHEDULER_MORNING_CALL_END_HOUR}:00)",
         replace_existing=True,
     )
     scheduler.add_job(
         _fetch_evening,
-        CronTrigger(hour=SCHEDULER_EVENING_FETCH_HOUR, minute=0, timezone=_tz),
+        CronTrigger(hour=SCHEDULER_EVENING_FETCH_HOUR, minute=SCHEDULER_EVENING_FETCH_MINUTE, timezone=_tz),
         id="fetch_evening",
         name="Вечірній fetch (shift=1, завтра)",
         replace_existing=True,
     )
     scheduler.add_job(
         _process_evening_calls,
-        CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=0, timezone=_tz),
+        CronTrigger(hour=SCHEDULER_EVENING_CALL_HOUR, minute=SCHEDULER_EVENING_CALL_MINUTE, timezone=_tz),
         id="calls_evening",
-        name="Вечірній обдзвін (14-18)",
+        name=f"Вечірній обдзвін ({SCHEDULER_EVENING_CALL_HOUR}:{SCHEDULER_EVENING_CALL_MINUTE:02d}-{SCHEDULER_EVENING_CALL_END_HOUR}:00)",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -588,9 +592,9 @@ def create_scheduler() -> AsyncIOScheduler:
     )
 
     logger.info(
-        f"[SCHEDULER] Ранок: fetch о {SCHEDULER_MORNING_FETCH_HOUR}:00, "
-        f"дзвінки о {SCHEDULER_MORNING_CALL_HOUR}:00–{SCHEDULER_MORNING_CALL_END_HOUR}:00 | "
-        f"Вечір: fetch о {SCHEDULER_EVENING_FETCH_HOUR}:00, "
-        f"дзвінки о {SCHEDULER_EVENING_CALL_HOUR}:00–{SCHEDULER_EVENING_CALL_END_HOUR}:00 (Europe/Kyiv)"
+        f"[SCHEDULER] Ранок: fetch о {SCHEDULER_MORNING_FETCH_HOUR}:{SCHEDULER_MORNING_FETCH_MINUTE:02d}, "
+        f"дзвінки о {SCHEDULER_MORNING_CALL_HOUR}:{SCHEDULER_MORNING_CALL_MINUTE:02d}–{SCHEDULER_MORNING_CALL_END_HOUR}:00 | "
+        f"Вечір: fetch о {SCHEDULER_EVENING_FETCH_HOUR}:{SCHEDULER_EVENING_FETCH_MINUTE:02d}, "
+        f"дзвінки о {SCHEDULER_EVENING_CALL_HOUR}:{SCHEDULER_EVENING_CALL_MINUTE:02d}–{SCHEDULER_EVENING_CALL_END_HOUR}:00 (Europe/Kyiv)"
     )
     return scheduler
