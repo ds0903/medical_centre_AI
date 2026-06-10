@@ -538,19 +538,34 @@ async def _fetch_morning() -> None:
     mark_done("morning_fetch_done")
 
 async def _fetch_evening() -> None:
-    from scheduler.daily_state import mark_done
+    from scheduler.daily_state import mark_done, is_done
+    if is_done("evening_fetch_done"):
+        logger.info("[SCHEDULER] evening_fetch вже виконано або в процесі — пропускаємо")
+        return
+    mark_done("evening_fetch_done")  # одразу — щоб паралельний cron не задвоїв fetch
     await fetch_and_schedule_calls(shift=1)
-    mark_done("evening_fetch_done")
 
 async def _process_morning_calls() -> None:
-    from scheduler.daily_state import mark_done
+    from scheduler.daily_state import mark_done, is_done
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
     mark_done("morning_calls_done")
 
+    # Ранкові завершились раніше 18:00 — одразу стартуємо вечірню сесію без очікування cron
+    now = datetime.now(ZoneInfo("Europe/Kyiv"))
+    if now.hour < SCHEDULER_EVENING_CALL_END_HOUR and not is_done("evening_calls_done"):
+        logger.info(f"[SCHEDULER] Ранкові завершено о {now.strftime('%H:%M')} — стартуємо вечірню сесію одразу")
+        await _fetch_evening()
+        await _process_evening_calls()
+
 async def _process_evening_calls() -> None:
-    from scheduler.daily_state import mark_done
+    from scheduler.daily_state import mark_done, is_done
+    if is_done("evening_calls_done"):
+        logger.info("[SCHEDULER] evening_calls вже виконано або в процесі — пропускаємо")
+        return
+    mark_done("evening_calls_done")  # одразу — щоб паралельний cron не запустив другий раз
     await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
-    mark_done("evening_calls_done")
 
 
 def create_scheduler() -> AsyncIOScheduler:
