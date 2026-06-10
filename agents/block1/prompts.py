@@ -74,9 +74,9 @@ def _format_reminder_list(visit: dict) -> str:
     """Готовий текст для multi-visit промпту — перелік всіх записів."""
     doctor_spec = visit.get("doctor_specialization", visit["doctor_name"])
     linked = visit.get("linked_visits", [])
-    items = [f"[до/на] {doctor_spec} о {_format_visit_time(visit['visit_datetime'])}"]
+    items = [f"[до/на] {doctor_spec} — {_format_visit_date(visit['visit_datetime'])}"]
     for v in linked:
-        items.append(f"[до/на] {v['doctor_specialization']} о {_format_visit_time(v['visit_datetime'])}")
+        items.append(f"[до/на] {v['doctor_specialization']} — {_format_visit_date(v['visit_datetime'])}")
     count = len(items)
     lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} в цей день:"]
     for item in items:

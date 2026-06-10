@@ -95,7 +95,22 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
             "2. Запитай: 'Можу з'єднати вас з менеджером, або залишити поточний запис. Що зручніше?'\n"
             "НЕ пропонуй дат яких немає. НЕ кажи '22 квітня', '23 квітня' або будь-яку іншу дату."
         )
-        return hint, None
+        _no_slots_result = {
+            "success": False,
+            "available_dates": [],
+            "message": (
+                "⛔ ВІЛЬНИХ СЛОТІВ НЕМАЄ — API клініки повернув порожній список. "
+                "АБСОЛЮТНА ЗАБОРОНА: НЕ ВИГАДУЙ жодних дат, днів тижня або часу. "
+                "Дій за таким сценарієм:\n"
+                "1. Скажи: 'На жаль, наразі вільного часу для переносу немає.'\n"
+                "2. Запитай: 'Можу з'єднати вас з менеджером, або якщо зручно — залишити ваш поточний запис. Що вам зручніше?'\n"
+                "3. Якщо пацієнт хоче менеджера → виклич transfer_to_operator.\n"
+                "4. Якщо пацієнт хоче залишити запис → виклич confirm_visit, потім end_call(result='confirmed').\n"
+                "5. Якщо пацієнт відмовляється від обох варіантів → виклич cancel_visit, потім end_call(result='cancelled').\n"
+                "НЕ завершуй дзвінок одразу — дай пацієнту обрати."
+            ),
+        }
+        return hint, {"result": _no_slots_result, "_ts": time.monotonic()}
     try:
         from datetime import datetime as _dt
         from agents.block1.tools import _ua_ordinal, _MONTHS_UA, _WEEKDAYS_UA, _natural_date_list_with_weekday
