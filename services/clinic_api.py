@@ -277,26 +277,20 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
 # Відправка результату дзвінка
 # ---------------------------------------------------------------------------
 
-async def update_event_status(event_id: str, status: int) -> None:
+async def update_event_status(event_id: str, status: int, commentary: str = "") -> None:
     """
     Відправити результат дзвінка назад до API клініки.
 
     Args:
-        event_id: ID події (= ID з appointments API)
-        status:
-            1 — Підтверджує
-            2 — Відміняє
-            3 — Не зрозумів / передано оператору
-            4 — Не додзвонились
+        event_id:    ID події (= ID з appointments API)
+        status:      1=Підтверджує, 2=Відміняє, 3=Не зрозумів, 4=Не додзвонились
+        commentary:  AI-коментар до дзвінка (max 512 символів)
 
     DEBUG: оновлює STATUS прямо в data/test_visits.json
-
-    ---
-    TODO: уточнити endpoint та метод (POST / PATCH / PUT)
-    TODO: уточнити формат авторизації (заголовок)
     """
     _STATUS_LABELS = {1: "Підтверджує", 2: "Відміняє", 3: "Не зрозумів", 4: "Не додзвонились", 5: "Перенаправлено"}
     label = _STATUS_LABELS.get(status, str(status))
+    commentary = (commentary or "")[:512]
 
     if DEBUG:
         path = os.path.join(os.path.dirname(__file__), "..", "data", "test_visits.json")
@@ -313,20 +307,20 @@ async def update_event_status(event_id: str, status: int) -> None:
         if updated:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info(f"[DEBUG] update_event_status → ID={event_id}, STATUS={status} ({label})")
+            logger.info(f"[DEBUG] update_event_status → ID={event_id}, STATUS={status} ({label}) | {commentary}")
         else:
             logger.warning(f"[DEBUG] update_event_status → ID={event_id} не знайдено в JSON")
         return
 
     if SKIP_POST:
-        logger.info(f"[API] update_event_status (SKIP_POST): ID={event_id}, STATUS={status} ({label})")
+        logger.info(f"[API] update_event_status (SKIP_POST): ID={event_id}, STATUS={status} ({label}) | {commentary}")
         return
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
-            json={"fields": [int(event_id), status]},
+            json={"fields": [int(event_id), status, commentary]},
         ) as resp:
             resp.raise_for_status()
-            logger.info(f"[API] update_event_status → ID={event_id}, STATUS={status} ({label})")
+            logger.info(f"[API] update_event_status → ID={event_id}, STATUS={status} ({label}) | {commentary}")

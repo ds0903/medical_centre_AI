@@ -367,6 +367,7 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
             await warmup_task
             call_result = await agent.run(binotel_call)
             call_duration = agent.call_duration
+            call_commentary = agent.call_commentary
             agent.cleanup()
             await asyncio.sleep(2.0)
         finally:
@@ -390,7 +391,7 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
         # else: linked залишаються pending — retry-прохід згрупує їх знову через dedup
         return
 
-    await _save_result(task, call_result, call_duration)
+    await _save_result(task, call_result, call_duration, call_commentary)
 
     for lt in linked:
         if call_result == "confirmed":
@@ -429,18 +430,19 @@ _STATUS_API_MAP = {
 }
 
 
-async def _save_result(task: CallTask, result_str: str, duration: float) -> None:
+async def _save_result(task: CallTask, result_str: str, duration: float, commentary: str = "") -> None:
     async with get_session() as session:
         db_task = await session.get(CallTask, task.id)
         db_task.status = CallStatus.completed
         db_task.result = _RESULT_MAP.get(result_str, CallResult.no_answer)
         db_task.call_duration = duration
         db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db_task.commentary = commentary[:512] if commentary else None
     logger.info(f"[CALLS] Результат збережено: {result_str} ({duration:.0f}с)")
 
     api_status = _STATUS_API_MAP.get(result_str)
     if api_status is not None:
-        await clinic_api.update_event_status(task.visit_id, api_status)
+        await clinic_api.update_event_status(task.visit_id, api_status, commentary)
 
 
 async def _handle_no_answer(task: CallTask) -> bool:
@@ -451,7 +453,7 @@ async def _handle_no_answer(task: CallTask) -> bool:
             db_task.status = CallStatus.failed
             db_task.result = CallResult.no_answer
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
-            await clinic_api.update_event_status(task.visit_id, 4)
+            await clinic_api.update_event_status(task.visit_id, 4, "Пацієнт не підняв трубку.")
             return False
         else:
             db_task.status = CallStatus.pending  # Спробуємо ще раз наступного разу

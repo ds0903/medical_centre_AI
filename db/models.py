@@ -60,6 +60,7 @@ class CallTask(Base):
     message = Column(String, nullable=True)        # MESSAGE з API клініки (час/нотатки)
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)  # Причина передачі оператору
+    commentary = Column(String(512), nullable=True)  # AI-коментар до дзвінка
 
     def __repr__(self) -> str:
         return (
@@ -93,6 +94,7 @@ class CallHistory(Base):
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)
+    commentary = Column(String(512), nullable=True)  # AI-коментар до дзвінка
 
     archived_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 

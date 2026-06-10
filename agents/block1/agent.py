@@ -212,6 +212,7 @@ class Block1Agent:
         )
         self.call_result: str | None = None
         self.call_duration: float = 0.0
+        self.call_commentary: str = ""
         self._pa = pyaudio.PyAudio() if _PYAUDIO_AVAILABLE else None
         self._end_event = asyncio.Event()
         self._monitor_task: asyncio.Task | None = None
@@ -333,6 +334,7 @@ class Block1Agent:
             _ai_turn_active = [False]       # True поки Gemini генерує відповідь у цьому турі
             _ai_turn_started_at = [0.0]    # час початку поточного туру (для watchdog grace period)
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
+            _last_ai_said = [""]            # текст останньої реальної (не ghost) репліки Олі
             _last_patient_said_time = [0.0]  # час останньої прийнятої транскрипції (для time-based dedup)
             _patient_ever_spoke = [False]   # True після першого VAD → one-way audio detection
             _patient_said_count = [0]       # кількість НОВИХ input_transcription від пацієнта (захист від передчасних tool calls)
@@ -860,6 +862,7 @@ class Block1Agent:
                                         # → щоб наступний input_transcription "так" advance 1→2
                                         if not _is_ghost:
                                             _ai_text = "".join(_ai_buf)
+                                            _last_ai_said[0] = _ai_text
                                             _ai_text_lower = _ai_text.lower()
                                             if any(w in _ai_text_lower for w in ("вірно", "правильно")):
                                                 # state=1 ТІЛЬКИ якщо AI підтверджує конкретний СЛОТ (дата + час).
@@ -1509,6 +1512,9 @@ class Block1Agent:
                     elif _call_cache.get("cancel_visit", {}).get("success"):
                         self.call_result = "cancelled"
                         logger.warning("[AGENT] finally: cancel_visit в кеші → cancelled")
+                self._transfer_reason_str = _transfer_reason[0]
+                self._last_patient_text = _last_patient_said_text[0] if _last_patient_said_text[0] else ""
+                self._last_ai_text = _last_ai_said[0] if _last_ai_said[0] else ""
 
         warmup_session = getattr(self, '_warmup_session', None)
         warmup_cm = getattr(self, '_warmup_cm', None)
@@ -1561,7 +1567,8 @@ class Block1Agent:
 
         self.call_duration = time.time() - start
         result = self.call_result or "no_result"
-        logger.info(f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. Результат: {result}")
+        self.call_commentary = self._build_commentary(result)
+        logger.info(f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. Результат: {result} | {self.call_commentary}")
         if LOG_FILE:
             from services import call_logger
             call_logger.end_call(result, self.call_duration)
@@ -1779,8 +1786,45 @@ class Block1Agent:
                 prefetch_task.cancel()
 
     # ------------------------------------------------------------------
-    # Класифікація останньої фрази при SIP drop
+    # Коментар до дзвінка + класифікація
     # ------------------------------------------------------------------
+
+    def _build_commentary(self, result: str) -> str:
+        """Короткий коментар до дзвінка (max 512 символів) для API клініки."""
+        doctor = self.visit.get("doctor_name", "")
+        reason = getattr(self, "_transfer_reason_str", "")
+        last_said = getattr(self, "_last_patient_text", "")
+
+        if result == "transferred":
+            base = "Перенаправлено до оператора."
+            return (f"{base} Причина: {reason}." if reason else base)[:512]
+
+        if result == "no_result":
+            last_ai = getattr(self, "_last_ai_text", "")
+            parts = []
+            if last_ai:
+                parts.append(f"Оператор запитав: «{last_ai}».")
+            if last_said:
+                parts.append(f"Пацієнт відповів: «{last_said}».")
+            else:
+                parts.append("Пацієнт не дав чіткої відповіді або скинув слухавку.")
+            return " ".join(parts)[:512]
+
+        _TEMPLATES = {
+            "confirmed":   f"Пацієнт підтвердив прийом{f' до {doctor}' if doctor else ''}.",
+            "cancelled":   f"Пацієнт скасував прийом{f' до {doctor}' if doctor else ''}.",
+            "rescheduled": f"Пацієнт переніс прийом{f' до {doctor}' if doctor else ''} на інший час.",
+            "no_answer":   "Пацієнт не підняв трубку.",
+        }
+        return _TEMPLATES.get(result, "")[:512]
+
+    def _get_classify_client(self):
+        """Google AI Studio client для generate_content (Vertex не має generate_content моделей)."""
+        if not hasattr(self, "_classify_client_cache"):
+            self._classify_client_cache = genai.Client(api_key=GEMINI_API_KEY)
+        return self._classify_client_cache
+
+    _CLASSIFY_MODEL = "gemini-3-flash-preview"
 
     async def _classify_last_phrase(self, phrase: str) -> str:
         """Gemini text API: аналізує останню фразу пацієнта → confirmed/cancelled/no_result."""
@@ -1795,8 +1839,8 @@ class Block1Agent:
             f"no_result — незрозуміло або не по темі"
         )
         try:
-            resp = await self.client.aio.models.generate_content(
-                model="gemini-2.0-flash-001",
+            resp = await self._get_classify_client().aio.models.generate_content(
+                model=self._CLASSIFY_MODEL,
                 contents=prompt,
             )
             text = (resp.text or "").strip().lower()
