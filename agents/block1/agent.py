@@ -1826,9 +1826,9 @@ class Block1Agent:
             return " ".join(parts)[:512]
 
         _TEMPLATES = {
-            "confirmed":   f"Пацієнт підтвердив прийом{f' до {doctor}' if doctor else ''}.",
-            "cancelled":   f"Пацієнт скасував прийом{f' до {doctor}' if doctor else ''}.",
-            "rescheduled": f"Пацієнт переніс прийом{f' до {doctor}' if doctor else ''} на інший час.",
+            "confirmed":   "Пацієнт підтвердив запис.",
+            "cancelled":   "Пацієнт скасував запис.",
+            "rescheduled": "Пацієнт переніс запис на інший час.",
             "no_answer":   "Пацієнт не підняв трубку.",
         }
         return _TEMPLATES.get(result, "")[:512]

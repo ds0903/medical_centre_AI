@@ -1,8 +1,11 @@
 """
-Завантаження довідників з Google Sheets (публічний CSV export).
+Завантаження каталогу послуг з Google Sheets (публічний CSV export).
 
-Аркуш 1 (SHEETS_GID)   — синоніми процедур → рядок для промпту
-Аркуш 2 (SERVICES_GID) — прайс + підготовка → list[dict] для function calling
+Один аркуш (SHEETS_GID):
+  A: Коди каси (ігноруємо)
+  B: Найменування згідно Прайсу  ← шукаємо по цьому полю (= APPOINTMENT з API)
+  C: Аналог назви                ← говоримо пацієнту
+  D: Підготовка                  ← відповідаємо якщо пацієнт питає
 """
 
 import csv
@@ -12,7 +15,7 @@ import re
 
 import aiohttp
 
-from config import SHEETS_ID, SHEETS_GID, SERVICES_GID
+from config import SHEETS_ID, SHEETS_GID
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +24,11 @@ _EXPORT_URL = (
     "?format=csv&gid={gid}"
 )
 
-# Кеш Аркуша 2: [{name, price, preparation}, ...]
+# Кеш: [{official_name, analog_name, preparation}, ...]
 _services_cache: list[dict] = []
 
 
 async def _fetch_csv(gid: str) -> str | None:
-    """Завантажує CSV з Google Sheets. Повертає None при помилці."""
     if not SHEETS_ID:
         return None
     url = _EXPORT_URL.format(id=SHEETS_ID, gid=gid)
@@ -40,79 +42,31 @@ async def _fetch_csv(gid: str) -> str | None:
         return None
 
 
-async def fetch_procedure_aliases() -> str:
-    """
-    Аркуш 1: синоніми процедур → відформатований рядок для системного промпту.
-    Формат: "Офіційна назва | синонім1, синонім2, ..."
-    """
-    if not SHEETS_ID:
-        logger.warning("[SHEETS] SHEETS_ID не задано — довідник синонімів недоступний")
-        return ""
-
-    text = await _fetch_csv(SHEETS_GID)
-    if text is None:
-        return ""
-
-    reader = csv.reader(io.StringIO(text))
-    lines: list[str] = []
-    for row in reader:
-        name = row[0].strip() if len(row) > 0 else ""
-        aliases = row[1].strip() if len(row) > 1 else ""
-        if not name or name.lower() == "найменування":
-            continue
-        if aliases:
-            lines.append(f"{name} | {aliases}")
-
-    if not lines:
-        logger.warning("[SHEETS] Аркуш 1 завантажено але порожній")
-        return ""
-
-    logger.info("[SHEETS] Довідник синонімів: %d записів", len(lines))
-    header = (
-        "ДОВІДНИК ПРОЦЕДУР — ТІЛЬКИ для пояснення назв. БІЛЬШЕ НІЧОГО.\n"
-        "Використовуй ВИКЛЮЧНО якщо пацієнт сам запитав: 'що це таке?', 'що означає X?', 'для чого ця процедура?'.\n"
-        "Ми займаємось ЗАПИСОМ до лікаря — не самим прийомом. Довідник НЕ впливає на запис.\n"
-        "⚠ ЗАБОРОНЕНО: використовувати довідник для уточнення {doctor_name}, пропонувати запис на процедури з довідника.\n"
-        "⚠ ЗАБОРОНЕНО: активувати довідник якщо пацієнт не питав про процедуру явно.\n"
-        "Алгоритм (ТІЛЬКИ для питань 'що це таке?' / 'що означає X?'):\n"
-        "  1. Знайшов в довіднику → поясни 3-4 реченнями → 'Ви плануєте прийти?' НЕ пропонуй менеджера.\n"
-        "  2. Не знайшов → поверни пошук на підготовку: виклич get_preparation_info(service_name=X).\n"
-        "⚠ ЦЕЙ ДОВІДНИК НЕ відповідає на 'як підготуватись?' або 'що взяти?' — для цього є get_preparation_info.\n"
-        "Формат: Офіційна назва | синоніми пацієнта\n"
-    )
-    return header + "\n".join(lines)
-
-
 async def fetch_services_catalog() -> list[dict]:
     """
-    Аркуш 2: прайс + підготовка → list[dict] для function calling.
-    Структура CSV: код | назва | ціна | підготовка
-    Повертає [{name, price, preparation}, ...]
+    Завантажує каталог з одного аркуша.
+    Структура CSV: код | офіційна назва | аналог назви | підготовка
     """
     if not SHEETS_ID:
         logger.warning("[SHEETS] SHEETS_ID не задано — каталог послуг недоступний")
         return []
 
-    if not SERVICES_GID:
-        logger.warning("[SHEETS] SERVICES_GID не задано — каталог послуг недоступний")
-        return []
-
-    text = await _fetch_csv(SERVICES_GID)
+    text = await _fetch_csv(SHEETS_GID)
     if text is None:
         return []
 
     reader = csv.reader(io.StringIO(text))
     items: list[dict] = []
     for row in reader:
-        name = row[1].strip() if len(row) > 1 else ""
-        price = row[2].strip() if len(row) > 2 else ""
-        preparation = row[3].strip() if len(row) > 3 else ""
-        if not name or name.lower() in ("найменування", "назва"):
+        official_name = row[1].strip() if len(row) > 1 else ""
+        analog_name   = row[2].strip() if len(row) > 2 else ""
+        preparation   = row[3].strip() if len(row) > 3 else ""
+        if not official_name or official_name.lower() in ("найменування згідно прайсу", "найменування", "назва"):
             continue
         items.append({
-            "name": name,
-            "price": price,
-            "preparation": preparation,
+            "official_name": official_name,
+            "analog_name":   analog_name or official_name,
+            "preparation":   preparation,
         })
 
     logger.info("[SHEETS] Каталог послуг: %d записів", len(items))
@@ -120,7 +74,7 @@ async def fetch_services_catalog() -> list[dict]:
 
 
 async def load_services_catalog() -> None:
-    """Завантажує каталог послуг і зберігає в модульний кеш."""
+    """Завантажує каталог і зберігає в модульний кеш."""
     global _services_cache
     _services_cache = await fetch_services_catalog()
 
@@ -128,11 +82,51 @@ async def load_services_catalog() -> None:
 _SPLIT_RE = re.compile(r"[\s\-\(\)/,\.]+")
 
 
+def _score(query_words: list[str], name: str) -> int:
+    name_words = _SPLIT_RE.split(name.lower())
+    return sum(
+        1 for w in query_words
+        if any(nw == w or nw.startswith(w) for nw in name_words if nw)
+    )
+
+
+def find_by_appointment(appointment_name: str) -> dict | None:
+    """
+    Шукає запис по офіційній назві послуги (поле APPOINTMENT з API).
+    Спочатку точний збіг, потім нечіткий по словах.
+    Повертає {analog_name, preparation} або None якщо не знайдено.
+    """
+    if not _services_cache or not appointment_name:
+        return None
+
+    appt_lower = appointment_name.strip().lower()
+
+    # Точний збіг
+    for item in _services_cache:
+        if item["official_name"].lower() == appt_lower:
+            return {"analog_name": item["analog_name"], "preparation": item["preparation"]}
+
+    # Нечіткий по словах
+    words = [w for w in appt_lower.split() if len(w) > 2]
+    if not words:
+        return None
+
+    best_score, best_item = 0, None
+    for item in _services_cache:
+        s = _score(words, item["official_name"])
+        if s > best_score:
+            best_score, best_item = s, item
+
+    if best_item and best_score >= max(1, len(words) // 2):
+        return {"analog_name": best_item["analog_name"], "preparation": best_item["preparation"]}
+
+    return None
+
+
 def search_service(query: str) -> list[dict]:
     """
-    Пошук по _services_cache з матчингом по цілих словах.
-    "УЗД" не матчить "вуздечки" — тільки окреме слово або початок слова.
-    Повертає до 3 найбільш релевантних збігів.
+    Пошук під час дзвінка (get_preparation_info tool).
+    Шукає по запиту пацієнта → повертає до 3 збігів з analog_name та preparation.
     """
     if not _services_cache:
         return []
@@ -144,15 +138,10 @@ def search_service(query: str) -> list[dict]:
 
     results: list[tuple[int, dict]] = []
     for item in _services_cache:
-        name_words = _SPLIT_RE.split(item["name"].lower())
-        # слово з query матчить якщо є слово в назві що з нього починається
-        # "гастроентеролог" матчить "гастроентеролога" (відмінок), але "узд" ≠ "вуздечки"
-        score = sum(
-            1 for w in words
-            if any(nw == w or nw.startswith(w) for nw in name_words if nw)
-        )
-        if score > 0:
-            results.append((score, item))
+        # шукаємо і по офіційній, і по аналогу
+        s = max(_score(words, item["official_name"]), _score(words, item["analog_name"]))
+        if s > 0:
+            results.append((s, item))
 
     results.sort(key=lambda x: x[0], reverse=True)
     return [item for _, item in results[:3]]

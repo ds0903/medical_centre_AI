@@ -87,6 +87,8 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
                 "place_id":              str(a["IDPOINT"]),
                 "visit_datetime":        a["START_E"],
                 "message":               a.get("MESSAGE") or "",
+                "appointment":           a.get("APPOINTMENT") or "",
+                "preparation":           a.get("PREPARATION") or "",
             }
             for a in appointments
         ]
@@ -129,6 +131,8 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
                     "place_id":              str(a["IDPOINT"]),
                     "visit_datetime":        a["START_E"],
                     "message":               a.get("MESSAGE") or "",
+                    "appointment":           a.get("APPOINTMENT") or "",
+                    "preparation":           a.get("PREPARATION") or "",
                 }
                 for a in appointments
             ]

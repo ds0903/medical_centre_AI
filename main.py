@@ -27,7 +27,6 @@ from config import (
     SKIP_FETCH,
     SKIP_SCHEDULER,
 )
-from agents.block1.prompts import load_procedure_aliases
 from services.sheets_loader import load_services_catalog
 from db.database import close_db, init_db
 from scheduler.daily_runner import (
@@ -52,7 +51,6 @@ async def run_debug() -> None:
     logger.info("=== ЗАПУСК У DEBUG РЕЖИМІ ===")
 
     await init_db()
-    await load_procedure_aliases()
     await load_services_catalog()
 
     # В debug завжди запускаємо ранкову сесію одразу (shift=0, архів не потрібен)
@@ -79,7 +77,6 @@ async def run_production() -> None:
     logger.info(f"=== ЗАПУСК У PRODUCTION РЕЖИМІ ===")
 
     await init_db()
-    await load_procedure_aliases()
     await load_services_catalog()
 
     if SKIP_FETCH:

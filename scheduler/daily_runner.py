@@ -124,6 +124,8 @@ async def fetch_and_schedule_calls(shift: int) -> None:
                 place_id=visit["place_id"],
                 visit_datetime=datetime.fromisoformat(visit["visit_datetime"]),
                 message=visit.get("message", ""),
+                appointment=visit.get("appointment", ""),
+                preparation=visit.get("preparation", ""),
                 status=CallStatus.pending,
                 attempts=0,
             )

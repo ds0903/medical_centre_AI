@@ -682,58 +682,47 @@ async def handle_tool_call(
                     "НЕ вигадуй підготовку самостійно."
                 ),
             }
-        parts = []
-        for m in matches:
-            line = f"• {m['name']}"
-            if m["preparation"]:
-                line += f"\n  Підготовка: {m['preparation']}"
-            parts.append(line)
+
         logger.info("[TOOL] get_preparation_info(%r) → %d збігів", query, len(matches))
         for m in matches:
-            logger.info("[TOOL]   • %s | %s грн | %s", m["name"], m["price"], m["preparation"][:120])
+            logger.info("[TOOL]   • %s | аналог: %s | %s", m["official_name"], m["analog_name"], m["preparation"][:120])
 
-        # Визначаємо чи результати точно відповідають запиту
         query_words = [w.lower() for w in query.split() if len(w) > 2]
         exact_matches = [
             m for m in matches
-            if any(qw in m["name"].lower() for qw in query_words)
+            if any(qw in m["official_name"].lower() or qw in m["analog_name"].lower() for qw in query_words)
         ]
-        irrelevant = [m for m in matches if m not in exact_matches]
+        best = exact_matches or matches
+
+        parts = []
+        for m in best:
+            label = m["analog_name"] or m["official_name"]
+            line = f"• {label}"
+            if m["preparation"]:
+                line += f"\n  Підготовка: {m['preparation']}"
+            parts.append(line)
 
         if exact_matches:
-            parts_exact = []
-            for m in exact_matches:
-                line = f"• {m['name']}"
-                if m["preparation"]:
-                    line += f"\n  Підготовка: {m['preparation']}"
-                parts_exact.append(line)
-            alt = ""
-            if irrelevant:
-                alt_names = ", ".join(m["name"] for m in irrelevant[:2])
-                alt = f"\n\nТакож знайдено (схожі): {alt_names}"
             return {
                 "found": True,
                 "query": query,
                 "message": (
-                    f"Знайдено послуги за запитом '{query}':\n\n"
-                    + "\n".join(parts_exact)
-                    + alt
+                    f"Знайдено за запитом '{query}':\n\n"
+                    + "\n".join(parts)
                     + "\n\nРозкажи пацієнту цю інформацію природньою мовою (2-3 речення). "
                     "Після пояснення: 'Ви плануєте прийти чи є ще питання?'"
                 ),
                 "results": exact_matches,
             }
         else:
-            # Знайдено лише часткові збіги — запитане недоступне
-            alt_names = ", ".join(m["name"] for m in matches[:2])
+            alt_names = ", ".join((m["analog_name"] or m["official_name"]) for m in matches[:2])
             return {
                 "found": False,
                 "query": query,
                 "message": (
-                    f"Послугу '{query}' не знайдено в каталозі клініки. "
-                    f"Схожі доступні послуги: {alt_names}. "
-                    f"Скажи пацієнту: '{query} у нас немає, але є наприклад {alt_names}. "
-                    "Якщо потрібна інша послуга — можу з'єднати з менеджером.'"
+                    f"Послугу '{query}' не знайдено точно в каталозі. "
+                    f"Схожі: {alt_names}. "
+                    "Скажи пацієнту що точної інформації немає, але можеш з'єднати з менеджером."
                 ),
                 "results": [],
             }

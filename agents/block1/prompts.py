@@ -12,15 +12,6 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_procedure_aliases_cache: str = ""
-
-
-async def load_procedure_aliases() -> None:
-    """Завантажує довідник синонімів з Google Sheets і кешує в пам'яті."""
-    global _procedure_aliases_cache
-    from services.sheets_loader import fetch_procedure_aliases
-    _procedure_aliases_cache = await fetch_procedure_aliases()
-
 _PROMPTS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts.yaml")
 _PROMPTS_MULTI_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts_multi.yaml")
 
@@ -97,35 +88,40 @@ def _format_linked_visits(linked: list) -> str:
     return "\n".join(lines)
 
 
-def _fetch_preparation(doctor_name: str) -> tuple[str, str]:
+def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
     """
-    Шукає підготовку в каталозі.
-    Повертає (full_block, brief) де:
-      full_block — для вбудовування в промпт (відповіді на питання пацієнта)
-      brief      — 1 речення для прощального тексту (порожній якщо не знайдено)
+    Шукає інформацію про послугу по полю APPOINTMENT.
+    Повертає (full_block, brief, analog_name):
+      full_block  — блок для промпту (підготовка + інструкція)
+      brief       — 1 речення для прощального тексту (порожній якщо немає)
+      analog_name — зрозуміла назва процедури для вживання у розмові
     """
-    from services.sheets_loader import search_service
-    matches = search_service(doctor_name)
-    if not matches:
-        logger.info(f"[PROMPT] Підготовка НЕ знайдена для '{doctor_name}'")
-        return "", ""
+    from services.sheets_loader import find_by_appointment
+    appointment = visit.get("appointment", "")
+    preparation_from_api = visit.get("preparation", "")
+
+    result = find_by_appointment(appointment) if appointment else None
+    analog_name = result["analog_name"] if result else ""
+    preparation = result["preparation"] if result else preparation_from_api
+
+    if not preparation and not analog_name:
+        logger.info(f"[PROMPT] Інфо про послугу НЕ знайдено для '{appointment}'")
+        return "", "", ""
 
     lines = []
-    brief = ""
-    for m in matches:
-        line = f"• {m['name']}"
-        if m["preparation"]:
-            line += f"\n  Підготовка: {m['preparation']}"
-            if not brief:
-                brief = m["preparation"]
-        lines.append(line)
+    if analog_name:
+        lines.append(f"• Зрозуміла назва: {analog_name}")
+    if preparation:
+        lines.append(f"• Підготовка: {preparation}")
 
+    label = analog_name or appointment or "прийом"
     full_block = (
-        f"\n\nПІДГОТОВКА ДО ПРИЙОМУ «{doctor_name}» (вже знайдено — ⚠ ЗАБОРОНЕНО викликати get_preparation_info, відповідай звідси):\n"
+        f"\n\nІНФО ПРО ПРОЦЕДУРУ «{label}» (вже знайдено — ⚠ ЗАБОРОНЕНО викликати get_preparation_info, відповідай звідси):\n"
         + "\n".join(lines)
     )
-    logger.info(f"[PROMPT] Підготовка знайдена для '{doctor_name}': {len(matches)} позицій")
-    return full_block, brief
+    brief = preparation[:200] if preparation else ""
+    logger.info(f"[PROMPT] Інфо знайдено: аналог='{analog_name}', підготовка={bool(preparation)}")
+    return full_block, brief, analog_name
 
 
 def _build_confirmation_farewell(brief: str, clinic_address: str, multi: bool = False) -> str:
@@ -143,8 +139,7 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
         prompts = yaml.safe_load(f)
     template: str = prompts["block1_reminder_multi"]["system"]
 
-    # Prefetch підготовки для primary лікаря (brief для farewell)
-    primary_full_block, brief = _fetch_preparation(visit["doctor_name"])
+    primary_full_block, brief, _ = _fetch_service_info(visit)
     visit["_has_preparation"] = bool(brief)
     confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=True)
 
@@ -159,17 +154,13 @@ def _build_multi_prompt(visit: dict, clinic_address: str) -> str:
         confirmation_farewell=confirmation_farewell,
     )
 
-    # Вставляємо підготовку primary лікаря
     if primary_full_block:
         prompt += primary_full_block
 
-    # Вставляємо підготовку linked лікарів (якщо є)
     for lv in visit.get("linked_visits", []):
-        lv_name = lv.get("doctor_name", lv.get("doctor_specialization", ""))
-        if lv_name:
-            lv_full_block, _ = _fetch_preparation(lv_name)
-            if lv_full_block:
-                prompt += lv_full_block
+        lv_full_block, _, _ = _fetch_service_info(lv)
+        if lv_full_block:
+            prompt += lv_full_block
 
     return prompt
 
@@ -186,7 +177,7 @@ def build_system_prompt(visit: dict) -> str:
     if linked:
         return _build_multi_prompt(visit, clinic_address)
 
-    full_block, brief = _fetch_preparation(visit["doctor_name"])
+    full_block, brief, analog_name = _fetch_service_info(visit)
     visit["_has_preparation"] = bool(brief)
     confirmation_farewell = _build_confirmation_farewell(brief, clinic_address, multi=False)
 
@@ -209,9 +200,6 @@ def build_system_prompt(visit: dict) -> str:
         linked_visits_block="",
         confirmation_farewell=confirmation_farewell,
     )
-
-    if _procedure_aliases_cache:
-        prompt += f"\n\n{_procedure_aliases_cache}"
 
     if full_block:
         prompt += full_block
