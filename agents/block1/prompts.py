@@ -104,15 +104,16 @@ def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
     analog_name = result["analog_name"] if result else ""
     preparation = result["preparation"] if result else preparation_from_api
 
-    if not preparation and not analog_name:
+    # Якщо немає ні назви ні підготовки — нічого не знайшли
+    if not analog_name and not appointment:
         logger.info(f"[PROMPT] Інфо про послугу НЕ знайдено для '{appointment}'")
         return "", "", ""
 
     lines = []
     if analog_name:
         lines.append(f"• Зрозуміла назва: {analog_name}")
-    if preparation:
-        lines.append(f"• Підготовка: {preparation}")
+    preparation_text = preparation if preparation else "Спеціальна підготовка не потрібна."
+    lines.append(f"• Підготовка: {preparation_text}")
 
     label = analog_name or appointment or "прийом"
     full_block = (
