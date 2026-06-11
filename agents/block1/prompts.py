@@ -191,6 +191,7 @@ def build_system_prompt(visit: dict) -> str:
         patient_phone=visit.get("patient_phone", ""),
         doctor_name=visit["doctor_name"],
         doctor_specialization=visit.get("doctor_specialization", visit["doctor_name"]),
+        appointment=visit.get("appointment", ""),
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
         message=visit.get("message", ""),

@@ -299,6 +299,8 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
         "place_id": task.place_id,
         "visit_datetime": task.visit_datetime.isoformat(),
         "message": task.message or "",
+        "appointment": task.appointment or "",
+        "preparation": task.preparation or "",
         "linked_visits": linked_visit_list,
     }
 
