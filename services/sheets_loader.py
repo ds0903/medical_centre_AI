@@ -57,16 +57,18 @@ async def fetch_services_catalog() -> list[dict]:
 
     reader = csv.reader(io.StringIO(text))
     items: list[dict] = []
-    for row in reader:
+    for row_num, row in enumerate(reader, start=1):
+        # A=код | B=офіційна назва | C=ціна (ігноруємо) | D=аналог назви | E=підготовка
         official_name = row[1].strip() if len(row) > 1 else ""
-        analog_name   = row[2].strip() if len(row) > 2 else ""
-        preparation   = row[3].strip() if len(row) > 3 else ""
+        analog_name   = row[3].strip() if len(row) > 3 else ""
+        preparation   = row[4].strip() if len(row) > 4 else ""
         if not official_name or official_name.lower() in ("найменування згідно прайсу", "найменування", "назва"):
             continue
         items.append({
             "official_name": official_name,
             "analog_name":   analog_name or official_name,
             "preparation":   preparation,
+            "row_num":       row_num,
         })
 
     logger.info("[SHEETS] Каталог послуг: %d записів", len(items))
@@ -104,7 +106,7 @@ def find_by_appointment(appointment_name: str) -> dict | None:
     # Точний збіг
     for item in _services_cache:
         if item["official_name"].lower() == appt_lower:
-            return {"analog_name": item["analog_name"], "preparation": item["preparation"]}
+            return {"analog_name": item["analog_name"], "preparation": item["preparation"], "row_num": item["row_num"]}
 
     # Нечіткий по словах
     words = [w for w in appt_lower.split() if len(w) > 2]
@@ -118,7 +120,7 @@ def find_by_appointment(appointment_name: str) -> dict | None:
             best_score, best_item = s, item
 
     if best_item and best_score >= max(1, len(words) // 2):
-        return {"analog_name": best_item["analog_name"], "preparation": best_item["preparation"]}
+        return {"analog_name": best_item["analog_name"], "preparation": best_item["preparation"], "row_num": best_item["row_num"]}
 
     return None
 

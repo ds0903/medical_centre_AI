@@ -685,7 +685,7 @@ async def handle_tool_call(
 
         logger.info("[TOOL] get_preparation_info(%r) → %d збігів", query, len(matches))
         for m in matches:
-            logger.info("[TOOL]   • %s | аналог: %s | %s", m["official_name"], m["analog_name"], m["preparation"][:120])
+            logger.info("[TOOL]   • рядок=%s | %s | аналог: %s | %s", m.get("row_num", "?"), m["official_name"], m["analog_name"], m["preparation"][:120])
 
         query_words = [w.lower() for w in query.split() if len(w) > 2]
         exact_matches = [

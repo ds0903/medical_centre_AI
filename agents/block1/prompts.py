@@ -103,6 +103,7 @@ def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
     result = find_by_appointment(appointment) if appointment else None
     analog_name = result["analog_name"] if result else ""
     preparation = result["preparation"] if result else preparation_from_api
+    row_num = result["row_num"] if result else None
 
     # Якщо немає ні назви ні підготовки — нічого не знайшли
     if not analog_name and not appointment:
@@ -121,7 +122,8 @@ def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
         + "\n".join(lines)
     )
     brief = preparation[:200] if preparation else ""
-    logger.info(f"[PROMPT] Інфо знайдено: аналог='{analog_name}', підготовка={bool(preparation)}")
+    row_info = f" рядок={row_num}" if row_num else ""
+    logger.info(f"[PROMPT] Інфо знайдено{row_info}: аналог='{analog_name}', підготовка={bool(preparation)}")
     return full_block, brief, analog_name
 
 
