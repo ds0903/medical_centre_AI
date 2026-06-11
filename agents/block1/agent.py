@@ -455,12 +455,12 @@ class Block1Agent:
                     # SIP з'єднання ймовірно одностороннє. Завершуємо → scheduler зробить retry.
                     if _silence_count >= 2 and not _patient_ever_spoke[0]:
                         logger.warning("[AGENT] One-way audio: жодного голосу від пацієнта — завершуємо")
-                        self.call_result = "no_answer"
+                        self.call_result = "no_result"
                         self._end_event.set()
                         return
                     if _silence_count >= MAX_SILENCE_COUNT:
                         logger.info("[AGENT] Тиша 3 рази — завершуємо дзвінок")
-                        self.call_result = "no_answer"
+                        self.call_result = "no_result"
                         self._end_event.set()
                         _suppress_next_audio[0] = False
                         await _live_session[0].send_client_content(
@@ -538,7 +538,7 @@ class Block1Agent:
                     _watchdog_injected[0] += 1
                     if _watchdog_injected[0] >= 3:
                         logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності — завершуємо дзвінок")
-                        self.call_result = "no_answer"
+                        self.call_result = "no_result"
                         self._end_event.set()
                         return
                     _phase = "до першої репліки" if _patient_said_count[0] == 0 else f"репліка #{_patient_said_count[0]}"

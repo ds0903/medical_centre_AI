@@ -130,10 +130,9 @@ def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
 def _build_confirmation_farewell(brief: str, clinic_address: str, multi: bool = False) -> str:
     """Pre-built прощальний текст при підтвердженні."""
     record_word = "Ваші записи підтверджено" if multi else "Ваш запис підтверджено"
-    prep_part = f" До речі, щодо підготовки: {brief}." if brief else ""
     if clinic_address:
-        return f"Чудово! {record_word}.{prep_part} Чекаємо вас за адресою: {clinic_address}. На все добре!"
-    return f"Чудово! {record_word}.{prep_part} Чекаємо вас! На все добре!"
+        return f"Чудово! {record_word}. Чекаємо вас за адресою: {clinic_address}. На все добре!"
+    return f"Чудово! {record_word}. Чекаємо вас! На все добре!"
 
 
 def _build_multi_prompt(visit: dict, clinic_address: str) -> str:

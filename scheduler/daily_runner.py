@@ -386,15 +386,6 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    # no_answer (one-way audio / пацієнт мовчить) → scheduler зробить retry
-    if call_result == "no_answer":
-        will_retry = await _handle_no_answer(task)
-        if not will_retry:
-            for lt in linked:
-                await _skip_linked(lt)
-        # else: linked залишаються pending — retry-прохід згрупує їх знову через dedup
-        return
-
     await _save_result(task, call_result, call_duration, call_commentary)
 
     for lt in linked:
@@ -456,6 +447,8 @@ async def _handle_no_answer(task: CallTask) -> bool:
         if db_task.attempts >= MAX_CALL_ATTEMPTS:
             db_task.status = CallStatus.failed
             db_task.result = CallResult.no_answer
+            db_task.commentary = "Пацієнт не підняв трубку."
+            db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
             await clinic_api.update_event_status(task.visit_id, 4, "Пацієнт не підняв трубку.")
             return False
