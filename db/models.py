@@ -60,6 +60,7 @@ class CallTask(Base):
     message = Column(String, nullable=True)        # MESSAGE з API клініки (час/нотатки)
     appointment = Column(String, nullable=True)    # APPOINTMENT з API — назва процедури
     preparation = Column(String, nullable=True)    # підготовка до процедури
+    call_session = Column(String, nullable=True)   # "morning" або "evening"
     error_message = Column(String, nullable=True)
     operator_note = Column(String, nullable=True)  # Причина передачі оператору
     commentary = Column(String(512), nullable=True)  # AI-коментар до дзвінка
@@ -88,6 +89,7 @@ class CallHistory(Base):
     message = Column(String, nullable=True)
     appointment = Column(String, nullable=True)    # APPOINTMENT з API — назва процедури
     preparation = Column(String, nullable=True)    # підготовка до процедури
+    call_session = Column(String, nullable=True)   # "morning" або "evening"
 
     status = Column(SAEnum(CallStatus), nullable=False)
     result = Column(SAEnum(CallResult), nullable=True)

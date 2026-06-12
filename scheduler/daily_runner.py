@@ -68,6 +68,9 @@ async def _archive_call_tasks() -> None:
                 place_id=task.place_id or "",
                 visit_datetime=task.visit_datetime,
                 message=task.message,
+                appointment=task.appointment,
+                preparation=task.preparation,
+                call_session=task.call_session,
                 status=task.status,
                 result=task.result,
                 attempts=task.attempts,
@@ -126,6 +129,7 @@ async def fetch_and_schedule_calls(shift: int) -> None:
                 message=visit.get("message", ""),
                 appointment=visit.get("appointment", ""),
                 preparation=visit.get("preparation", ""),
+                call_session="morning" if shift == 0 else "evening",
                 status=CallStatus.pending,
                 attempts=0,
             )
