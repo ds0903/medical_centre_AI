@@ -92,6 +92,9 @@ def _score(query_words: list[str], name: str) -> int:
     )
 
 
+_LEADING_DIGITS_RE = re.compile(r"^\d+[\s\.\-]*")
+
+
 def find_by_appointment(appointment_name: str) -> dict | None:
     """
     Шукає запис по офіційній назві послуги (поле APPOINTMENT з API).
@@ -101,7 +104,9 @@ def find_by_appointment(appointment_name: str) -> dict | None:
     if not _services_cache or not appointment_name:
         return None
 
-    appt_lower = appointment_name.strip().lower()
+    # Видаляємо лідируючі цифри (напр. "123 Прийом лікаря" → "Прийом лікаря")
+    cleaned = _LEADING_DIGITS_RE.sub("", appointment_name.strip())
+    appt_lower = cleaned.lower()
 
     # Точний збіг
     for item in _services_cache:
