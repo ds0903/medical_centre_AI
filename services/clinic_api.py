@@ -209,6 +209,7 @@ async def get_doctor_slots(doctor_name: str) -> list[dict]:
 
 async def confirm_visit(visit_id: str) -> bool:
     """POST /bridge/call/updatestate → статус 1 (Підтверджує)."""
+    commentary = "Пацієнт підтвердив запис."
     if DEBUG:
         logger.debug(f"[DEBUG] confirm_visit(visit_id={visit_id})")
         return True
@@ -219,13 +220,13 @@ async def confirm_visit(visit_id: str) -> bool:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
-            json={"fields": [int(visit_id), 1]},
+            json={"fields": [int(visit_id), 1, commentary]},
         ) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error(f"[API] confirm_visit HTTP {resp.status} body: {body}")
                 resp.raise_for_status()
-            logger.info(f"[API] confirm_visit → visit_id={visit_id}, status=1")
+            logger.info(f"[API] confirm_visit → visit_id={visit_id}, status=1 | {commentary}")
             return True
 
 
@@ -260,6 +261,7 @@ async def update_state(visit_id: str, state: str) -> None:
 
 async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
     """POST /bridge/call/updatestate → статус 2 (Відміняє)."""
+    commentary = "Пацієнт скасував запис."
     if DEBUG:
         logger.debug(f"[DEBUG] cancel_visit(visit_id={visit_id}, reason={reason})")
         return True
@@ -270,10 +272,10 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/updatestate",
             headers=_make_headers(),
-            json={"fields": [int(visit_id), 2]},
+            json={"fields": [int(visit_id), 2, commentary]},
         ) as resp:
             resp.raise_for_status()
-            logger.info(f"[API] cancel_visit → visit_id={visit_id}, status=2")
+            logger.info(f"[API] cancel_visit → visit_id={visit_id}, status=2 | {commentary}")
             return True
 
 
