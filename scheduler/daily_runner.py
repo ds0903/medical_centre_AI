@@ -556,23 +556,19 @@ async def _process_morning_calls() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    if not await _has_pending_tasks("morning"):
-        logger.info("[SCHEDULER] morning_calls: немає pending задач — пропускаємо")
-        return
+    if await _has_pending_tasks("morning"):
+        await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
+    else:
+        logger.info("[SCHEDULER] morning_calls: немає pending задач — переходимо до вечірньої сесії")
 
-    await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
-
-    # Ранкові завершились раніше 18:00 — одразу стартуємо вечірню сесію без очікування cron
+    # Після ранкових (або якщо їх не було) — одразу вечірній fetch+дзвінки
     now = datetime.now(ZoneInfo("Europe/Kyiv"))
     if now.hour < SCHEDULER_EVENING_CALL_END_HOUR:
+        if not await _has_pending_tasks("evening"):
+            await _fetch_evening()
         if await _has_pending_tasks("evening"):
             logger.info(f"[SCHEDULER] Ранкові завершено о {now.strftime('%H:%M')} — стартуємо вечірню сесію одразу")
             await _process_evening_calls()
-        else:
-            await _fetch_evening()
-            if await _has_pending_tasks("evening"):
-                logger.info(f"[SCHEDULER] Ранкові завершено о {now.strftime('%H:%M')} — стартуємо вечірню сесію одразу")
-                await _process_evening_calls()
 
 async def _process_evening_calls() -> None:
     if not await _has_pending_tasks("evening"):
