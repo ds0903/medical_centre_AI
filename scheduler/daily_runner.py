@@ -533,6 +533,11 @@ async def _cleanup_logs() -> None:
     logger.info(f"[CLEANUP] Видалено {deleted} лог-файлів дзвінків")
 
 
+def _is_workday() -> bool:
+    """Пн-Пт = робочі дні. Сб-Нд = вихідні."""
+    return datetime.now(ZoneInfo("Europe/Kyiv")).weekday() < 5  # 0=Пн, 5=Сб, 6=Нд
+
+
 async def _has_pending_tasks(call_session: str) -> bool:
     """Перевіряє чи є в БД pending задачі для вказаної сесії."""
     async with get_session() as session:
@@ -546,15 +551,25 @@ async def _has_pending_tasks(call_session: str) -> bool:
 
 
 async def _fetch_morning() -> None:
+    if not _is_workday():
+        logger.info("[SCHEDULER] Вихідний день — fetch пропускаємо")
+        return
     await fetch_and_schedule_calls(shift=0)
 
 async def _fetch_evening() -> None:
+    if not _is_workday():
+        logger.info("[SCHEDULER] Вихідний день — fetch пропускаємо")
+        return
     # Fetch сам пропустить дублікати — повторний виклик безпечний
     await fetch_and_schedule_calls(shift=1)
 
 async def _process_morning_calls() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
+    if not _is_workday():
+        logger.info("[SCHEDULER] Вихідний день — ранковий обдзвін пропускаємо")
+        return
 
     if await _has_pending_tasks("morning"):
         await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
@@ -569,6 +584,9 @@ async def _process_morning_calls() -> None:
     await _process_evening_calls()
 
 async def _process_evening_calls() -> None:
+    if not _is_workday():
+        logger.info("[SCHEDULER] Вихідний день — вечірній обдзвін пропускаємо")
+        return
     if not await _has_pending_tasks("evening"):
         logger.info("[SCHEDULER] evening_calls: немає pending задач — пропускаємо")
         return
