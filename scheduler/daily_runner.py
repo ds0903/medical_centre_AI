@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from agents.block1.agent import Block1Agent
 from config import (
@@ -554,6 +554,12 @@ async def _fetch_morning() -> None:
     if not _is_workday():
         logger.info("[SCHEDULER] Вихідний день — fetch пропускаємо")
         return
+    # Очищаємо залишки з попереднього дня перед новим fetch
+    async with get_session() as session:
+        result = await session.execute(delete(CallTask))
+        deleted = result.rowcount
+        if deleted:
+            logger.info(f"[FETCH] Очищено {deleted} старих задач перед ранковим fetch")
     await fetch_and_schedule_calls(shift=0)
 
 async def _fetch_evening() -> None:
