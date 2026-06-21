@@ -71,13 +71,21 @@ def _format_visit_time(iso_datetime: str) -> str:
     return f"{dt.hour}:{dt.minute:02d}"
 
 
+def _visit_label(visit: dict) -> str:
+    """Пріоритет назви для озвучення: аналог з довідника → поле 'Процедура' → спеціалізація."""
+    from services.sheets_loader import find_by_appointment
+    appointment = visit.get("appointment", "")
+    result = find_by_appointment(appointment) if appointment else None
+    analog_name = result["analog_name"] if result else ""
+    return analog_name or appointment or visit.get("doctor_specialization", visit.get("doctor_name", ""))
+
+
 def _format_reminder_list(visit: dict) -> str:
     """Готовий текст для multi-visit промпту — перелік всіх записів."""
-    doctor_spec = visit.get("doctor_specialization", visit["doctor_name"])
     linked = visit.get("linked_visits", [])
-    items = [f"[до/на] {doctor_spec} — {_format_visit_date(visit['visit_datetime'])}"]
+    items = [f"[до/на] {_visit_label(visit)} — {_format_visit_date(visit['visit_datetime'])}"]
     for v in linked:
-        items.append(f"[до/на] {v['doctor_specialization']} — {_format_visit_date(v['visit_datetime'])}")
+        items.append(f"[до/на] {_visit_label(v)} — {_format_visit_date(v['visit_datetime'])}")
     count = len(items)
     lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} в цей день:"]
     for item in items:
@@ -93,7 +101,7 @@ def _format_linked_visits(linked: list) -> str:
     # Subsequent lines need their own 4-space indent since they're new lines after substitution.
     lines = ["ДОДАТКОВІ ЗАПИСИ ЦЬОГО ПАЦІЄНТА (той самий день):"]
     for v in linked:
-        lines.append(f"      • {v['doctor_specialization']} — {_format_visit_date(v['visit_datetime'])}")
+        lines.append(f"      • {_visit_label(v)} — {_format_visit_date(v['visit_datetime'])}")
     lines.append("    ⚠ СЦЕНАРІЙ ДЛЯ КІЛЬКОХ ЗАПИСІВ — застосовуй обов'язково (дивись нижче).")
     return "\n".join(lines)
 

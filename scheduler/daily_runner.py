@@ -291,6 +291,8 @@ async def _process_single_call(task: CallTask, linked_tasks: list | None = None)
                 "doctor_name": lt.doctor_name,
                 "doctor_specialization": lt_spec,
                 "visit_datetime": lt.visit_datetime.isoformat(),
+                "appointment": lt.appointment or "",
+                "preparation": lt.preparation or "",
             })
         logger.info(f"[CALLS] linked_visits для промпту: {[v['doctor_specialization'] for v in linked_visit_list]}")
 
