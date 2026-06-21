@@ -5,10 +5,20 @@
 
 import logging
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import yaml
+
+_TIME_DOT_RE = re.compile(r"\b(\d{1,2})\.(\d{2})\b")
+
+
+def _normalize_time_dots(text: str) -> str:
+    """'8.45 - 9.00' → '8:45 - 9:00' — крапка в часі плутає модель (вимовляє 'крапка')."""
+    if not text:
+        return text
+    return _TIME_DOT_RE.sub(r"\1:\2", text)
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +206,7 @@ def build_system_prompt(visit: dict) -> str:
         appointment=visit.get("appointment", ""),
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
-        message=visit.get("message", ""),
+        message=_normalize_time_dots(visit.get("message", "")),
         greeting=_get_greeting(),
         today_date=_get_today_date(),
         clinic_address=clinic_address,
