@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from agents.block1.agent import Block1Agent
 from config import (
@@ -49,6 +49,31 @@ logger = logging.getLogger(__name__)
 # Архівування — перенос call_tasks → call_history
 # ---------------------------------------------------------------------------
 
+def _task_to_history(task: CallTask) -> CallHistory:
+    return CallHistory(
+        id=task.id,
+        visit_id=task.visit_id,
+        patient_name=task.patient_name,
+        patient_phone=task.patient_phone,
+        doctor_name=task.doctor_name,
+        doctor_specialization=task.doctor_specialization,
+        place_id=task.place_id or "",
+        visit_datetime=task.visit_datetime,
+        message=task.message,
+        appointment=task.appointment,
+        preparation=task.preparation,
+        call_session=task.call_session,
+        status=task.status,
+        result=task.result,
+        attempts=task.attempts,
+        call_duration=task.call_duration,
+        created_at=task.created_at,
+        completed_at=task.completed_at,
+        error_message=task.error_message,
+        operator_note=task.operator_note,
+    )
+
+
 async def _archive_call_tasks() -> None:
     """Перенести всі задачі з call_tasks в call_history і очистити чергу."""
     async with get_session() as session:
@@ -59,31 +84,34 @@ async def _archive_call_tasks() -> None:
             return
 
         for task in tasks:
-            session.add(CallHistory(
-                id=task.id,
-                visit_id=task.visit_id,
-                patient_name=task.patient_name,
-                patient_phone=task.patient_phone,
-                doctor_name=task.doctor_name,
-                doctor_specialization=task.doctor_specialization,
-                place_id=task.place_id or "",
-                visit_datetime=task.visit_datetime,
-                message=task.message,
-                appointment=task.appointment,
-                preparation=task.preparation,
-                call_session=task.call_session,
-                status=task.status,
-                result=task.result,
-                attempts=task.attempts,
-                call_duration=task.call_duration,
-                created_at=task.created_at,
-                completed_at=task.completed_at,
-                error_message=task.error_message,
-                operator_note=task.operator_note,
-            ))
+            session.add(_task_to_history(task))
             await session.delete(task)
 
     logger.info(f"[ARCHIVE] Перенесено {len(tasks)} задач в call_history")
+
+
+async def _archive_stale_tasks() -> None:
+    """Архівує (переносить в call_history, НЕ видаляє) задачі створені НЕ сьогодні —
+    захист на випадок якщо архівування минулого дня не відбулось (краш, пропущена вечірня сесія тощо).
+    Викликається перед кожним fetch, щоб новий день завжди починався з чистої черги без втрати даних.
+    """
+    today_kyiv = datetime.now(ZoneInfo("Europe/Kyiv")).date()
+    async with get_session() as session:
+        result = await session.execute(select(CallTask))
+        tasks = result.scalars().all()
+
+        stale = [
+            t for t in tasks
+            if t.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/Kyiv")).date() != today_kyiv
+        ]
+        if not stale:
+            return
+
+        for task in stale:
+            session.add(_task_to_history(task))
+            await session.delete(task)
+
+    logger.info(f"[ARCHIVE] Архівовано {len(stale)} застарілих задач (не сьогоднішніх) перед fetch")
 
 
 # ---------------------------------------------------------------------------
@@ -577,18 +605,18 @@ async def _fetch_morning() -> None:
     if not _is_workday():
         logger.info("[SCHEDULER] Вихідний день — fetch пропускаємо")
         return
-    # Очищаємо залишки з попереднього дня перед новим fetch
-    async with get_session() as session:
-        result = await session.execute(delete(CallTask))
-        deleted = result.rowcount
-        if deleted:
-            logger.info(f"[FETCH] Очищено {deleted} старих задач перед ранковим fetch")
+    # Архівуємо залишки з попереднього дня (не видаляємо — переносимо в історію) перед новим fetch
+    if SCHEDULER_SAFETY_GUARDS:
+        await _archive_stale_tasks()
     await fetch_and_schedule_calls(shift=0)
 
 async def _fetch_evening() -> None:
     if not _is_workday():
         logger.info("[SCHEDULER] Вихідний день — fetch пропускаємо")
         return
+    # Архівуємо залишки НЕ сьогоднішні (сьогоднішні ранкові задачі лишаються — їх ще не архівовано)
+    if SCHEDULER_SAFETY_GUARDS:
+        await _archive_stale_tasks()
     # Fetch сам пропустить дублікати — повторний виклик безпечний
     await fetch_and_schedule_calls(shift=1)
 
