@@ -98,12 +98,14 @@ async def run_production() -> None:
             await fetch_and_schedule_calls(shift=0)
     else:
         # Графік увімкнено — відновлення після рестарту по стану БД
-        from scheduler.daily_runner import _has_pending_tasks
+        from scheduler.daily_runner import _has_pending_tasks, _is_workday
         now = datetime.now(ZoneInfo("Europe/Kyiv"))
         hour = now.hour
         logger.info(f"[MAIN] Відновлення після рестарту — час {now.strftime('%H:%M')}")
 
-        if hour >= SCHEDULER_EVENING_FETCH_HOUR:
+        if not _is_workday():
+            logger.info("[MAIN] Вихідний день — fetch/дзвінки при відновленні пропускаємо")
+        elif hour >= SCHEDULER_EVENING_FETCH_HOUR:
             # Вечірня зона
             if await _has_pending_tasks("evening"):
                 if SCHEDULER_EVENING_CALL_HOUR <= hour < SCHEDULER_EVENING_CALL_END_HOUR:

@@ -34,6 +34,7 @@ from config import (
     SCHEDULER_MORNING_CALL_MINUTE,
     SCHEDULER_MORNING_FETCH_HOUR,
     SCHEDULER_MORNING_FETCH_MINUTE,
+    SCHEDULER_SAFETY_GUARDS,
     SKIP_SCHEDULER,
 )
 from db.database import get_session
@@ -185,6 +186,24 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
         if not tasks:
             logger.info(f"[CALLS] {label}: немає задач — завершуємо")
             break
+
+        # Захист: дзвонимо тільки по задачах створених СЬОГОДНІ — щоб не подзвонити
+        # випадково по залишках з учора якщо щось не очистилось перед fetch.
+        if SCHEDULER_SAFETY_GUARDS:
+            today_kyiv = datetime.now(_kyiv).date()
+            before = len(tasks)
+            tasks = [
+                t for t in tasks
+                if t.created_at.replace(tzinfo=timezone.utc).astimezone(_kyiv).date() == today_kyiv
+            ]
+            skipped_old = before - len(tasks)
+            if skipped_old:
+                logger.warning(
+                    f"[CALLS] {label}: пропущено {skipped_old} задач створених НЕ сьогодні (захист SCHEDULER_SAFETY_GUARDS)"
+                )
+            if not tasks:
+                logger.info(f"[CALLS] {label}: після фільтру 'тільки сьогодні' немає задач — завершуємо")
+                break
 
         if ALLOWED_PHONES:
             tasks = [t for t in tasks if t.patient_phone in ALLOWED_PHONES]
@@ -536,7 +555,9 @@ async def _cleanup_logs() -> None:
 
 
 def _is_workday() -> bool:
-    """Пн-Пт = робочі дні. Сб-Нд = вихідні."""
+    """Пн-Пт = робочі дні. Сб-Нд = вихідні. Вимикається через SCHEDULER_SAFETY_GUARDS=false."""
+    if not SCHEDULER_SAFETY_GUARDS:
+        return True
     return datetime.now(ZoneInfo("Europe/Kyiv")).weekday() < 5  # 0=Пн, 5=Сб, 6=Нд
 
 

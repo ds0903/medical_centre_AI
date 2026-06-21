@@ -48,6 +48,11 @@ SKIP_FETCH = os.getenv("SKIP_FETCH", "false").lower() == "true"
 SKIP_SCHEDULER = os.getenv("SKIP_SCHEDULER", "false").lower() == "true"
 SKIP_POST = os.getenv("SKIP_POST", "false").lower() == "true"  # не надсилати POST-запити до API клініки (update_state, reschedule)
 
+# Захист від помилкових дзвінків: вимикає (1) дзвінки в суботу/неділю
+# і (2) дзвінки по задачах створених не сьогодні (залишки з попереднього дня).
+# false — обидві перевірки вимкнені (для тестування / ручного режиму).
+SCHEDULER_SAFETY_GUARDS = os.getenv("SCHEDULER_SAFETY_GUARDS", "true").lower() != "false"
+
 # Планувальник — ранкова сесія (shift=0: дзвонимо сьогоднішнім пацієнтам)
 SCHEDULER_MORNING_FETCH_HOUR   = int(os.getenv("SCHEDULER_MORNING_FETCH_HOUR",   "8"))
 SCHEDULER_MORNING_FETCH_MINUTE = int(os.getenv("SCHEDULER_MORNING_FETCH_MINUTE", "0"))
