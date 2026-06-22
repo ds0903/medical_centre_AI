@@ -81,7 +81,7 @@ async def load_services_catalog() -> None:
     _services_cache = await fetch_services_catalog()
 
 
-_SPLIT_RE = re.compile(r"[\s\-\(\)/,\.]+")
+_SPLIT_RE = re.compile(r"[\s\-\(\)/,\.;:]+")
 
 
 def _score(query_words: list[str], name: str) -> int:
@@ -114,7 +114,7 @@ def find_by_appointment(appointment_name: str) -> dict | None:
             return {"analog_name": item["analog_name"], "preparation": item["preparation"], "row_num": item["row_num"]}
 
     # Нечіткий по словах
-    words = [w for w in appt_lower.split() if len(w) > 2]
+    words = [w for w in _SPLIT_RE.split(appt_lower) if len(w) > 2]
     if not words:
         return None
 
@@ -124,7 +124,10 @@ def find_by_appointment(appointment_name: str) -> dict | None:
         if s > best_score:
             best_score, best_item = s, item
 
-    if best_item and best_score >= max(1, len(words) // 2):
+    # Поріг підвищено до "більшість слів" (раніше "половина") — щоб загальні
+    # слова типу "прийом лікаря дитячий" не перебивали реальну спеціалізацію,
+    # коли вона не зматчилась через пунктуацію/відмінок.
+    if best_item and best_score > len(words) // 2:
         return {"analog_name": best_item["analog_name"], "preparation": best_item["preparation"], "row_num": best_item["row_num"]}
 
     return None
@@ -139,7 +142,7 @@ def search_service(query: str) -> list[dict]:
         return []
 
     query_lower = query.lower().strip()
-    words = [w for w in query_lower.split() if len(w) > 2]
+    words = [w for w in _SPLIT_RE.split(query_lower) if len(w) > 2]
     if not words:
         return []
 
