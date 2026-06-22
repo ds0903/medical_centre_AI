@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from services.sheets_loader import clean_appointment_name
+
 _TIME_DOT_RE = re.compile(r"\b(\d{1,2})\.(\d{2})\b")
 
 
@@ -77,7 +79,9 @@ def _visit_label(visit: dict) -> str:
     appointment = visit.get("appointment", "")
     result = find_by_appointment(appointment) if appointment else None
     analog_name = result["analog_name"] if result else ""
-    return analog_name or appointment or visit.get("doctor_specialization", visit.get("doctor_name", ""))
+    # Якщо аналогу нема — озвучуємо сире поле "Процедура", але БЕЗ касового коду (лідируючі цифри з API).
+    appointment_clean = clean_appointment_name(appointment) if appointment else appointment
+    return analog_name or appointment_clean or visit.get("doctor_specialization", visit.get("doctor_name", ""))
 
 
 def _format_reminder_list(visit: dict) -> str:
@@ -134,7 +138,7 @@ def _fetch_service_info(visit: dict) -> tuple[str, str, str]:
     preparation_text = preparation if preparation else "Спеціальна підготовка не потрібна."
     lines.append(f"• Підготовка: {preparation_text}")
 
-    label = analog_name or appointment or "прийом"
+    label = analog_name or clean_appointment_name(appointment) or "прийом"
     full_block = (
         f"\n\nІНФО ПРО ПРОЦЕДУРУ «{label}» (вже знайдено — ⚠ ЗАБОРОНЕНО викликати get_preparation_info, відповідай звідси):\n"
         + "\n".join(lines)
@@ -211,7 +215,7 @@ def build_system_prompt(visit: dict) -> str:
         patient_phone=visit.get("patient_phone", ""),
         doctor_name=visit["doctor_name"],
         doctor_specialization=visit.get("doctor_specialization", visit["doctor_name"]),
-        appointment=visit.get("appointment", ""),
+        appointment=clean_appointment_name(visit.get("appointment", "")),
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
         message=_normalize_time_dots(visit.get("message", "")),

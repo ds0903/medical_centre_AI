@@ -93,6 +93,16 @@ def _score(query_words: list[str], name: str) -> int:
 
 
 _LEADING_DIGITS_RE = re.compile(r"^\d+[\s\.\-]*")
+_TRAILING_PUNCT_RE = re.compile(r"[\s;:,.\-]+$")
+
+
+def clean_appointment_name(appointment_name: str) -> str:
+    """Прибирає касовий код (лідируючі цифри з API) і кінцеву пунктуацію — використовується,
+    коли аналог з довідника не знайдено і озвучується сире поле 'Процедура'."""
+    if not appointment_name:
+        return appointment_name
+    cleaned = _LEADING_DIGITS_RE.sub("", appointment_name.strip())
+    return _TRAILING_PUNCT_RE.sub("", cleaned)
 
 
 def find_by_appointment(appointment_name: str) -> dict | None:
@@ -104,13 +114,13 @@ def find_by_appointment(appointment_name: str) -> dict | None:
     if not _services_cache or not appointment_name:
         return None
 
-    # Видаляємо лідируючі цифри (напр. "123 Прийом лікаря" → "Прийом лікаря")
-    cleaned = _LEADING_DIGITS_RE.sub("", appointment_name.strip())
-    appt_lower = cleaned.lower()
+    # Касовий код / кінцева пунктуація з API ламають точний збіг з довідником.
+    appt_lower = clean_appointment_name(appointment_name).lower()
 
-    # Точний збіг
+    # Точний збіг (порівнюємо теж очищену від кінцевої пунктуації назву з довідника)
     for item in _services_cache:
-        if item["official_name"].lower() == appt_lower:
+        official_clean = _TRAILING_PUNCT_RE.sub("", item["official_name"].strip()).lower()
+        if official_clean == appt_lower:
             return {"analog_name": item["analog_name"], "preparation": item["preparation"], "row_num": item["row_num"]}
 
     # Нечіткий по словах
