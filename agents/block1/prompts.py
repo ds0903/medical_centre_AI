@@ -255,6 +255,7 @@ def build_system_prompt(visit: dict) -> str:
         doctor_name=visit["doctor_name"],
         doctor_specialization=visit.get("doctor_specialization", visit["doctor_name"]),
         appointment=clean_appointment_name(visit.get("appointment", "")),
+        service_label=_visit_label(visit),
         visit_date=_format_visit_date(visit["visit_datetime"]),
         visit_id=visit["visit_id"],
         message=_normalize_time_dots(visit.get("message", "")),
