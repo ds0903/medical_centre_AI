@@ -91,7 +91,11 @@ def _format_reminder_list(visit: dict) -> str:
     for v in linked:
         items.append(f"[до/на] {_visit_label(v)} — {_format_visit_date(v['visit_datetime'])}")
     count = len(items)
-    lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} в цей день:"]
+    dt = datetime.fromisoformat(visit['visit_datetime'])
+    date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
+    # ⚠ НЕ "в цей день" — пацієнт не чує яка саме дата, питає "на завтра?".
+    # Дата мусить бути сказана прямо тут, а не лише всередині кожного пункту списку.
+    lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} {date_str}:"]
     for item in items:
         lines.append(f" — {item}")
     lines.append("Ви плануєте прийти на всі?")
