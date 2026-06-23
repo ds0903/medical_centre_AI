@@ -46,11 +46,46 @@ def _get_today_date() -> str:
     return f"{weekday}, {now.day} {month} {now.year} р."
 
 
+_HOURS_DATIVE_UA = [
+    "дванадцятій", "першій", "другій", "третій", "четвертій", "п'ятій",
+    "шостій", "сьомій", "восьмій", "дев'ятій", "десятій", "одинадцятій",
+]  # індекс = hour % 12
+
+_MIN_ONES_UA = ["", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять"]
+_MIN_TEENS_UA = [
+    "десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять",
+    "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять",
+]
+_MIN_TENS_UA = ["", "", "двадцять", "тридцять", "сорок", "п'ятдесят"]
+
+
+def _spoken_minutes(minute: int) -> str:
+    """Хвилини словами: 0→'', 5→'п'ять', 20→'двадцять', 45→'сорок п'ять'."""
+    if minute == 0:
+        return ""
+    if minute < 10:
+        return _MIN_ONES_UA[minute]
+    if minute < 20:
+        return _MIN_TEENS_UA[minute - 10]
+    tens, ones = divmod(minute, 10)
+    word = _MIN_TENS_UA[tens]
+    return f"{word} {_MIN_ONES_UA[ones]}" if ones else word
+
+
+def _spoken_time(hour: int, minute: int) -> str:
+    """Готова вимовлена фраза часу: (13, 40) → 'о першій сорок'. Рахує Python — LLM не вигадує."""
+    hour_word = _HOURS_DATIVE_UA[hour % 12]
+    prefix = "об" if hour_word.startswith(("о", "а")) else "о"
+    minutes_word = _spoken_minutes(minute)
+    return f"{prefix} {hour_word} {minutes_word}".strip()
+
+
 def _format_visit_date(iso_datetime: str) -> str:
-    """Перетворює ISO дату на читабельний рядок: '19 лютого о 14:00'."""
+    """Перетворює ISO дату на читабельний рядок з готовою вимовленою фразою часу:
+    '19 лютого о першій сорок' — час вже словами, LLM більше НЕ конвертує цифри сама."""
     dt = datetime.fromisoformat(iso_datetime)
     month = _MONTHS_UA[dt.month - 1]
-    return f"{dt.day} {month} о {dt.hour}:{dt.minute:02d}"
+    return f"{dt.day} {month} {_spoken_time(dt.hour, dt.minute)}"
 
 
 def _get_greeting() -> str:
