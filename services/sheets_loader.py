@@ -83,12 +83,20 @@ async def load_services_catalog() -> None:
 
 _SPLIT_RE = re.compile(r"[\s\-\(\)/,\.;:]+")
 
+# Бухгалтерські/юридичні слова що присутні в 50+ рядках каталогу — не описують процедуру,
+# тільки спотворюють fuzzy score (напр. "без урахування витрат по контрастуванню").
+_FUZZY_STOPWORDS = frozenset({
+    "без", "по", "та", "для", "при", "або", "що", "від", "до", "на", "за",
+    "урахування", "витрат", "контрастуванню", "посиленням", "контрастним",
+    "посилення", "контраст", "включно", "включаючи", "уточнення",
+})
+
 
 def _score(query_words: list[str], name: str) -> int:
     name_words = _SPLIT_RE.split(name.lower())
     return sum(
         1 for w in query_words
-        if any(nw == w or nw.startswith(w) for nw in name_words if nw)
+        if w not in _FUZZY_STOPWORDS and any(nw == w or nw.startswith(w) for nw in name_words if nw)
     )
 
 
@@ -123,8 +131,8 @@ def find_by_appointment(appointment_name: str) -> dict | None:
         if official_clean == appt_lower:
             return {"analog_name": item["analog_name"], "preparation": item["preparation"], "row_num": item["row_num"]}
 
-    # Нечіткий по словах
-    words = [w for w in _SPLIT_RE.split(appt_lower) if len(w) > 2]
+    # Нечіткий по словах (без стоп-слів — вони є в десятках рядків і спотворюють score)
+    words = [w for w in _SPLIT_RE.split(appt_lower) if len(w) > 2 and w not in _FUZZY_STOPWORDS]
     if not words:
         return None
 

@@ -239,7 +239,9 @@ class Block1Agent:
     # ------------------------------------------------------------------
 
     def _build_config(self, resume_handle: str | None = None) -> types.LiveConnectConfig:
-        prompt = build_system_prompt(self.visit)
+        if not hasattr(self, '_cached_prompt'):
+            self._cached_prompt = build_system_prompt(self.visit)
+        prompt = self._cached_prompt
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(

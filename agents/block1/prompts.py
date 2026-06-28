@@ -133,7 +133,7 @@ def _format_reminder_list(visit: dict) -> str:
     lines = [f"У вас {count} {'запис' if count == 1 else 'записи' if count < 5 else 'записів'} {date_str}:"]
     for item in items:
         lines.append(f" — {item}")
-    lines.append("Ви плануєте прийти на всі?")
+    lines.append("Ви плануєте прийти на всі записи?")
     return "\n    ".join(lines)
 
 
