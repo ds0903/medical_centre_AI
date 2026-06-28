@@ -55,6 +55,24 @@ def _make_headers() -> dict:
 # Отримання даних
 # ---------------------------------------------------------------------------
 
+async def update_statuses() -> None:
+    """POST /bridge/call/updatestatuses — оновити статуси перед fetch."""
+    if DEBUG:
+        logger.debug("[DEBUG] update_statuses: пропускаємо")
+        return
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{CLINIC_API_URL}/bridge/call/updatestatuses",
+            headers=_make_headers(),
+            json={"fields": []},
+        ) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                logger.warning(f"[API] updatestatuses HTTP {resp.status}: {body[:200]}")
+            else:
+                logger.info("[API] updatestatuses → ok")
+
+
 async def get_upcoming_visits(shift: int) -> list[dict]:
     """
     Отримати список записів на дзвінки з API клініки.
