@@ -382,7 +382,7 @@ async def handle_tool_call(
         # Другий виклик (з датою) також бере з кешу — без повторного HTTP запиту.
         raw = call_cache.get("__raw_slots")
         if raw is None:
-            raw = await clinic_api.get_doctor_slots(visit_context["doctor_name"])
+            raw = await clinic_api.get_doctor_slots(visit_context["visit_id"])
             if raw:
                 call_cache["__raw_slots"] = raw
         if not raw:

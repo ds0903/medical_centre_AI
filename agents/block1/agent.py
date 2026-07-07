@@ -1365,7 +1365,7 @@ class Block1Agent:
                 async def _prefetch_slots() -> None:
                     try:
                         from services import clinic_api as _capi
-                        _raw = await _capi.get_doctor_slots(visit_context["doctor_name"])
+                        _raw = await _capi.get_doctor_slots(visit_context["visit_id"])
                         _call_cache["__raw_slots"] = _raw if _raw is not None else []
                         logger.debug(f"[AGENT] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів кешовано")
                     except Exception as _e:
@@ -1458,7 +1458,7 @@ class Block1Agent:
                         try:
                             from services import clinic_api as _capi2
                             _raw = await asyncio.wait_for(
-                                _capi2.get_doctor_slots(visit_context["doctor_name"]), timeout=2.0
+                                _capi2.get_doctor_slots(visit_context["visit_id"]), timeout=2.0
                             )
                             _call_cache["__raw_slots"] = _raw if _raw is not None else []
                         except Exception:
@@ -1617,7 +1617,7 @@ class Block1Agent:
         async def _warmup_prefetch() -> None:
             try:
                 from services import clinic_api as _capi
-                _raw = await _capi.get_doctor_slots(self.visit.get("doctor_name", ""))
+                _raw = await _capi.get_doctor_slots(self.visit.get("visit_id", ""))
                 self._prefetched_raw_slots = _raw if _raw is not None else []
                 logger.debug(f"[AGENT] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів кешовано")
             except Exception as _e:

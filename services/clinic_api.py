@@ -187,12 +187,14 @@ async def check_call_enabled(visit_id: str) -> bool:
             return True
 
 
-async def get_doctor_slots(doctor_name: str) -> list[dict]:
+async def get_doctor_slots(slot_id: str) -> list[dict]:
     """
     Отримати вільні слоти для запису до лікаря.
 
     API: POST {CLINIC_API_URL}/bridge/call/doctorslots
-    Повертає: [{ID, START_E}, ...] — вже відфільтровані сервером (макс 5 робочих днів)
+    Параметр: slot_id — ID поточного слота запису пацієнта (visit_id).
+    API знаходить наступний вільний слот того ж лікаря і повертає вільні слоти на 3 дні вперед.
+    Повертає: [{ID, START_E}, ...]
     """
     if DEBUG:
         base = datetime.now().replace(second=0, microsecond=0, minute=0)
@@ -210,14 +212,14 @@ async def get_doctor_slots(doctor_name: str) -> list[dict]:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/doctorslots",
             headers=_make_headers(),
-            json={"fields": [doctor_name.strip()]},
+            json={"fields": [str(slot_id)]},
         ) as resp:
             resp.raise_for_status()
             raw_text = await resp.text()
             logger.info(f"[API] doctorslots HTTP {resp.status} → {raw_text[:300]}")
             data = await resp.json(content_type=None)
             slots = data if isinstance(data, list) else data.get("slots", data.get("SLOTS", data.get("data", [])))
-            logger.info(f"[API] doctorslots → {len(slots)} слотів для '{doctor_name}'")
+            logger.info(f"[API] doctorslots → {len(slots)} слотів для slot_id={slot_id}")
             return slots
 
 
