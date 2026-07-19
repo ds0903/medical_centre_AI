@@ -1625,6 +1625,25 @@ class Block1Agent:
 
         prefetch_task = asyncio.create_task(_warmup_prefetch(), name="warmup_prefetch_slots")
 
+        # AI верифікація назви послуги — паралельно з prefetch.
+        # Заповнює _ai_verified_cache в sheets_loader до першого _build_config().
+        async def _warmup_ai_verify() -> None:
+            try:
+                from services.sheets_loader import ai_verify_service
+                visits = [self.visit] + self.visit.get("linked_visits", [])
+                await asyncio.gather(
+                    *[
+                        ai_verify_service(v.get("appointment", ""), v.get("doctor_specialization", ""))
+                        for v in visits
+                    ],
+                    return_exceptions=True,
+                )
+                logger.debug("[AGENT] Warmup AI verify: завершено")
+            except Exception as _e:
+                logger.debug(f"[AGENT] Warmup AI verify failed (non-critical): {_e!r}")
+
+        ai_verify_task = asyncio.create_task(_warmup_ai_verify(), name="ai_service_verify")
+
         def _start_monitor(initial_session, initial_cm) -> asyncio.Task:
             """
             Запускає фоновий монітор warmup-сесії.
@@ -1736,6 +1755,13 @@ class Block1Agent:
                 if resp.server_content and resp.server_content.turn_complete:
                     break
 
+        # Чекаємо AI верифікацію перед _build_config() — кеш має бути заповнений
+        if not ai_verify_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(ai_verify_task), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.debug("[AGENT] AI service verify timeout — _build_config() використає fuzzy")
+
         try:
             _warmup_cm = self.client.aio.live.connect(
                 model=GEMINI_MODEL,
@@ -1801,6 +1827,8 @@ class Block1Agent:
                     pass
             if not prefetch_task.done():
                 prefetch_task.cancel()
+            if not ai_verify_task.done():
+                ai_verify_task.cancel()
 
     # ------------------------------------------------------------------
     # Коментар до дзвінка + класифікація
