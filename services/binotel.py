@@ -273,10 +273,11 @@ class BinotelCall:
         logger.info(f"[BINOTEL] Передача оператору ({BINOTEL_OPERATOR_NUMBER}): {reason}")
         if self.call_id:
             await _rest.attended_transfer(self.call_id, BINOTEL_OPERATOR_NUMBER)
-            # Чекаємо поки Binotel збудує міст до оператора перш ніж закривати SIP.
-            # Без затримки пацієнт відключається — SIP рветься раніше ніж bridge встановлено.
-            await asyncio.sleep(5.0)
-        self._sip.hangup()
+            # НЕ викликаємо sip.hangup() після attended_transfer — Binotel сам завершить
+            # SIP сесію бота після того як міст до оператора встановлено.
+            # Явний hangup від бота розриває весь міст і пацієнт відключається.
+        else:
+            self._sip.hangup()
 
 
 # ---------------------------------------------------------------------------
