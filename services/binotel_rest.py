@@ -91,6 +91,7 @@ class BinotelRestClient:
         """Отримати список співробітників і їх статус (online/offline)."""
         result = await self.send_request("settings/list-of-employees", {})
         if result.get("status") != "success":
+            logger.warning(f"[BINOTEL REST] get_employees failed: {result}")
             return []
         return list(result.get("listOfEmployees", {}).values())
 
@@ -112,7 +113,8 @@ class BinotelRestClient:
                 if not isinstance(endpoint, dict):
                     continue
                 if str(endpoint.get("internalNumber")) == str(internal_number):
-                    status = endpoint.get("status", {}).get("status", "offline")
+                    st = endpoint.get("status", {})
+                    status = st.get("preparedStatus") or st.get("sip", {}).get("status", "offline")
                     logger.info(f"[BINOTEL REST] Extension {internal_number} статус: '{status}'")
                     if status in ("online", "inuse", "ringing"):
                         logger.info(f"[BINOTEL REST] Extension {internal_number} — Онлайн ✓")
