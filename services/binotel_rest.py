@@ -233,6 +233,68 @@ class BinotelRestClient:
         details = result.get("callDetails", {})
         return details.get(str(general_call_id), {})
 
+    async def get_calls_for_period(
+        self,
+        date_from: str,
+        date_to: str,
+        internal_numbers: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        Отримати список завершених дзвінків за період.
+
+        Args:
+            date_from: "YYYY-MM-DD HH:MM:SS"
+            date_to:   "YYYY-MM-DD HH:MM:SS"
+            internal_numbers: список внутрішніх номерів (None = всі)
+
+        Returns:
+            Список dict з полями: callId, internalNumber, externalNumber,
+            dateTime, disposition, billsec, recordingUrl тощо.
+
+        Binotel endpoint: stats/calls-for-period
+        """
+        params: dict = {"dateFrom": date_from, "dateTo": date_to}
+        if internal_numbers:
+            params["internalNumbers"] = internal_numbers
+
+        result = await self.send_request("stats/calls-for-period", params)
+        if result.get("status") != "success":
+            logger.warning(f"[BINOTEL REST] get_calls_for_period помилка: {result.get('message')}")
+            return []
+
+        raw = result.get("listOfCalls", result.get("calls", {}))
+        if isinstance(raw, dict):
+            calls = list(raw.values())
+        elif isinstance(raw, list):
+            calls = raw
+        else:
+            calls = []
+
+        logger.info(f"[BINOTEL REST] get_calls_for_period: {len(calls)} дзвінків")
+        return calls
+
+    async def get_recording(self, recording_url: str) -> bytes:
+        """
+        Завантажити аудіо запис дзвінка за URL (з поля recordingUrl).
+
+        Returns: bytes аудіо (MP3 / WAV залежно від Binotel налаштувань).
+        Raises: aiohttp.ClientError або OSError при помилці.
+        """
+        if not recording_url:
+            raise ValueError("recording_url порожній")
+
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                recording_url,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
+                logger.info(
+                    f"[BINOTEL REST] Завантажено запис: {len(data)} байт ({recording_url[:80]}...)"
+                )
+                return data
+
     async def wait_for_answer(
         self, general_call_id: str, timeout: int = 60
     ) -> bool:

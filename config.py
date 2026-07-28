@@ -117,3 +117,35 @@ B2_CALL_DAYS_BEFORE = int(os.getenv("B2_CALL_DAYS_BEFORE", "2"))
 
 # Максимальна кількість спроб при недодзвоні (default: 2)
 B2_MAX_RETRY = int(os.getenv("B2_MAX_RETRY", "2"))
+
+# ---------------------------------------------------------------------------
+# Блок 2 — Модуль 2.2: аналіз дзвінків колл-центру
+# ---------------------------------------------------------------------------
+
+# Google Sheets: ID таблиці результатів (обов'язково)
+B2_RESULT_SHEETS_ID   = os.getenv("B2_RESULT_SHEETS_ID", "")
+
+# Google Sheets: назви аркушів (можна в одній таблиці або різних)
+B2_RESULT_SHEET_NAME  = os.getenv("B2_RESULT_SHEET_NAME",  "Результати")
+B2_CONFIG_SHEET_NAME  = os.getenv("B2_CONFIG_SHEET_NAME",  "Конфігурація")
+B2_MARKERS_SHEET_NAME = os.getenv("B2_MARKERS_SHEET_NAME", "Маркери")
+
+# Google Sheets: ID таблиці конфігурації (якщо інша — інакше використовується B2_RESULT_SHEETS_ID)
+B2_CONFIG_SHEETS_ID   = os.getenv("B2_CONFIG_SHEETS_ID", "")
+
+# Шлях до service account credentials (default: credentials.json у корені)
+B2_CREDENTIALS_PATH   = os.getenv("B2_CREDENTIALS_PATH", "credentials.json")
+
+# Як часто опитувати Binotel на нові завершені дзвінки (хвилини, default: 30)
+B2_POLL_INTERVAL_MIN  = int(os.getenv("B2_POLL_INTERVAL_MIN", "30"))
+
+# Лінії для моніторингу (розділені комою; якщо порожньо — використовується дефолтний набір з ТЗ)
+_b2_lines_raw = os.getenv("B2_MONITORED_LINES", "")
+B2_MONITORED_LINES: set[str] = (
+    {l.strip() for l in _b2_lines_raw.split(",") if l.strip()}
+    if _b2_lines_raw else set()  # порожній → використовується хардкод в analyzer.py
+)
+
+# Виключені лінії (не аналізуємо)
+_b2_excl_raw = os.getenv("B2_EXCLUDED_LINES", "910")
+B2_EXCLUDED_LINES: set[str] = {l.strip() for l in _b2_excl_raw.split(",") if l.strip()}

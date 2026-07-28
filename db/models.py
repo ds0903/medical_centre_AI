@@ -210,3 +210,25 @@ class RepeatCallHistory(Base):
             f"<RepeatCallHistory source={self.source_visit_id} patient={self.patient_name} "
             f"result={self.result}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# Блок 2 — Модуль 2.2: дедуплікація аналізованих дзвінків
+# ---------------------------------------------------------------------------
+
+class AnalyzedCall(Base):
+    """Відстежує які дзвінки вже проаналізовано (захист від повторного аналізу)."""
+
+    __tablename__ = "analyzed_calls"
+
+    call_id         = Column(String, primary_key=True)
+    operator_line   = Column(String, nullable=True)
+    call_datetime   = Column(String, nullable=True)
+    analyzed_at     = Column(DateTime, nullable=False,
+                              default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    result_ok       = Column(Integer, nullable=False, default=1)  # 1=OK, 0=помилка
+    sheets_row      = Column(Integer, nullable=True)   # рядок в Google Sheets де збережено результат
+    error_message   = Column(String, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<AnalyzedCall call_id={self.call_id} line={self.operator_line}>"
