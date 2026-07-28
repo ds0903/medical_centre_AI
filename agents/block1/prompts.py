@@ -24,8 +24,8 @@ def _normalize_time_dots(text: str) -> str:
 
 logger = logging.getLogger(__name__)
 
-_PROMPTS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts.yaml")
-_PROMPTS_MULTI_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "prompts_multi.yaml")
+_PROMPTS_PATH = os.path.join(os.path.dirname(__file__), "prompts.yaml")
+_PROMPTS_MULTI_PATH = os.path.join(os.path.dirname(__file__), "prompts_multi.yaml")
 
 _MONTHS_UA = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",

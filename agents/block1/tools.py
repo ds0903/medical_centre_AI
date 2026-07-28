@@ -408,6 +408,8 @@ async def handle_tool_call(
         _dates_weekday: dict[str, str] = {}  # date_str → день тижня
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
+            if dt.weekday() >= 5:  # субота=5, неділя=6 — пропускаємо
+                continue
             date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
             if date_str not in _dates_weekday:
                 _dates_weekday[date_str] = _WEEKDAYS_UA[dt.weekday()]
