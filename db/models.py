@@ -109,3 +109,104 @@ class CallHistory(Base):
             f"<CallHistory visit={self.visit_id} patient={self.patient_name} "
             f"result={self.result}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# Блок 2 — Модуль 2.1: повторні візити
+# ---------------------------------------------------------------------------
+
+class RepeatCallStatus(enum.Enum):
+    pending     = "pending"
+    in_progress = "in_progress"
+    completed   = "completed"
+    failed      = "failed"
+    skipped     = "skipped"
+
+
+class RepeatCallResult(enum.Enum):
+    booked    = "booked"     # Записано на повторний прийом
+    declined  = "declined"   # Відмовився
+    self_book = "self_book"  # Сам запишеться / передзвонить
+    no_answer = "no_answer"  # Не відповів
+    no_result = "no_result"  # Незрозуміло / помилка
+
+
+class RepeatCallTask(Base):
+    """Задача на вихідний дзвінок — Блок 2, Модуль 2.1: нагадування про повторний візит."""
+
+    __tablename__ = "repeat_call_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Дані попереднього візиту (контекст дзвінка)
+    source_visit_id   = Column(String, nullable=False, unique=True, index=True)
+    patient_name      = Column(String, nullable=False)
+    patient_phone     = Column(String, nullable=False)
+    patient_id        = Column(String, nullable=True)
+    previous_visit_date = Column(DateTime, nullable=True)
+    previous_doctor   = Column(String, nullable=True)
+    doctor_id         = Column(String, nullable=True)       # для пошуку слотів
+    doctor_name       = Column(String, nullable=False)
+    doctor_specialization = Column(String, nullable=True)
+    doctor_recommendation = Column(String, nullable=True)   # "через 3 тижні"
+    repeat_visit_date = Column(DateTime, nullable=True)     # цільова дата
+
+    # Статус та результат
+    status           = Column(SAEnum(RepeatCallStatus), nullable=False, default=RepeatCallStatus.pending)
+    result           = Column(SAEnum(RepeatCallResult), nullable=True)
+    decline_category = Column(String, nullable=True)         # одна з 26 категорій
+    new_visit_id     = Column(String, nullable=True)         # ID нового запису якщо booked
+    attempts         = Column(Integer, nullable=False, default=0)
+    call_duration    = Column(Float, nullable=True)
+
+    # Часові мітки
+    created_at   = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String, nullable=True)
+    commentary    = Column(String(512), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<RepeatCallTask source={self.source_visit_id} patient={self.patient_name} "
+            f"status={self.status.value}>"
+        )
+
+
+class RepeatCallHistory(Base):
+    """Архів виконаних задач Модуля 2.1."""
+
+    __tablename__ = "repeat_call_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    source_visit_id   = Column(String, nullable=False, index=True)
+    patient_name      = Column(String, nullable=False)
+    patient_phone     = Column(String, nullable=False)
+    patient_id        = Column(String, nullable=True)
+    previous_visit_date = Column(DateTime, nullable=True)
+    previous_doctor   = Column(String, nullable=True)
+    doctor_id         = Column(String, nullable=True)
+    doctor_name       = Column(String, nullable=False)
+    doctor_specialization = Column(String, nullable=True)
+    doctor_recommendation = Column(String, nullable=True)
+    repeat_visit_date = Column(DateTime, nullable=True)
+
+    status           = Column(SAEnum(RepeatCallStatus), nullable=False)
+    result           = Column(SAEnum(RepeatCallResult), nullable=True)
+    decline_category = Column(String, nullable=True)
+    new_visit_id     = Column(String, nullable=True)
+    attempts         = Column(Integer, nullable=False, default=0)
+    call_duration    = Column(Float, nullable=True)
+
+    created_at   = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String, nullable=True)
+    commentary    = Column(String(512), nullable=True)
+
+    archived_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    def __repr__(self) -> str:
+        return (
+            f"<RepeatCallHistory source={self.source_visit_id} patient={self.patient_name} "
+            f"result={self.result}>"
+        )
