@@ -408,8 +408,6 @@ async def handle_tool_call(
         _dates_weekday: dict[str, str] = {}  # date_str → день тижня
         for item in raw:
             dt = datetime.fromisoformat(item["START_E"])
-            if dt.weekday() >= 5:  # субота=5, неділя=6 — пропускаємо
-                continue
             date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
             if date_str not in _dates_weekday:
                 _dates_weekday[date_str] = _WEEKDAYS_UA[dt.weekday()]
@@ -439,7 +437,7 @@ async def handle_tool_call(
                 _req_l = requested_date.lower().strip()
                 _found = False
                 for _id in _initial_dates:
-                    if _req_l in _id.lower() or _id.lower() in _req_l:
+                    if _req_l == _id.lower() or _req_l in _id.lower():
                         _found = True
                         break
                 if not _found:
@@ -484,15 +482,23 @@ async def handle_tool_call(
                         ),
                     }
 
-            # Нечіткий пошук — "дванадцяте жовтня" або "12 жовтня" або просто "12"
+            # Пошук дати: спочатку точний збіг, потім "запит є підрядком ключа"
+            # НЕ використовуємо "ключ є підрядком запиту" — це викликає баг:
+            # "сімнадцяте" є підрядком "вісімнадцяте" → 17-е матчиться замість 18-го.
             matched_slots = None
             matched_date_key = ""
             _req = requested_date.lower().strip()
             for d, slots in dates_map.items():
-                if _req in d.lower() or d.lower() in _req:
+                if _req == d.lower():          # точний збіг
                     matched_slots = slots
                     matched_date_key = d
                     break
+            if not matched_slots:
+                for d, slots in dates_map.items():
+                    if _req in d.lower():      # запит є підрядком ключа ("вісімнадцяте" in "вісімнадцяте липня")
+                        matched_slots = slots
+                        matched_date_key = d
+                        break
             if not matched_slots:
                 # Числовий fallback: AI передала "12" або "12 жовтня" → шукаємо ordinal ключ
                 try:
