@@ -797,8 +797,9 @@ class RepeatReminderAgent:
                 async def _prefetch_slots() -> None:
                     try:
                         from services import clinic_api as _capi
-                        doctor_id = self.visit.get("doctor_id", "")
-                        _raw = await _capi.get_doctor_slots_by_id(doctor_id)
+                        doctor_name = self.visit.get("doctor_name", "")
+                        idpoint     = int(self.visit.get("idpoint", 0))
+                        _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                         _call_cache["__raw_slots"] = _raw if _raw is not None else []
                         logger.debug(f"[AGENT 2.1] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів")
                     except Exception as _e:
@@ -815,8 +816,10 @@ class RepeatReminderAgent:
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
                 _suppress_next_audio[0] = True
+                _suppress_set_at[0] = time.time()
                 _last_ai_turn_end[0] = time.time()
-                _interrupted_pause_until[0] = time.time() + 0.0
+                # Захист від ехо SIP: блокуємо вхід на час привітання + 1.5с затухання ехо
+                _interrupted_pause_until[0] = time.time() + _played_dur + 1.5
 
                 _needs_primer = _stale_warmup[0]
                 if _needs_primer:
@@ -852,9 +855,10 @@ class RepeatReminderAgent:
                     if raw is None:
                         try:
                             from services import clinic_api as _capi2
-                            doctor_id = self.visit.get("doctor_id", "")
+                            doctor_name = self.visit.get("doctor_name", "")
+                            idpoint     = int(self.visit.get("idpoint", 0))
                             raw = await asyncio.wait_for(
-                                _capi2.get_doctor_slots_by_id(doctor_id), timeout=2.0
+                                _capi2.get_doctor_slots_b2(doctor_name, idpoint), timeout=2.0
                             )
                             _call_cache["__raw_slots"] = raw if raw is not None else []
                         except Exception:
@@ -982,8 +986,9 @@ class RepeatReminderAgent:
         async def _warmup_prefetch() -> None:
             try:
                 from services import clinic_api as _capi
-                doctor_id = self.visit.get("doctor_id", "")
-                _raw = await _capi.get_doctor_slots_by_id(doctor_id)
+                doctor_name = self.visit.get("doctor_name", "")
+                idpoint     = int(self.visit.get("idpoint", 0))
+                _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                 self._prefetched_raw_slots = _raw if _raw is not None else []
                 logger.debug(f"[AGENT 2.1] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів")
             except Exception as _e:

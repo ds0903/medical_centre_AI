@@ -17,6 +17,7 @@
 import asyncio
 import logging
 import signal
+import sys
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -28,11 +29,13 @@ from config import (
     B2_CONFIG_SHEET_NAME,
     B2_MARKERS_SHEET_NAME,
     B2_CREDENTIALS_PATH,
+    SKIP_SCHEDULER,
 )
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,11 @@ async def main() -> None:
     setup_b21_scheduler(scheduler)
     scheduler.start()
 
+    if SKIP_SCHEDULER:
+        from scheduler.repeat_runner import run_repeat_calls
+        logger.info("[B2] SKIP_SCHEDULER=true — запускаємо Модуль 2.1 одразу (без чекання cron)")
+        asyncio.create_task(run_repeat_calls())
+
     # Graceful shutdown
     loop = asyncio.get_running_loop()
     _listener_task: asyncio.Task | None = None
@@ -103,8 +111,11 @@ async def main() -> None:
     def _handle_shutdown():
         asyncio.create_task(_shutdown(scheduler, _listener_task))
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_shutdown)
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _handle_shutdown)
+    except NotImplementedError:
+        pass  # Windows не підтримує add_signal_handler
 
     # Запускаємо listener Модуля 2.2 паралельно
     _listener_task = asyncio.create_task(start_call_analyzer_listener())

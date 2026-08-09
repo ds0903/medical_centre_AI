@@ -83,26 +83,26 @@ def _is_work_time(dt: datetime | None = None) -> bool:
 
 async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
     """
-    Отримати пацієнтів для дзвінку і додати в repeat_call_tasks (якщо ще немає).
+    Отримати пацієнтів з /followup_appts і додати в repeat_call_tasks.
+
+    API повертає пацієнтів з ONDATE від завтра до +4 днів.
+    days_before зберігається для сумісності але не передається в API.
 
     Алгоритм:
-      1. Визначити target_date = today + days_before
-      2. Отримати список пацієнтів від API (get_repeat_visit_reminders)
-      3. Для кожного:
-         a. Якщо задача вже є в БД — пропустити
-         b. Перевірити чи немає вже запису ±5 днів (check_existing_appointment)
-         c. Перевірити наявність вільних слотів (get_doctor_slots_by_id)
-         d. Якщо є слоти → додати в repeat_call_tasks
+      1. GET /followup_appts → список пацієнтів
+      2. Для кожного:
+         a. Якщо задача вже є в БД (GLOBALKEY) — пропустити
+         b. Перевірити наявність вільних слотів (doctorslots2)
+         c. Якщо є слоти → додати в repeat_call_tasks
 
     Returns: кількість доданих задач
     """
     from services import clinic_api as _capi
 
-    target_date = date.today() + timedelta(days=days_before)
-    logger.info(f"[B2 FETCH] Отримуємо пацієнтів для дзвінку (target_date={target_date})")
+    logger.info("[B2 FETCH] Отримуємо пацієнтів з /followup_appts")
 
     try:
-        patients = await _capi.get_repeat_visit_reminders(target_date)
+        patients = await _capi.get_repeat_visit_reminders()
     except Exception as e:
         logger.error(f"[B2 FETCH] Помилка отримання списку: {e}")
         return 0
@@ -124,31 +124,17 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
                 logger.debug(f"[B2 FETCH] Задача вже є: {source_visit_id}")
                 continue
 
-            # Перевірка існуючого запису ±5 днів
-            patient_id = str(p.get("patient_id", ""))
-            doctor_id  = str(p.get("doctor_id", ""))
+            # Перевірка наявності вільних слотів через doctorslots2
+            doctor_name = str(p.get("doctor_name", ""))
+            idpoint     = int(p.get("idpoint", 0))
             try:
-                already_booked = await _capi.check_existing_appointment(
-                    patient_id, doctor_id, target_date, delta_days=5
-                )
-            except Exception as _e:
-                logger.warning(f"[B2 FETCH] check_existing_appointment помилка (пропускаємо): {_e}")
-                already_booked = False
-
-            if already_booked:
-                logger.info(f"[B2 FETCH] Вже є запис ±5 днів → пропускаємо: {p.get('patient_name')}")
-                continue
-
-            # Перевірка наявності вільних слотів (30 днів вперед)
-            try:
-                slots = await _capi.get_doctor_slots_by_id(doctor_id)
-                # Рахуємо тільки слоти в робочі дні (без вихідних)
+                slots = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                 avail_slots = [
                     s for s in (slots or [])
                     if datetime.fromisoformat(s["START_E"]).weekday() < 5
                 ]
             except Exception as _e:
-                logger.warning(f"[B2 FETCH] get_doctor_slots_by_id помилка (пропускаємо): {_e}")
+                logger.warning(f"[B2 FETCH] get_doctor_slots_b2 помилка (пропускаємо): {_e}")
                 avail_slots = []
 
             if not avail_slots:
@@ -156,21 +142,24 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
                 continue
 
             # Парсимо дати
-            prev_date_raw = p.get("previous_visit_date", "")
             prev_date = None
+            prev_date_raw = p.get("previous_visit_date", "")
             if prev_date_raw:
                 try:
                     prev_date = datetime.fromisoformat(str(prev_date_raw))
                 except Exception:
                     pass
 
-            repeat_date_raw = p.get("repeat_visit_date", target_date.isoformat())
             repeat_date = None
+            repeat_date_raw = p.get("repeat_visit_date", "")
             if repeat_date_raw:
                 try:
                     repeat_date = datetime.fromisoformat(str(repeat_date_raw))
                 except Exception:
                     pass
+
+            patient_id = str(p.get("patient_id", ""))
+            doctor_id  = str(p.get("doctor_id", ""))
 
             task = RepeatCallTask(
                 id=uuid.uuid4(),
@@ -181,16 +170,17 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
                 previous_visit_date=prev_date,
                 previous_doctor=p.get("previous_doctor", ""),
                 doctor_id=doctor_id or None,
-                doctor_name=p.get("doctor_name", p.get("previous_doctor", "")),
+                doctor_name=doctor_name,
                 doctor_specialization=p.get("doctor_specialization", ""),
                 doctor_recommendation=p.get("doctor_recommendation", ""),
                 repeat_visit_date=repeat_date,
+                idpoint=idpoint or None,
                 status=RepeatCallStatus.pending,
                 attempts=0,
             )
             session.add(task)
             created += 1
-            logger.info(f"[B2 FETCH] Додано задачу: {p.get('patient_name')} → {target_date}")
+            logger.info(f"[B2 FETCH] Додано задачу: {p.get('patient_name')} ({doctor_name}, IDPOINT={idpoint})")
 
     logger.info(f"[B2 FETCH] Створено нових задач: {created}")
     return created
@@ -228,14 +218,20 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
         )
         tasks = result.scalars().all()
 
+    from config import ALLOWED_PHONES
+    if ALLOWED_PHONES:
+        tasks = [t for t in tasks if t.patient_phone in ALLOWED_PHONES]
+        logger.info(f"[B2 CALLS] Після whitelist-фільтру (ALLOWED_PHONES) залишилось {len(tasks)} задач")
+
     if not tasks:
         logger.info("[B2 CALLS] Немає pending задач")
         return
 
     logger.info(f"[B2 CALLS] Задач для обдзвону: {len(tasks)}")
 
+    from config import SKIP_SCHEDULER as _skip_sched
     for i, task in enumerate(tasks):
-        if not _is_work_time():
+        if not _skip_sched and not _is_work_time():
             logger.info(f"[B2 CALLS] Вийшли за межі робочого часу — зупиняємось ({len(tasks) - i} залишилось)")
             break
 
@@ -275,6 +271,7 @@ async def _execute_repeat_call(task: RepeatCallTask, max_retry: int) -> None:
         "doctor_specialization": task.doctor_specialization or "",
         "doctor_recommendation": task.doctor_recommendation or "",
         "repeat_visit_date":   task.repeat_visit_date.isoformat() if task.repeat_visit_date else "",
+        "idpoint":             task.idpoint or 0,
     }
 
     # Позначаємо як in_progress перед ініціацією дзвінка
@@ -382,10 +379,26 @@ async def _save_repeat_error(task: RepeatCallTask, error_msg: str) -> None:
 
 
 async def _send_api_status(task: RepeatCallTask, result_str: str, commentary: str) -> None:
-    """Відправити результат дзвінка в API клініки."""
+    """Відправити результат дзвінка в API клініки.
+
+    STATUS=1 (booked) — не викликаємо: booking вже виконано в tools.book_new_visit
+                        через ai_save_event під час розмови.
+    STATUS≠1 — викликаємо ai_savestate з GLOBALKEY + статус.
+    """
+    from config import SKIP_POST
+    if SKIP_POST:
+        logger.info(f"[B2 CALLS] SKIP_POST=true — не надсилаємо статус в API ({result_str})")
+        return
+
     api_status = _STATUS_API_MAP.get(result_str)
     if api_status is None:
         return
+
+    if api_status == 1:
+        # Booking вже зареєстровано через ai_save_event в book_new_visit
+        logger.info(f"[B2 CALLS] STATUS=1 (booked) — ai_save_event вже викликано під час розмови")
+        return
+
     try:
         from services import clinic_api as _capi
         await _capi.update_repeat_call_status(task.source_visit_id, api_status, commentary)
@@ -463,17 +476,20 @@ async def archive_repeat_tasks() -> None:
 
 async def run_repeat_calls() -> None:
     """Основний щогодинний job."""
-    from config import B2_CALL_DAYS_BEFORE, B2_MAX_RETRY  # type: ignore[import-not-found]
+    from config import B2_CALL_DAYS_BEFORE, B2_MAX_RETRY, SKIP_SCHEDULER, SKIP_FETCH  # type: ignore[import-not-found]
 
     now = datetime.now(_KYIV)
-    if not _is_work_time(now):
+    if not SKIP_SCHEDULER and not _is_work_time(now):
         logger.info(f"[B2 RUNNER] Поза робочим часом ({now.strftime('%H:%M')}) — пропускаємо")
         return
 
     logger.info(f"[B2 RUNNER] Запуск о {now.strftime('%H:%M')} (Пн-Нд)")
 
     # Фетч: формуємо чергу якщо ще не сформовано
-    await fetch_and_queue_repeat_calls(days_before=B2_CALL_DAYS_BEFORE)
+    if SKIP_FETCH:
+        logger.info("[B2 RUNNER] SKIP_FETCH=true — пропускаємо fetch, беремо existing задачі з БД")
+    else:
+        await fetch_and_queue_repeat_calls(days_before=B2_CALL_DAYS_BEFORE)
 
     # Дзвінки
     await process_repeat_calls(max_retry=B2_MAX_RETRY)

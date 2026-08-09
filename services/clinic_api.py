@@ -307,22 +307,20 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
 # Блок 2 — Модуль 2.1: повторні візити
 # ---------------------------------------------------------------------------
 
-async def get_doctor_slots_by_id(doctor_id: str) -> list[dict]:
+async def get_doctor_slots_b2(doctor_name: str, idpoint: int) -> list[dict]:
     """
-    Отримати вільні слоти лікаря за його ID (для повторного запису — без existing visit_id).
+    Отримати вільні слоти лікаря для повторного запису (Модуль 2.1).
 
-    API: POST {CLINIC_API_URL}/bridge/call/doctorslots_by_id
+    API: POST /bridge/call/doctorslots2
+    Параметри: ["DOCTORNAME", IDPOINT]
     Повертає: [{ID, START_E}, ...]
-
-    TODO: уточнити endpoint у замовника. Можливо використовується той самий
-          /bridge/call/doctorslots але з doctor_id замість slot_id.
     """
     if DEBUG:
         base = datetime.now().replace(second=0, microsecond=0, minute=0)
         slots = []
         for day_offset in range(1, 8):
             day = base + timedelta(days=day_offset)
-            if day.weekday() >= 5:  # пропускаємо вихідні
+            if day.weekday() >= 5:
                 continue
             slots.extend([
                 {"ID": 9100000 + day_offset * 10 + 1, "START_E": day.strftime("%Y-%m-%d 09:00:00")},
@@ -333,66 +331,86 @@ async def get_doctor_slots_by_id(doctor_id: str) -> list[dict]:
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/doctorslots_by_id",
+            f"{CLINIC_API_URL}/bridge/call/doctorslots2",
             headers=_make_headers(),
-            json={"fields": [str(doctor_id)]},
+            json={"fields": [doctor_name, idpoint]},
         ) as resp:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
             slots = data if isinstance(data, list) else data.get("slots", data.get("SLOTS", []))
-            logger.info(f"[API] doctorslots_by_id → {len(slots)} слотів для doctor_id={doctor_id}")
+            logger.info(f"[API] doctorslots2 → {len(slots)} слотів для {doctor_name} IDPOINT={idpoint}")
             return slots
 
 
-async def get_repeat_visit_reminders(target_date: date) -> list[dict]:
+async def get_doctor_slots_by_id(doctor_id: str) -> list[dict]:
+    """Backward-compat alias (Блок 1). Для Модуля 2.1 використовуй get_doctor_slots_b2."""
+    return await get_doctor_slots_b2(doctor_id, 0)
+
+
+async def get_repeat_visit_reminders() -> list[dict]:
     """
-    Отримати список пацієнтів яким потрібно зателефонувати щодо повторного візиту.
+    Отримати список пацієнтів для повторного дзвінка.
 
-    target_date — дата на яку рекомендовано повторний прийом (= today + N днів).
+    API: POST /bridge/call/followup_appts (без параметрів)
+    Повертає пацієнтів з ONDATE від завтра до +4 днів.
 
-    TODO: уточнити endpoint та формат відповіді у замовника.
-
-    Returns: list of dicts:
-        source_visit_id     : str
-        patient_name        : str
-        patient_phone       : str
-        patient_id          : str
-        previous_visit_date : str (ISO 8601)
-        previous_doctor     : str
-        doctor_id           : str
-        doctor_name         : str
-        doctor_specialization: str
-        doctor_recommendation: str  ("через 3 тижні")
-        repeat_visit_date   : str (ISO 8601)
+    Returns: list of dicts з внутрішніми ключами:
+        source_visit_id      : str  (= GLOBALKEY)
+        patient_name         : str  (= PATIENT)
+        patient_phone        : str  (= PATPHONE, нормалізований)
+        patient_id           : str  (= GLOBALID)
+        doctor_id            : str  (= str(PERFORMER_ID))
+        doctor_name          : str  (= DOCTORNAME)
+        doctor_specialization: str  (= SPECIALITY_AI)
+        repeat_visit_date    : str  (= ONDATE ISO)
+        idpoint              : int  (= IDPOINT)
     """
     if DEBUG:
-        return [
-            {
-                "source_visit_id":      "RV_DEBUG_001",
-                "patient_name":         "Тестовий Пацієнт Іванович",
-                "patient_phone":        "380501234567",
-                "patient_id":           "P001",
-                "previous_visit_date":  (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d"),
-                "previous_doctor":      "Петренко Марія Олексіївна Терапевт",
-                "doctor_id":            "D001",
-                "doctor_name":          "Петренко Марія Олексіївна Терапевт",
-                "doctor_specialization": "Терапевт",
-                "doctor_recommendation": "через 3 тижні",
-                "repeat_visit_date":    target_date.isoformat(),
-            }
-        ]
+        _path = os.path.join(os.path.dirname(__file__), "..", "data", "test_repeat_visits.json")
+        try:
+            with open(_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            logger.warning(f"[DEBUG] {_path} не знайдено — повертаємо порожній список")
+            return []
+        return [_map_followup_record(r) for r in raw]
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/repeat_reminders",
+            f"{CLINIC_API_URL}/bridge/call/followup_appts",
             headers=_make_headers(),
-            json={"fields": [target_date.isoformat()]},
+            json={"fields": []},
         ) as resp:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
-            items = data if isinstance(data, list) else data.get("reminders", [])
-            logger.info(f"[API] repeat_reminders({target_date}) → {len(items)} пацієнтів")
-            return items
+            items = data if isinstance(data, list) else data.get("data", [])
+            logger.info(f"[API] followup_appts → {len(items)} пацієнтів")
+            return [_map_followup_record(r) for r in items]
+
+
+def _map_followup_record(r: dict) -> dict:
+    """Маппінг полів /followup_appts → внутрішній формат."""
+    raw_phone = str(r.get("PATPHONE", "")).replace("-", "").replace(" ", "").replace("+", "")
+    if raw_phone.startswith("380"):
+        phone = "+" + raw_phone
+    elif raw_phone.startswith("0") and len(raw_phone) == 10:
+        phone = "+38" + raw_phone
+    else:
+        phone = raw_phone
+    return {
+        "source_visit_id":      str(r.get("GLOBALKEY", "")),
+        "patient_name":         str(r.get("PATIENT", "")),
+        "patient_phone":        phone,
+        "patient_id":           str(r.get("GLOBALID", "")),
+        "doctor_id":            str(r.get("PERFORMER_ID", "")),
+        "doctor_name":          str(r.get("DOCTORNAME", "")),
+        "doctor_specialization": str(r.get("SPECIALITY_AI", "")),
+        "repeat_visit_date":    str(r.get("ONDATE", "")),
+        "idpoint":              int(r.get("IDPOINT", 0)),
+        "previous_visit_date":  "",
+        "previous_doctor":      "",
+        "doctor_recommendation": "",
+    }
 
 
 async def check_existing_appointment(
@@ -433,47 +451,48 @@ async def check_existing_appointment(
             return False
 
 
-async def create_new_visit(doctor_id: str, slot_id: str, patient_id: str) -> Optional[str]:
+async def save_b2_booking(slot_id: str, patient_name: str, patphone: str) -> Optional[str]:
     """
-    Створити новий запис пацієнта на прийом (Модуль 2.1).
+    Зафіксувати бронювання слоту (STATUS=1, booked).
 
-    Returns: ID нового візиту або None при помилці.
-
-    TODO: уточнити endpoint та формат у замовника.
+    API: POST /bridge/call/ai_save_event
+    Поля: [ID слоту (int), STATUS=1, PATIENT, PATPHONE]
+    Повертає slot_id як підтвердження (нового visit_id API не повертає).
     """
     if DEBUG:
-        logger.debug(f"[DEBUG] create_new_visit(doctor_id={doctor_id}, slot_id={slot_id}, patient_id={patient_id})")
-        return f"DEBUG_VISIT_{slot_id}"
+        logger.info(f"[DEBUG] save_b2_booking slot_id={slot_id} patient={patient_name}")
+        return f"DEBUG_SLOT_{slot_id}"
 
     if SKIP_POST:
-        logger.info(f"[API] create_new_visit (SKIP_POST): doctor={doctor_id} slot={slot_id} patient={patient_id}")
-        return f"SKIP_VISIT_{slot_id}"
+        logger.info(f"[API] save_b2_booking (SKIP_POST): slot_id={slot_id} patient={patient_name}")
+        return f"SKIP_SLOT_{slot_id}"
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/create_visit",
+            f"{CLINIC_API_URL}/bridge/call/ai_save_event",
             headers=_make_headers(),
-            json={"fields": [str(doctor_id), str(slot_id), str(patient_id)]},
+            json={"fields": [int(slot_id), 1, patient_name, patphone]},
         ) as resp:
             resp.raise_for_status()
-            data = await resp.json(content_type=None)
-            visit_id = str(data.get("ID") or data.get("id") or data.get("visit_id") or "")
-            logger.info(f"[API] create_new_visit → new_visit_id={visit_id}")
-            return visit_id or None
+            logger.info(f"[API] ai_save_event → slot_id={slot_id} patient={patient_name}")
+            return slot_id
 
 
 async def update_repeat_call_status(source_visit_id: str, status: int, commentary: str = "") -> None:
     """
-    Відправити результат дзвінка Модуля 2.1 до API клініки.
+    Зафіксувати результат дзвінка Модуля 2.1 для статусів ≠ 1 (booked).
 
-    status: 1=Записано, 2=Відмовився, 3=Сам запишеться, 4=Не додзвонились
+    STATUS=1 (booked) → обробляється через save_b2_booking() під час дзвінка.
+    STATUS≠1 → ai_savestate: [GLOBALKEY, status_code]
+
+    status: 2=Відмовився, 3=Сам запишеться, 4=Не додзвонились/Помилка
     """
     commentary = (commentary or "")[:512]
-    _STATUS_LABELS = {1: "Записано", 2: "Відмовився", 3: "Сам запишеться", 4: "Не додзвонились"}
+    _STATUS_LABELS = {2: "Відмовився", 3: "Сам запишеться", 4: "Не додзвонились"}
     label = _STATUS_LABELS.get(status, str(status))
 
     if DEBUG:
-        logger.info(f"[DEBUG] update_repeat_call_status source={source_visit_id} STATUS={status} ({label}) | {commentary}")
+        logger.info(f"[DEBUG] update_repeat_call_status source={source_visit_id} STATUS={status} ({label})")
         return
 
     if SKIP_POST:
@@ -482,12 +501,12 @@ async def update_repeat_call_status(source_visit_id: str, status: int, commentar
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
-            f"{CLINIC_API_URL}/bridge/call/repeat_updatestate",
+            f"{CLINIC_API_URL}/bridge/call/ai_savestate",
             headers=_make_headers(),
-            json={"fields": [str(source_visit_id), status, commentary]},
+            json={"fields": [str(source_visit_id), status]},
         ) as resp:
             resp.raise_for_status()
-            logger.info(f"[API] update_repeat_call_status → source={source_visit_id} STATUS={status} ({label})")
+            logger.info(f"[API] ai_savestate → source={source_visit_id} STATUS={status} ({label})")
 
 
 async def update_event_status(event_id: str, status: int, commentary: str = "") -> None:

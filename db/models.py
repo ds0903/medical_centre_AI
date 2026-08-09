@@ -145,11 +145,12 @@ class RepeatCallTask(Base):
     patient_id        = Column(String, nullable=True)
     previous_visit_date = Column(DateTime, nullable=True)
     previous_doctor   = Column(String, nullable=True)
-    doctor_id         = Column(String, nullable=True)       # для пошуку слотів
-    doctor_name       = Column(String, nullable=False)
+    doctor_id         = Column(String, nullable=True)       # PERFORMER_ID з API
+    doctor_name       = Column(String, nullable=False)      # DOCTORNAME з API
     doctor_specialization = Column(String, nullable=True)
-    doctor_recommendation = Column(String, nullable=True)   # "через 3 тижні"
-    repeat_visit_date = Column(DateTime, nullable=True)     # цільова дата
+    doctor_recommendation = Column(String, nullable=True)
+    repeat_visit_date = Column(DateTime, nullable=True)     # ONDATE з API
+    idpoint           = Column(Integer, nullable=True)      # IDPOINT з API (для doctorslots2)
 
     # Статус та результат
     status           = Column(SAEnum(RepeatCallStatus), nullable=False, default=RepeatCallStatus.pending)
@@ -190,6 +191,7 @@ class RepeatCallHistory(Base):
     doctor_specialization = Column(String, nullable=True)
     doctor_recommendation = Column(String, nullable=True)
     repeat_visit_date = Column(DateTime, nullable=True)
+    idpoint           = Column(Integer, nullable=True)
 
     status           = Column(SAEnum(RepeatCallStatus), nullable=False)
     result           = Column(SAEnum(RepeatCallResult), nullable=True)

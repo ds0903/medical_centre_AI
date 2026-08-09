@@ -176,11 +176,12 @@ async def handle_tool_call(
         if raw is None:
             try:
                 from services import clinic_api as _capi
-                doctor_id = visit_context.get("doctor_id", "")
-                raw = await _capi.get_doctor_slots_by_id(doctor_id)
+                doctor_name = visit_context.get("doctor_name", "")
+                idpoint     = int(visit_context.get("idpoint", 0))
+                raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                 call_cache["__raw_slots"] = raw if raw is not None else []
             except Exception as e:
-                logger.error(f"[TOOL 2.1] get_doctor_slots_by_id помилка: {e!r}")
+                logger.error(f"[TOOL 2.1] get_doctor_slots_b2 помилка: {e!r}")
                 raw = []
 
         # Фільтр вихідних
@@ -290,9 +291,9 @@ async def handle_tool_call(
 
         try:
             from services import clinic_api as _capi
-            doctor_id  = visit_context.get("doctor_id", "")
-            patient_id = visit_context.get("patient_id", "")
-            new_visit_id = await _capi.create_new_visit(doctor_id, slot_id, patient_id)
+            patient_name = visit_context.get("patient_name", "")
+            patphone     = visit_context.get("patient_phone", "")
+            new_visit_id = await _capi.save_b2_booking(slot_id, patient_name, patphone)
 
             if not new_visit_id:
                 result = {

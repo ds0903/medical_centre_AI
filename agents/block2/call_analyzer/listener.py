@@ -13,7 +13,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from db.database import async_session
+from db.database import get_session as async_session
 from db.models import AnalyzedCall
 from config import B2_POLL_INTERVAL_MIN
 
