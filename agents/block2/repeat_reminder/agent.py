@@ -94,42 +94,42 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
 
     try:
         from agents.block2.repeat_reminder.tools import (
-            _ua_ordinal, _MONTHS_UA, _WEEKDAYS_UA, _natural_date_list,
+            _ua_ordinal, _MONTHS_UA, _WEEKDAYS_UA, _format_hour_ua,
         )
         from datetime import datetime as _dt
 
-        dates_map: dict[str, list] = {}
-        dates_weekday: dict[str, str] = {}
+        slots_list = []
         for item in raw_slots:
             d = _dt.fromisoformat(item["START_E"])
             if d.weekday() >= 5:
                 continue
             date_str = f"{_ua_ordinal(d.day)} {_MONTHS_UA[d.month - 1]}"
-            if date_str not in dates_weekday:
-                dates_weekday[date_str] = _WEEKDAYS_UA[d.weekday()]
-            dates_map.setdefault(date_str, []).append(item)
+            hour_str = _format_hour_ua(d.hour, d.minute)
+            slots_list.append({
+                "slot_id": str(item["ID"]),
+                "date": date_str,
+                "weekday": _WEEKDAYS_UA[d.weekday()],
+                "time": f"{d.hour}:{d.minute:02d}",
+                "label": f"{date_str} о {hour_str}",
+            })
+            if len(slots_list) >= 5:
+                break
 
-        if not dates_map:
+        if not slots_list:
             return None, None
 
-        date_summaries = [
-            {"date": dt, "weekday": dates_weekday[dt], "count": len(sl)}
-            for dt, sl in list(dates_map.items())[:5]
-        ]
-        natural = _natural_date_list(date_summaries)
+        labels = ", ".join(s["label"] for s in slots_list)
         hint = (
-            f"[SYSTEM_CACHE] get_available_slots() = {natural}\n"
+            f"[SYSTEM_CACHE] get_available_slots() = {labels}\n"
             "Це технічний кеш — НЕ слова пацієнта. МОВЧИ. Чекай першої репліки пацієнта."
         )
         cache_result = {
             "success": True,
             "message": (
-                f"Скажи пацієнту ДОСЛІВНО цей перелік дат: «{natural}». "
-                "НЕ ЗГАДУЙ конкретний час — лише дати. "
-                "Запитай яка дата підходить, потім виклич get_available_slots(date='...')."
+                f"Скажи пацієнту ДОСЛІВНО: «Є вільний час: {labels}. Який вам зручний?» "
+                "Коли пацієнт обере — виклич book_new_visit(slot_id='...') з відповідним slot_id."
             ),
-            "available_dates": date_summaries,
-            "total_dates": len(date_summaries),
+            "slots": slots_list,
         }
         return hint, {"result": cache_result, "_ts": time.monotonic()}
     except Exception as _e:
@@ -293,7 +293,6 @@ class RepeatReminderAgent:
             _allow_next_turn = [False]
             _last_ai_turn_end = [0.0]
             _suppress_timeout_fired = [False]
-            _ai_text_lower = ""
 
             _MAX_RECONNECTS = 3
             _live_session = [session]
@@ -590,7 +589,7 @@ class RepeatReminderAgent:
                             break
 
             async def _recv_and_handle() -> None:
-                nonlocal _silence_count, _ai_text_lower
+                nonlocal _silence_count
                 _draining = False
                 _ai_buf: list[str] = []
 
@@ -602,7 +601,10 @@ class RepeatReminderAgent:
                         turn_audio_bytes    = 0
                         _turn_audio_played  = False
                         _had_patient_said   = False
-                        _suppress_slots_turn = False
+                        _ai_text_lower = ""
+                        _ai_buf.clear()
+                        _ai_turn_active[0] = True
+                        _ai_turn_started_at[0] = time.time()
 
                         async for resp in _live_session[0].receive():
                             if self._end_event.is_set() and not _draining:
@@ -614,13 +616,21 @@ class RepeatReminderAgent:
                                     and resp.session_resumption_update.new_handle):
                                 self._resumption_handle = resp.session_resumption_update.new_handle
 
+                            # ── Interrupted (перша перевірка — щоб continue пропустив все нижче) ──
+                            if resp.server_content and resp.server_content.interrupted:
+                                logger.info("[AGENT 2.1] AI перервано — пацієнт говорить")
+                                binotel_call.flush_audio()
+                                _interrupted_pause_until[0] = 0.0
+                                _turn_was_interrupted = True
+                                _patient_spoke.set()
+                                if _timer_task and not _timer_task.done():
+                                    _timer_task.cancel()
+                                continue
+
                             # ── Аудіо AI → пацієнт ────────────────────────────────
                             if resp.data:
-                                _ai_turn_active[0] = True
-                                _ai_turn_started_at[0] = time.time()
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
-                                _activity[0] = time.time()
                                 if not _greeting_done.is_set():
                                     continue  # greeting buffer handled in warmup
                                 if _suppress_next_audio[0] and not _allow_next_turn[0]:
@@ -633,14 +643,18 @@ class RepeatReminderAgent:
                                     time.time() + gate,
                                 )
                                 await binotel_call.send_audio(resp.data)
+                                _activity[0] = time.time()
+                                _patient_spoke.set()
+                                if _timer_task and not _timer_task.done():
+                                    _timer_task.cancel()
+                                if _silence_task and not _silence_task.done():
+                                    _silence_task.cancel()
 
                             # ── Транскрипція AI ────────────────────────────────────
                             if resp.server_content:
-                                for part in (resp.server_content.model_turn.parts if resp.server_content.model_turn else []):
-                                    if part.text:
-                                        _ai_buf.append(part.text)
-                            if getattr(resp, "output_transcription", None) and resp.output_transcription.text:
-                                _ai_buf.append(resp.output_transcription.text)
+                                sc = resp.server_content
+                                if sc.output_transcription and sc.output_transcription.text:
+                                    _ai_buf.append(sc.output_transcription.text)
                             if _ai_buf:
                                 joined = " ".join(_ai_buf)
                                 _ai_text_lower = joined.lower()
@@ -648,30 +662,28 @@ class RepeatReminderAgent:
                                     _last_ai_said[0] = joined
 
                             # ── Транскрипція пацієнта ──────────────────────────────
-                            if getattr(resp, "input_transcription", None) and resp.input_transcription.text:
-                                txt = resp.input_transcription.text.strip()
-                                if txt and _real_vad_pending[0]:
-                                    now_t = time.time()
-                                    if (txt != _last_patient_said_text[0]
-                                            or now_t - _last_patient_said_time[0] > 2.0):
-                                        _last_patient_said_text[0] = txt
-                                        _last_patient_said_time[0] = now_t
-                                        _patient_said_count[0] += 1
-                                        _real_vad_pending[0] = False
-                                        _had_patient_said = True
-                                        _watchdog_injected[0] = 0
-                                        logger.info(f"[TRANSCRIPT 2.1] Пацієнт: «{txt}»")
-                                        if _suppress_next_audio[0]:
-                                            _suppress_next_audio[0] = False
-                                            _suppress_set_at[0] = 0.0
-                                    else:
-                                        _real_vad_pending[0] = False
-
-                            # ── Interrupted ────────────────────────────────────────
-                            if (resp.server_content
-                                    and getattr(resp.server_content, "interrupted", False)):
-                                _turn_was_interrupted = True
-                                logger.debug("[AGENT 2.1] Interrupted")
+                            if resp.server_content:
+                                sc = resp.server_content
+                                if (sc.input_transcription and sc.input_transcription.text
+                                        and _greeting_done.is_set()
+                                        and time.time() >= _interrupted_pause_until[0]):
+                                    txt = sc.input_transcription.text.strip()
+                                    if txt and _real_vad_pending[0]:
+                                        now_t = time.time()
+                                        if (txt != _last_patient_said_text[0]
+                                                or now_t - _last_patient_said_time[0] > 3.0):
+                                            _last_patient_said_text[0] = txt
+                                            _last_patient_said_time[0] = now_t
+                                            _patient_said_count[0] += 1
+                                            _real_vad_pending[0] = False
+                                            _had_patient_said = True
+                                            _watchdog_injected[0] = 0
+                                            logger.info(f"[TRANSCRIPT 2.1] Пацієнт: «{txt}»")
+                                            if _suppress_next_audio[0]:
+                                                _suppress_next_audio[0] = False
+                                                _suppress_set_at[0] = 0.0
+                                        else:
+                                            _real_vad_pending[0] = False
 
                             # ── Tool calls ─────────────────────────────────────────
                             if (resp.tool_call
@@ -696,9 +708,7 @@ class RepeatReminderAgent:
                                     ))
 
                                     if fc.name == "get_available_slots":
-                                        if result.get("success") and not args.get("date"):
-                                            _suppress_slots_turn = True
-                                            _turn_audio_played = False
+                                        # В Module 2 не пригнічуємо Turn 1 — бот одразу озвучує дати
                                         if args.get("date"):
                                             _date_slots_fetched[0] = True
 
@@ -742,10 +752,6 @@ class RepeatReminderAgent:
                             return
 
                         logger.debug("[AGENT 2.1] recv_task: turn завершено")
-
-                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
-                            _allow_next_turn[0] = True
-                            logger.debug("[AGENT 2.1] get_available_slots(no date) → suppress Turn 1, дозволяємо Turn 2")
 
                         if not _draining and _greeting_done.is_set() and turn_had_audio:
                             binotel_call.flush_encode_buffer()
@@ -818,8 +824,10 @@ class RepeatReminderAgent:
                 _suppress_next_audio[0] = True
                 _suppress_set_at[0] = time.time()
                 _last_ai_turn_end[0] = time.time()
-                # Захист від ехо SIP: блокуємо вхід на час привітання + 1.5с затухання ехо
-                _interrupted_pause_until[0] = time.time() + _played_dur + 1.5
+                # Greeting грає в real-time (sleep у циклі) → по виходу залишок ≈ 0.
+                # Потрібна тільки затримка затухання ехо кімнати (~800мс + запас).
+                # НЕ додавати _played_dur — аудіо вже відіграло!
+                _interrupted_pause_until[0] = time.time() + 0.0
 
                 _needs_primer = _stale_warmup[0]
                 if _needs_primer:
@@ -1059,10 +1067,7 @@ class RepeatReminderAgent:
         async def _generate_greeting(session) -> None:
             await session.send_client_content(
                 turns={"parts": [{"text": (
-                    "Починай розмову. РІВНО 2 речення — не більше:\n"
-                    "1) Привітайся та назви себе (Оля, Медіком).\n"
-                    "2) Скажи чому дзвониш — щодо повторного прийому.\n"
-                    "СТОП. Більше нічого не кажи. Чекай відповіді."
+                    "Починай розмову — коротко привітайся та нагадай чому дзвониш (максимум 2 речення)"
                 )}]},
                 turn_complete=True,
             )

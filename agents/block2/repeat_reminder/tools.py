@@ -48,13 +48,31 @@ def _ua_ordinal(day: int) -> str:
     return str(day)
 
 
+_HOURS_UA = [
+    "опівночі", "першій", "другій", "третій", "четвертій", "п'ятій",
+    "шостій", "сьомій", "восьмій", "дев'ятій", "десятій", "одинадцятій",
+    "дванадцятій", "тринадцятій", "чотирнадцятій", "п'ятнадцятій",
+    "шістнадцятій", "сімнадцятій", "вісімнадцятій", "дев'ятнадцятій",
+    "двадцятій", "двадцять першій", "двадцять другій", "двадцять третій",
+]
+_MINUTES_UA = {
+    0: "", 5: "п'ять", 10: "десять", 15: "п'ятнадцять",
+    20: "двадцять", 25: "двадцять п'ять", 30: "тридцять",
+    35: "тридцять п'ять", 40: "сорок", 45: "сорок п'ять",
+    50: "п'ятдесят", 55: "п'ятдесят п'ять",
+}
+
+
+def _format_hour_ua(hour: int, minute: int) -> str:
+    h = _HOURS_UA[hour] if 0 <= hour < 24 else str(hour)
+    m = _MINUTES_UA.get(minute, str(minute))
+    return f"{h} {m}".strip() if m else h
+
+
 def _natural_date_list(date_summaries: list[dict]) -> str:
-    """Перетворює список {date, weekday, count} в природній текст для озвучення."""
     if not date_summaries:
         return "вільних дат немає"
-    parts = []
-    for d in date_summaries:
-        parts.append(f"{d['date']} ({d['weekday']})")
+    parts = [f"{d['date']} ({d['weekday']})" for d in date_summaries]
     if len(parts) == 1:
         return parts[0]
     return ", ".join(parts[:-1]) + " або " + parts[-1]
@@ -68,15 +86,15 @@ TOOLS = [
                 name="get_available_slots",
                 description=(
                     "Отримати вільні слоти для повторного запису до лікаря. "
-                    "БЕЗ date: повертає список доступних дат. "
-                    "З date: повертає конкретний час на обрану дату."
+                    "БЕЗ аргументів: повертає до 5 конкретних варіантів дата+час одразу. "
+                    "З date: повертає часи на конкретно обраний день (якщо пацієнт вже назвав дату)."
                 ),
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
                         "date": types.Schema(
                             type="STRING",
-                            description="Дата у форматі 'DD ММММ' (необов'язково, напр. '14 квітня')",
+                            description="Дата у форматі 'DD ММММ' — тільки якщо пацієнт сам назвав конкретну дату",
                         ),
                     },
                 ),
@@ -207,32 +225,42 @@ async def handle_tool_call(
             call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
             return result
 
-        # Без дати → повернути список дат
+        # Без дати → повернути конкретні слоти (дата + час разом, без двох кроків)
         if not date_arg:
-            dates_map: dict[str, list] = {}
-            dates_weekday: dict[str, str] = {}
-            for item in filtered:
+            slots_list = []
+            for item in filtered[:5]:
                 dt = datetime.fromisoformat(item["START_E"])
                 date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
-                if date_str not in dates_weekday:
-                    dates_weekday[date_str] = _WEEKDAYS_UA[dt.weekday()]
-                dates_map.setdefault(date_str, []).append(item)
+                hour_str = _format_hour_ua(dt.hour, dt.minute)
+                slots_list.append({
+                    "slot_id": str(item["ID"]),
+                    "date": date_str,
+                    "weekday": _WEEKDAYS_UA[dt.weekday()],
+                    "time": f"{dt.hour}:{dt.minute:02d}",
+                    "label": f"{date_str} о {hour_str}",
+                })
 
-            date_summaries = [
-                {"date": dt, "weekday": dates_weekday[dt], "count": len(sl)}
-                for dt, sl in list(dates_map.items())[:5]
-            ]
-            natural = _natural_date_list(date_summaries)
+            if not slots_list:
+                result = {
+                    "success": False,
+                    "available_dates": [],
+                    "message": (
+                        "Вільних слотів наразі немає. "
+                        "Запропонуй пацієнту самостійно зателефонувати в клініку або виклич mark_self_book."
+                    ),
+                }
+                call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
+                return result
+
+            labels = ", ".join(s["label"] for s in slots_list)
             result = {
                 "success": True,
                 "message": (
-                    f"Скажи пацієнту ДОСЛІВНО цей перелік дат (не змінюй порядок): «{natural}». "
-                    "НЕ ЗГАДУЙ конкретний час — лише дати. "
-                    "Після переліку запитай: «Яка дата вам більше підходить?» "
-                    "Коли пацієнт обере дату — виклич get_available_slots(date='...')."
+                    f"Скажи пацієнту ДОСЛІВНО: «Є вільний час: {labels}. Який вам зручний?» "
+                    "Коли пацієнт обере конкретний час — одразу виклич book_new_visit(slot_id='...') "
+                    "з відповідним slot_id зі списку нижче. НЕ перепитуй зайвого."
                 ),
-                "available_dates": date_summaries,
-                "total_dates": len(date_summaries),
+                "slots": slots_list,
             }
             call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
             return result
