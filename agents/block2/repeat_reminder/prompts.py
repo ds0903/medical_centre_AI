@@ -112,6 +112,18 @@ def build_system_prompt(visit_context: dict) -> str:
 
     decline_list = "\n".join(f"{i+1}. {c}" for i, c in enumerate(DECLINE_CATEGORIES))
 
+    # Якщо рекомендація порожня — підставляємо ім'я лікаря
+    doctor_name = visit_context.get("doctor_name", "")
+    doctor_spec = visit_context.get("doctor_specialization", "")
+    recommendation = visit_context.get("doctor_recommendation", "").strip()
+    if not recommendation:
+        if doctor_spec:
+            recommendation = f"прийти повторно до {doctor_spec.lower()}"
+        elif doctor_name:
+            recommendation = f"прийти повторно до лікаря"
+        else:
+            recommendation = "прийти на повторний прийом"
+
     return template.format(
         today_date=_get_today_date(),
         greeting=_get_greeting(),
@@ -119,9 +131,9 @@ def build_system_prompt(visit_context: dict) -> str:
         patient_phone=visit_context.get("patient_phone", ""),
         previous_visit_date=prev_date,
         previous_doctor=visit_context.get("previous_doctor", ""),
-        doctor_name=visit_context.get("doctor_name", ""),
-        doctor_specialization=visit_context.get("doctor_specialization", ""),
-        doctor_recommendation=visit_context.get("doctor_recommendation", ""),
+        doctor_name=doctor_name,
+        doctor_specialization=doctor_spec,
+        doctor_recommendation=recommendation,
         repeat_visit_date=repeat_date,
         decline_categories=decline_list,
     )
