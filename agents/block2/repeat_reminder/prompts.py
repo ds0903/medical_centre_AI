@@ -119,6 +119,8 @@ def build_system_prompt(visit_context: dict) -> str:
         patient_phone=visit_context.get("patient_phone", ""),
         previous_visit_date=prev_date,
         previous_doctor=visit_context.get("previous_doctor", ""),
+        doctor_name=visit_context.get("doctor_name", ""),
+        doctor_specialization=visit_context.get("doctor_specialization", ""),
         doctor_recommendation=visit_context.get("doctor_recommendation", ""),
         repeat_visit_date=repeat_date,
         decline_categories=decline_list,
