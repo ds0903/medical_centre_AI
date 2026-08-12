@@ -188,7 +188,7 @@ class CallAnalyzer:
         response = await self._gemini.aio.models.generate_content(
             model=GEMINI_FLASH_MODEL,
             contents=[
-                types.Content(parts=[
+                types.Content(role="user", parts=[
                     types.Part(
                         inline_data=types.Blob(mime_type=mime_type, data=b64_audio)
                     ),
@@ -196,7 +196,7 @@ class CallAnalyzer:
                 ])
             ],
             config=types.GenerateContentConfig(
-                temperature=0.0,   # детерміністична транскрипція
+                temperature=0.0,
                 max_output_tokens=8192,
             ),
         )
@@ -224,7 +224,7 @@ class CallAnalyzer:
 
         response = await self._gemini.aio.models.generate_content(
             model=GEMINI_FLASH_MODEL,
-            contents=[types.Content(parts=[types.Part(text=prompt)])],
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(
                 temperature=0.0,
                 max_output_tokens=4096,
@@ -251,11 +251,22 @@ class CallAnalyzer:
         raw_dir = call_meta.get("direction", call_meta.get("callType", "inbound"))
         direction = "inbound" if str(raw_dir).lower() in ("inbound", "incoming", "1", "вхідний") else "outbound"
 
+        # Ім'я оператора: Binotel повертає employeeData.name
+        op_name = (
+            call_meta.get("operatorName")
+            or (call_meta.get("employeeData") or {}).get("name", "")
+        )
+        # Дата/час дзвінка: Binotel повертає startTime (Unix ts)
+        raw_dt = call_meta.get("dateTime") or call_meta.get("callDate") or ""
+        if not raw_dt and call_meta.get("startTime"):
+            from datetime import datetime as _dt
+            raw_dt = _dt.fromtimestamp(int(call_meta["startTime"])).strftime("%Y-%m-%d %H:%M:%S")
+
         return CallAnalysisResult(
-            call_id          = str(call_meta.get("callId", call_meta.get("generalCallID", ""))),
+            call_id          = str(call_meta.get("generalCallID", call_meta.get("callId", ""))),
             operator_line    = str(call_meta.get("internalNumber", call_meta.get("operatorLine", ""))),
-            operator_name    = call_meta.get("operatorName", ""),
-            call_datetime    = call_meta.get("dateTime", call_meta.get("callDate", "")),
+            operator_name    = op_name,
+            call_datetime    = raw_dt,
             duration_sec     = int(call_meta.get("billsec", call_meta.get("duration", 0))),
             direction        = direction,
             transcript       = transcript,

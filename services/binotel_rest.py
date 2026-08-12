@@ -233,6 +233,20 @@ class BinotelRestClient:
         details = result.get("callDetails", {})
         return details.get(str(general_call_id), {})
 
+    async def get_call_record_url(self, general_call_id: str) -> str:
+        """
+        Отримати URL запису розмови через stats/call-record.
+        Параметр: generalCallID (callID повертає code=103). URL дійсний 1 годину.
+        """
+        result = await self.send_request("stats/call-record", {"generalCallID": general_call_id})
+        if result.get("status") != "success":
+            logger.warning(f"[BINOTEL REST] call-record generalCallID={general_call_id}: {result}")
+            return ""
+        url = result.get("url", result.get("recordingUrl", result.get("link", "")))
+        if not url:
+            logger.warning(f"[BINOTEL REST] call-record success but no URL. Keys: {list(result.keys())} raw: {result}")
+        return url
+
     async def get_calls_for_period(
         self,
         date_from: str,
@@ -260,18 +274,19 @@ class BinotelRestClient:
             return int(_dt.now().timestamp())
 
         params: dict = {
-            "startDate": _to_ts(date_from),
-            "stopDate":  _to_ts(date_to),
+            "startTime": _to_ts(date_from),
+            "stopTime":  _to_ts(date_to),
         }
         if internal_numbers:
-            params["internalNumbers"] = internal_numbers
+            params["internalNumber"] = internal_numbers[0] if len(internal_numbers) == 1 else internal_numbers
 
-        result = await self.send_request("stats/calls-for-period", params)
+        result = await self.send_request("stats/list-of-calls-for-period", params)
+
         if result.get("status") != "success":
             logger.warning(f"[BINOTEL REST] get_calls_for_period помилка: {result.get('message')} | raw: {result}")
             return []
 
-        raw = result.get("listOfCalls", result.get("calls", {}))
+        raw = result.get("callDetails", result.get("listOfCalls", result.get("calls", {})))
         if isinstance(raw, dict):
             calls = list(raw.values())
         elif isinstance(raw, list):

@@ -91,10 +91,10 @@ class CallAnalyzerListener:
             logger.debug("[LISTENER] Нових дзвінків немає")
             return
 
-        # Фільтр: тільки дзвінки з записом (recordingUrl)
+        # Фільтр: тільки дзвінки де recordingStatus == 'uploaded' (запис є на сервері)
         calls_with_rec = [
             c for c in calls
-            if c.get("recordingUrl") or c.get("recording")
+            if c.get("recordingStatus") == "uploaded"
         ]
         logger.info(f"[LISTENER] Знайдено {len(calls)} дзвінків, з записом: {len(calls_with_rec)}")
 
@@ -129,8 +129,16 @@ class CallAnalyzerListener:
         ]
 
     async def _process_one(self, call_meta: dict) -> None:
-        call_id = str(call_meta.get("callId", call_meta.get("generalCallID", "")))
-        line    = str(call_meta.get("internalNumber", call_meta.get("operatorLine", "")))
+        call_id      = str(call_meta.get("generalCallID", call_meta.get("callId", "")))
+        binotel_call_id = str(call_meta.get("callID", call_id))   # callID != generalCallID для деяких дзвінків
+        line         = str(call_meta.get("internalNumber", call_meta.get("operatorLine", "")))
+
+        # Отримуємо URL запису через stats/call-record (параметр generalCallID)
+        if not call_meta.get("recordingUrl") and not call_meta.get("url"):
+            rec_url = await self._get_binotel().get_call_record_url(call_id)
+            if rec_url:
+                call_meta["recordingUrl"] = rec_url
+                logger.info(f"[LISTENER] recordingUrl для {call_id}: {rec_url[:80]}")
 
         try:
             result = await self.analyzer.process_call(call_meta)
