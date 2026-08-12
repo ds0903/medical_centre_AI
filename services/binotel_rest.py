@@ -247,19 +247,28 @@ class BinotelRestClient:
             date_to:   "YYYY-MM-DD HH:MM:SS"
             internal_numbers: список внутрішніх номерів (None = всі)
 
-        Returns:
-            Список dict з полями: callId, internalNumber, externalNumber,
-            dateTime, disposition, billsec, recordingUrl тощо.
-
         Binotel endpoint: stats/calls-for-period
+        Параметри: startDate / stopDate — Unix timestamp (int)
         """
-        params: dict = {"dateFrom": date_from, "dateTo": date_to}
+        from datetime import datetime as _dt
+        def _to_ts(s: str) -> int:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    return int(_dt.strptime(s, fmt).timestamp())
+                except ValueError:
+                    pass
+            return int(_dt.now().timestamp())
+
+        params: dict = {
+            "startDate": _to_ts(date_from),
+            "stopDate":  _to_ts(date_to),
+        }
         if internal_numbers:
             params["internalNumbers"] = internal_numbers
 
         result = await self.send_request("stats/calls-for-period", params)
         if result.get("status") != "success":
-            logger.warning(f"[BINOTEL REST] get_calls_for_period помилка: {result.get('message')}")
+            logger.warning(f"[BINOTEL REST] get_calls_for_period помилка: {result.get('message')} | raw: {result}")
             return []
 
         raw = result.get("listOfCalls", result.get("calls", {}))

@@ -225,19 +225,27 @@ async def handle_tool_call(
             call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
             return result
 
-        # Без дати → повернути конкретні слоти (дата + час разом, без двох кроків)
+        # Без дати → повернути конкретні слоти (дата + час, дату казати раз на групу)
         if not date_arg:
             slots_list = []
+            # Групуємо по даті: {date_str: [slot, ...]}
+            from collections import OrderedDict as _OD
+            grouped: _OD = _OD()
             for item in filtered[:5]:
                 dt = datetime.fromisoformat(item["START_E"])
                 date_str = f"{_ua_ordinal(dt.day)} {_MONTHS_UA[dt.month - 1]}"
                 hour_str = _format_hour_ua(dt.hour, dt.minute)
-                slots_list.append({
+                grouped.setdefault(date_str, []).append({
                     "slot_id": str(item["ID"]),
                     "date": date_str,
                     "weekday": _WEEKDAYS_UA[dt.weekday()],
                     "time": f"{dt.hour}:{dt.minute:02d}",
-                    "label": f"{date_str} о {hour_str}",
+                    "hour_ua": hour_str,
+                })
+                slots_list.append({
+                    "slot_id": str(item["ID"]),
+                    "date": date_str,
+                    "time": f"{dt.hour}:{dt.minute:02d}",
                 })
 
             if not slots_list:
@@ -252,7 +260,13 @@ async def handle_tool_call(
                 call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
                 return result
 
-            labels = ", ".join(s["label"] for s in slots_list)
+            # Формуємо озвучення: "дата о ЧАСИ" — дату кажемо один раз на групу
+            date_phrases = []
+            for date_str, date_slots in grouped.items():
+                times_ua = " і о ".join(s["hour_ua"] for s in date_slots)
+                date_phrases.append(f"{date_str} о {times_ua}")
+            labels = ", ".join(date_phrases)
+
             result = {
                 "success": True,
                 "message": (

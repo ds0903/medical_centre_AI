@@ -98,27 +98,31 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
         )
         from datetime import datetime as _dt
 
+        from collections import OrderedDict as _OD
+        grouped: _OD = _OD()
         slots_list = []
+        count = 0
         for item in raw_slots:
+            if count >= 5:
+                break
             d = _dt.fromisoformat(item["START_E"])
             if d.weekday() >= 5:
                 continue
             date_str = f"{_ua_ordinal(d.day)} {_MONTHS_UA[d.month - 1]}"
             hour_str = _format_hour_ua(d.hour, d.minute)
-            slots_list.append({
-                "slot_id": str(item["ID"]),
-                "date": date_str,
-                "weekday": _WEEKDAYS_UA[d.weekday()],
-                "time": f"{d.hour}:{d.minute:02d}",
-                "label": f"{date_str} о {hour_str}",
-            })
-            if len(slots_list) >= 5:
-                break
+            grouped.setdefault(date_str, []).append({"hour_ua": hour_str, "slot_id": str(item["ID"])})
+            slots_list.append({"slot_id": str(item["ID"]), "date": date_str, "time": f"{d.hour}:{d.minute:02d}"})
+            count += 1
 
         if not slots_list:
             return None, None
 
-        labels = ", ".join(s["label"] for s in slots_list)
+        date_phrases = []
+        for date_str, date_slots in grouped.items():
+            times_ua = " і о ".join(s["hour_ua"] for s in date_slots)
+            date_phrases.append(f"{date_str} о {times_ua}")
+        labels = ", ".join(date_phrases)
+
         hint = (
             f"[SYSTEM_CACHE] get_available_slots() = {labels}\n"
             "Це технічний кеш — НЕ слова пацієнта. МОВЧИ. Чекай першої репліки пацієнта."
@@ -753,7 +757,18 @@ class RepeatReminderAgent:
 
                         logger.debug("[AGENT 2.1] recv_task: turn завершено")
 
-                        if not _draining and _greeting_done.is_set() and turn_had_audio:
+                        if _draining:
+                            if turn_had_audio:
+                                logger.info("[AGENT 2.1] AI завершив прощання — flush + 1с")
+                                binotel_call.flush_encode_buffer()
+                                await asyncio.sleep(1.0)
+                            else:
+                                logger.info("[AGENT 2.1] end_call без аудіо — flush + 2с Opus drain")
+                                binotel_call.flush_encode_buffer()
+                                await asyncio.sleep(2.0)
+                            return
+
+                        if _greeting_done.is_set() and turn_had_audio:
                             binotel_call.flush_encode_buffer()
                             _interrupted_pause_until[0] = max(_interrupted_pause_until[0], time.time() + 0.0)
                             _audio_queue_sec = turn_audio_bytes / 48000.0
