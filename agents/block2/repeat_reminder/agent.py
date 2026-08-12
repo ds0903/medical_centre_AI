@@ -490,7 +490,7 @@ class RepeatReminderAgent:
                 _preroll_has_vad = [False]
                 _last_speech_ts = [0.0]
                 _eot_sent = [False]
-                _EARLY_EOT_SEC = 0.30
+                _EARLY_EOT_SEC = 0.50
 
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():

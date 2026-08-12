@@ -655,7 +655,7 @@ class Block1Agent:
                 # Виграш: ~100-150мс на кожній репліці (наш VAD + activity_end < Gemini silence timer).
                 _last_speech_ts = [0.0]   # час останнього voice chunk
                 _eot_sent = [False]       # True якщо activity_end вже надіслано для цього мовчання
-                _EARLY_EOT_SEC = 0.30     # 300мс тиші → надсилаємо activity_end
+                _EARLY_EOT_SEC = 0.50     # 500мс тиші → надсилаємо activity_end
                 async for chunk in binotel_call.receive_audio():
                     if self._end_event.is_set():
                         break
