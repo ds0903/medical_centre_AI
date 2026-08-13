@@ -213,7 +213,7 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
             )
             result = await session.execute(
                 select(CallTask).where(CallTask.status == CallStatus.pending)
-                .order_by(_session_order, CallTask.visit_datetime)
+                .order_by(_session_order, CallTask.doctor_name, CallTask.visit_datetime)
             )
             tasks = result.scalars().all()
 
