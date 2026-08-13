@@ -206,9 +206,14 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
 
     for label in passes:
         async with get_session() as session:
+            from sqlalchemy import case as sa_case
+            _session_order = sa_case(
+                (CallTask.call_session == "morning", 0),
+                else_=1,
+            )
             result = await session.execute(
                 select(CallTask).where(CallTask.status == CallStatus.pending)
-                .order_by(CallTask.doctor_name, CallTask.visit_datetime)
+                .order_by(_session_order, CallTask.visit_datetime)
             )
             tasks = result.scalars().all()
 

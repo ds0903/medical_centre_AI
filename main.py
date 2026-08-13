@@ -130,12 +130,13 @@ async def run_production() -> None:
                     if await _has_pending_tasks("morning"):
                         await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
 
-            # Після ранкових — одразу вечірній fetch+дзвінки (без перевірки часу)
-            logger.info("[MAIN] Ранкові завершено — вечірній fetch+дзвінки одразу")
-            if not await _has_pending_tasks("evening"):
-                await fetch_and_schedule_calls(shift=1)
-            if await _has_pending_tasks("evening"):
-                await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
+            # Після ранкових — вечірній fetch+дзвінки (тільки якщо ранковий час уже минув)
+            if hour >= SCHEDULER_MORNING_CALL_HOUR:
+                logger.info("[MAIN] Ранкові завершено — вечірній fetch+дзвінки одразу")
+                if not await _has_pending_tasks("evening"):
+                    await fetch_and_schedule_calls(shift=1)
+                if await _has_pending_tasks("evening"):
+                    await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
 
     scheduler = create_scheduler()
     scheduler.start()
