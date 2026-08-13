@@ -274,6 +274,19 @@ types.FunctionDeclaration(
             ),
 
             types.FunctionDeclaration(
+                name="handle_record_error",
+                description=(
+                    "Обробити ситуацію коли пацієнт каже що запис є помилкою або що вже відвідував. "
+                    "Викликати при фразах: 'це помилка', 'я вже був', 'вже приходив', 'щось переплутали', "
+                    "'не той час', 'не та дата', 'я думала на інше', 'мабуть помилка'."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={},
+                ),
+            ),
+
+            types.FunctionDeclaration(
                 name="transfer_to_operator",
                 description=(
                     "Перемкнути дзвінок на менеджера (лінія 914). "
@@ -604,6 +617,10 @@ async def handle_tool_call(
                 "count": len(slots),
             })
         dates_list = ", ".join(f"{d['weekday']} {d['date']}" for d in date_summaries)
+        # Блок "той самий день" — ін'єктується в результат залежно від наявності дня запису
+        _vd_ordinal = f"{_ua_ordinal(visit_dt.day)} {_MONTHS_UA[visit_dt.month - 1]}"
+        _vd_short = f"{visit_dt.day} {_MONTHS_UA[visit_dt.month - 1]}"
+        _has_same_day = any(d["date"] == _vd_ordinal for d in date_summaries)
         logger.info(
             f"[TOOL] get_available_slots → {len(raw)} слотів на {len(date_summaries)} дат: {dates_list}"
         )
@@ -612,6 +629,27 @@ async def handle_tool_call(
         weekday_table = "; ".join(
             f"{d['date']} = {d['weekday']}" for d in date_summaries if d.get("weekday")
         )
+        if _has_same_day:
+            _same_day_block = (
+                f"\n\n⚠ ОСОБЛИВИЙ ВИПАДОК: серед дат є день запису пацієнта ({_vd_ordinal}).\n"
+                f"ЯКЩО ЗАПІЗНЮЄТЬСЯ (прийде пізніше, але не хоче змінювати запис):\n"
+                f"  → 'Можу перенести запис на пізніший час, або з'єднати з менеджером. Що зручніше?'\n"
+                f"  → Перенос → get_available_slots(date='{_vd_short}') → дій за результатом\n"
+                f"  → Менеджер → transfer_to_operator(reason='пацієнт запізнюється') → end_call\n"
+                f"  → Відмова від обох → confirm_visit() → end_call(confirmed)\n"
+                f"ЯКЩО ХОЧЕ ІНШИЙ ЧАС ТОГО Ж ДНЯ ({_vd_ordinal}):\n"
+                f"  → ОДРАЗУ get_available_slots(date='{_vd_short}') → дій за результатом"
+            )
+        else:
+            _same_day_block = (
+                f"\n\n⚠ ЯКЩО ПАЦІЄНТ ЗАПІЗНЮЄТЬСЯ АБО ХОЧЕ ТОЙ САМИЙ ДЕНЬ ({_vd_ordinal}):\n"
+                f"  На {_vd_ordinal} вільних місць немає серед доступних дат.\n"
+                f"  ЗАПІЗНЮЄТЬСЯ → 'Щоб повідомити клініку, потрібно з'єднати з менеджером. Бажаєте?'\n"
+                f"    → Так → transfer_to_operator(reason='пацієнт запізнюється') → end_call\n"
+                f"    → Ні → confirm_visit() → end_call(confirmed)\n"
+                f"  ХОЧЕ ТОЙ САМИЙ ДЕНЬ → 'На жаль, на {_vd_ordinal} вільного часу вже немає. Але є {natural}. Бажаєте перенести на інший день?'"
+            )
+
         result = {
             "success": True,
             "message": (
@@ -637,6 +675,7 @@ async def handle_tool_call(
                 f"→ 'прийду сьогодні/як планував/нікуди не переношу' → перепитай: 'Тобто Ваш запис залишається в силі?'\n"
                 f"  - 'так' → confirm_visit() → end_call(confirmed)\n\n"
                 f"ЗАБОРОНЕНО: пропонувати дати яких немає в переліку. Пропонувати скасування першою. Питати 'бажаєте перенести?' більше одного разу."
+                + _same_day_block
             ),
             "available_dates": date_summaries,
             "total_dates": len(date_summaries),
@@ -694,8 +733,31 @@ async def handle_tool_call(
         call_cache["end_call"] = result
         return result
 
+    if function_name == "handle_record_error":
+        result = {
+            "success": True,
+            "message": (
+                "Скажи пацієнту ДОСЛІВНО:\n"
+                "'Розуміємо, вибачте за незручності. Можу з'єднати вас з менеджером для уточнення, або скасувати запис.'\n\n"
+                "→ Пацієнт обирає менеджера → 'Добре, перенаправляю. До побачення!' → transfer_to_operator(reason='помилка в записі')\n"
+                "→ Пацієнт обирає скасування → cancel_visit() → 'Добре, скасовуємо. На все добре!' → end_call(cancelled)\n"
+                "→ Вагається або нечітко → перепитай: 'Що вам зручніше — з'єднати з менеджером, чи скасувати запис?'\n"
+                "  → Менеджер → transfer_to_operator(reason='помилка в записі')\n"
+                "  → Скасування → cancel_visit() → end_call(cancelled)\n"
+                "  → Знову нечітко → дій за ПРАВИЛОМ ЧОТИРЬОХ НЕРОЗУМІНЬ"
+            ),
+        }
+        call_cache["handle_record_error"] = result
+        return result
+
     if function_name == "get_preparation_info":
         from services.sheets_loader import search_service
+        _booking_note = (
+            "\n\nЯКЩО ПАЦІЄНТ ХОЧЕ ЗАПИСАТИСЬ (до цього або іншого лікаря):\n"
+            "'На жаль, записати на іншу процедуру я не можу — це через менеджера. Бажаєте з'єднати?'\n"
+            "→ МОВЧКИ ЧЕКАЙ. Тільки після явного 'так' → transfer_to_operator(reason='запис на іншу процедуру').\n"
+            "→ Відмова → 'Тоді повернімось до вашого запису. Все в силі?'"
+        )
         query = args.get("service_name", "")
         matches = search_service(query)
         if not matches:
@@ -706,6 +768,7 @@ async def handle_tool_call(
                     "Скажи пацієнту: 'На жаль, детальної інформації про підготовку до цієї процедури у мене немає. "
                     "Можу з'єднати з менеджером, або можете уточнити на рецепції при візиті.' "
                     "НЕ вигадуй підготовку самостійно."
+                    + _booking_note
                 ),
             }
 
@@ -737,6 +800,7 @@ async def handle_tool_call(
                     + "\n".join(parts)
                     + "\n\nРозкажи пацієнту цю інформацію природньою мовою (2-3 речення). "
                     "Після пояснення: 'Ви плануєте прийти чи є ще питання?'"
+                    + _booking_note
                 ),
                 "results": exact_matches,
             }
@@ -749,6 +813,7 @@ async def handle_tool_call(
                     f"Послугу '{query}' не знайдено точно в каталозі. "
                     f"Схожі: {alt_names}. "
                     "Скажи пацієнту що точної інформації немає, але можеш з'єднати з менеджером."
+                    + _booking_note
                 ),
                 "results": [],
             }
