@@ -43,6 +43,7 @@ from config import (
     GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION,
     SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC,
     INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, CALL_TIMEOUT_SEC,
+    GEMINI_API_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -473,6 +474,10 @@ class RepeatReminderAgent:
                             elif _call_cache.get("self_book", {}).get("success"):
                                 self.call_result = "self_book"
                                 logger.warning("[AGENT] SIP drop: mark_self_book вже виконано → self_book")
+                            elif _last_patient_said_text[0]:
+                                classified = await self._classify_last_phrase(_last_patient_said_text[0])
+                                logger.info(f"[AGENT] SIP drop classify: '{_last_patient_said_text[0]}' → {classified}")
+                                self.call_result = classified
                             else:
                                 self.call_result = "no_result"
                         self._end_event.set()
@@ -633,10 +638,10 @@ class RepeatReminderAgent:
 
                             # ── Аудіо AI → пацієнт ────────────────────────────────
                             if resp.data:
-                                turn_had_audio = True
-                                turn_audio_bytes += len(resp.data)
                                 if not _greeting_done.is_set():
                                     continue  # greeting buffer handled in warmup
+                                turn_had_audio = True
+                                turn_audio_bytes += len(resp.data)
                                 if _suppress_next_audio[0] and not _allow_next_turn[0]:
                                     continue  # suppress ghost turns
                                 _allow_next_turn[0] = False
@@ -672,22 +677,23 @@ class RepeatReminderAgent:
                                         and _greeting_done.is_set()
                                         and time.time() >= _interrupted_pause_until[0]):
                                     txt = sc.input_transcription.text.strip()
-                                    if txt and _real_vad_pending[0]:
+                                    if txt:
                                         now_t = time.time()
-                                        if (txt != _last_patient_said_text[0]
-                                                or now_t - _last_patient_said_time[0] > 3.0):
+                                        _is_dup = (txt == _last_patient_said_text[0]
+                                                   and now_t - _last_patient_said_time[0] < 3.0)
+                                        if not _is_dup:
                                             _last_patient_said_text[0] = txt
                                             _last_patient_said_time[0] = now_t
+                                            _suppress_next_audio[0] = False
+                                            _suppress_set_at[0] = 0.0
+                                            _had_patient_said = True
                                             _patient_said_count[0] += 1
                                             _real_vad_pending[0] = False
-                                            _had_patient_said = True
+                                            _allow_next_turn[0] = False
+                                            _activity[0] = now_t
+                                            _silence_count = 0
                                             _watchdog_injected[0] = 0
                                             logger.info(f"[TRANSCRIPT] Пацієнт: «{txt}»")
-                                            if _suppress_next_audio[0]:
-                                                _suppress_next_audio[0] = False
-                                                _suppress_set_at[0] = 0.0
-                                        else:
-                                            _real_vad_pending[0] = False
 
                             # ── Tool calls ─────────────────────────────────────────
                             if (resp.tool_call
@@ -695,8 +701,41 @@ class RepeatReminderAgent:
                                     and _greeting_done.is_set()):
                                 _batch = []
                                 _after_batch = None
+                                # Ghost-тур: suppress активний і пацієнт ще не говорив у цьому турі.
+                                # end_call обходить перевірку — дзвінок повинен завершитись навіть у ghost-турі.
+                                _has_critical = any(
+                                    fc.name == "end_call"
+                                    for fc in resp.tool_call.function_calls
+                                )
+                                if (_suppress_next_audio[0] or _allow_next_turn[0]) and not _had_patient_said and not _has_critical:
+                                    logger.debug("[AGENT] Ghost tool batch — пропускаємо")
+                                    await _live_session[0].send_tool_response(function_responses=[
+                                        types.FunctionResponse(id=fc.id, name=fc.name, response={"success": True})
+                                        for fc in resp.tool_call.function_calls
+                                    ])
+                                    continue
                                 for fc in resp.tool_call.function_calls:
                                     args = {k: v for k, v in (fc.args or {}).items()}
+                                    if _had_patient_said:
+                                        _suppress_next_audio[0] = False
+                                    # Захист: book_new_visit/decline заборонено поки пацієнт не заговорив
+                                    _is_destructive = fc.name in ("book_new_visit", "decline_with_reason")
+                                    if _is_destructive and (not _greeting_done.is_set() or _patient_said_count[0] == 0):
+                                        logger.warning(f"[AGENT] {fc.name} заблоковано — пацієнт ще не говорив")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"success": False, "message": "Спочатку поговори з пацієнтом — дочекайся його відповіді."},
+                                        ))
+                                        continue
+                                    # end_call(no_result) до першої репліки — занадто рано
+                                    _end_args = dict(fc.args) if fc.args else {}
+                                    if fc.name == "end_call" and _end_args.get("result") == "no_result" and _patient_said_count[0] < 1:
+                                        logger.warning("[AGENT] end_call(no_result) заблоковано — пацієнт ще нічого не сказав")
+                                        _batch.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"success": False, "message": "Пацієнт ще нічого не сказав — привітайся і дочекайся відповіді."},
+                                        ))
+                                        continue
                                     try:
                                         result = await handle_tool_call(
                                             fc.name, args, self.visit, _call_cache
@@ -759,16 +798,31 @@ class RepeatReminderAgent:
                             logger.info(f"[AI] Оля: «{' '.join(_ai_buf)}»")
                         logger.debug("[AGENT] recv_task: turn завершено")
 
+                        # Double-turn guard: Gemini іноді генерує 2 тури підряд (~1-2с) без відповіді
+                        # пацієнта. VAD між турами ловить фоновий шум → _real_vad_pending=True →
+                        # другий тур обходить suppress. Якщо від кінця попереднього AI туру пройшло
+                        # менше 2.5с і input_transcription не підтвердив реального голосу — це шум.
+                        _MIN_INTER_TURN_GAP = 2.5
+                        if _real_vad_pending[0] and not _had_patient_said:
+                            if time.time() - _last_ai_turn_end[0] < _MIN_INTER_TURN_GAP:
+                                _real_vad_pending[0] = False
+                                logger.debug("[AGENT] Double-turn guard: _real_vad_pending скинуто (шум між турами)")
+
                         if _draining:
                             if turn_had_audio:
-                                logger.info("[AGENT] AI завершив прощання — flush + 1с")
+                                _farewell_wait = 5.0 if self.call_result == "booked" else 1.0
+                                logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                 binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(1.0)
+                                await asyncio.sleep(_farewell_wait)
                             else:
-                                logger.info("[AGENT] end_call без аудіо — flush + 2с Opus drain")
+                                _no_audio_wait = 5.0 if self.call_result == "booked" else 2.0
+                                logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
                                 binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(2.0)
+                                await asyncio.sleep(_no_audio_wait)
                             return
+
+                        _ai_turn_active[0] = False
+                        _last_ai_turn_end[0] = time.time()
 
                         if _greeting_done.is_set() and turn_had_audio:
                             binotel_call.flush_encode_buffer()
@@ -787,8 +841,6 @@ class RepeatReminderAgent:
                                 if not _turn1_is_full:
                                     _allow_next_turn[0] = True
 
-                            _ai_turn_active[0] = False
-                            _last_ai_turn_end[0] = time.time()
                             if not _turn_was_interrupted:
                                 if _suppress_timeout_fired[0]:
                                     _suppress_timeout_fired[0] = False
@@ -839,7 +891,6 @@ class RepeatReminderAgent:
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
                 _suppress_next_audio[0] = True
-                _suppress_set_at[0] = time.time()
                 _last_ai_turn_end[0] = time.time()
                 # Greeting грає в real-time (sleep у циклі) → по виходу залишок ≈ 0.
                 # Потрібна тільки затримка затухання ехо кімнати (~800мс + запас).
@@ -1158,6 +1209,42 @@ class RepeatReminderAgent:
                     pass
             if not prefetch_task.done():
                 prefetch_task.cancel()
+
+    # ------------------------------------------------------------------
+    # Класифікація останньої фрази (SIP drop fallback)
+    # ------------------------------------------------------------------
+
+    def _get_classify_client(self):
+        if not hasattr(self, "_classify_client_cache"):
+            from google import genai as _genai
+            self._classify_client_cache = _genai.Client(api_key=GEMINI_API_KEY)
+        return self._classify_client_cache
+
+    _CLASSIFY_MODEL = "gemini-2.0-flash"
+
+    async def _classify_last_phrase(self, phrase: str) -> str:
+        """Gemini text API: аналізує останню фразу пацієнта при SIP drop → declined/no_result."""
+        if not phrase or len(phrase.strip()) < 2:
+            return "no_result"
+        prompt = (
+            f"Пацієнту зателефонували запропонувати записатись на повторний прийом до лікаря.\n"
+            f"Пацієнт сказав: \"{phrase}\"\n\n"
+            f"Визнач намір. Відповідь ТІЛЬКИ одне слово:\n"
+            f"declined — відмовляється (ні/не треба/не хочу/не буду/не можу)\n"
+            f"no_result — незрозуміло або не по темі"
+        )
+        try:
+            resp = await self._get_classify_client().aio.models.generate_content(
+                model=self._CLASSIFY_MODEL,
+                contents=prompt,
+            )
+            text = (resp.text or "").strip().lower()
+            if "declined" in text:
+                return "declined"
+            return "no_result"
+        except Exception as _e:
+            logger.warning(f"[AGENT] classify_phrase помилка: {_e!r}")
+            return "no_result"
 
     # ------------------------------------------------------------------
     # Коментар до дзвінка

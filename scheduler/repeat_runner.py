@@ -52,6 +52,15 @@ _RESULT_MAP = {
     "no_result": RepeatCallResult.no_result,
 }
 
+
+def _normalize_phone(phone: str) -> str:
+    p = phone.strip()
+    if p.startswith("+380"):
+        return "0" + p[4:]
+    if p.startswith("380") and len(p) == 12:
+        return "0" + p[3:]
+    return p
+
 # API статус для клініки: 1=Записано, 2=Відмовився, 3=Сам запишеться, 4=Не додзвонились
 _STATUS_API_MAP = {
     "booked":    1,
@@ -92,8 +101,7 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
       1. GET /followup_appts → список пацієнтів
       2. Для кожного:
          a. Якщо задача вже є в БД (GLOBALKEY) — пропустити
-         b. Перевірити наявність вільних слотів (doctorslots2)
-         c. Якщо є слоти → додати в repeat_call_tasks
+         b. Додати в repeat_call_tasks (перевірка слотів — перед дзвінком)
 
     Returns: кількість доданих задач
     """
@@ -124,22 +132,8 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
                 logger.debug(f"[B2 FETCH] Задача вже є: {source_visit_id}")
                 continue
 
-            # Перевірка наявності вільних слотів через doctorslots2
             doctor_name = str(p.get("doctor_name", ""))
             idpoint     = int(p.get("idpoint", 0))
-            try:
-                slots = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
-                avail_slots = [
-                    s for s in (slots or [])
-                    if datetime.fromisoformat(s["START_E"]).weekday() < 5
-                ]
-            except Exception as _e:
-                logger.warning(f"[B2 FETCH] get_doctor_slots_b2 помилка (пропускаємо): {_e}")
-                avail_slots = []
-
-            if not avail_slots:
-                logger.info(f"[B2 FETCH] Немає вільних слотів → не дзвонимо: {p.get('patient_name')}")
-                continue
 
             # Парсимо дати
             prev_date = None
@@ -165,7 +159,7 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
                 id=uuid.uuid4(),
                 source_visit_id=source_visit_id,
                 patient_name=p.get("patient_name", ""),
-                patient_phone=p.get("patient_phone", ""),
+                patient_phone=_normalize_phone(p.get("patient_phone", "")),
                 patient_id=patient_id or None,
                 previous_visit_date=prev_date,
                 previous_doctor=p.get("previous_doctor", ""),
@@ -236,6 +230,29 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
             break
 
         logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
+
+        # Перевіряємо слоти лікаря перед дзвінком
+        from services import clinic_api as _capi
+        try:
+            _slots = await _capi.get_doctor_slots_b2(task.doctor_name, task.idpoint or 0)
+            _avail = [
+                s for s in (_slots or [])
+                if datetime.fromisoformat(s["START_E"]).weekday() < 5
+            ]
+        except Exception as _se:
+            logger.warning(f"[B2 CALLS] get_doctor_slots_b2 помилка: {_se} — пропускаємо")
+            _avail = []
+
+        if not _avail:
+            logger.info(f"[B2 CALLS] Немає вільних слотів → skipped: {task.patient_name}")
+            async with get_session() as _s:
+                _t = await _s.get(RepeatCallTask, task.id)
+                if _t:
+                    _t.status = RepeatCallStatus.skipped
+                    _t.result = RepeatCallResult.no_result
+                    _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            continue
+
         try:
             await asyncio.wait_for(
                 _execute_repeat_call(task, max_retry),
@@ -366,7 +383,8 @@ async def _save_repeat_result(
             db_task.decline_category = decline_category
         if new_visit_id:
             db_task.new_visit_id = new_visit_id
-    logger.info(f"[B2 CALLS] Результат: {result_str} ({duration:.0f}с)")
+    _api_sid = _STATUS_API_MAP.get(result_str, "?")
+    logger.info(f"[B2 CALLS] Результат: {result_str} STATUS={_api_sid} ({duration:.0f}с)")
     await _send_api_status(task, result_str, commentary)
 
 
@@ -401,7 +419,7 @@ async def _send_api_status(task: RepeatCallTask, result_str: str, commentary: st
 
     try:
         from services import clinic_api as _capi
-        await _capi.update_repeat_call_status(task.source_visit_id, api_status, commentary)
+        await _capi.update_repeat_call_status(str(task.id), api_status, commentary)
     except Exception as e:
         logger.warning(f"[B2 CALLS] update_repeat_call_status помилка: {e}")
 
@@ -504,9 +522,9 @@ def setup_scheduler(scheduler: AsyncIOScheduler) -> None:
     _tz = ZoneInfo("Europe/Kyiv")
     scheduler.add_job(
         run_repeat_calls,
-        CronTrigger(hour="9-18", minute="0", day_of_week="mon-sun", timezone=_tz),
+        CronTrigger(hour="9-21", minute="0", day_of_week="mon-sun", timezone=_tz),
         id="b2_repeat_calls",
         name="Модуль 2.1: нагадування про повторні візити",
         replace_existing=True,
     )
-    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-18, всі дні)")
+    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-21, всі дні)")
