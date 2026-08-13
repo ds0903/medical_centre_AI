@@ -184,7 +184,7 @@ async def handle_tool_call(
     if call_cache is None:
         call_cache = {}
 
-    logger.info(f"[TOOL 2.1] {function_name}({args})")
+    logger.info(f"[TOOL] {function_name}({args})")
 
     # ── get_available_slots ─────────────────────────────────────────────────
     if function_name == "get_available_slots":
@@ -199,7 +199,7 @@ async def handle_tool_call(
                 raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                 call_cache["__raw_slots"] = raw if raw is not None else []
             except Exception as e:
-                logger.error(f"[TOOL 2.1] get_doctor_slots_b2 помилка: {e!r}")
+                logger.error(f"[TOOL] get_doctor_slots_b2 помилка: {e!r}")
                 raw = []
 
         # Фільтр вихідних
@@ -276,6 +276,8 @@ async def handle_tool_call(
                 ),
                 "slots": slots_list,
             }
+            logger.info(f"[TOOL] get_available_slots → {len(slots_list)} слотів: "
+                        + ", ".join(f"{s['slot_id']} {s['date']} {s['time']}" for s in slots_list))
             call_cache["get_available_slots"] = {"result": result, "_ts": time.monotonic()}
             return result
 
@@ -317,6 +319,8 @@ async def handle_tool_call(
             ),
             "slots": time_items,
         }
+        logger.info(f"[TOOL] get_available_slots(date={date_arg!r}) → {len(time_items)} слотів: "
+                    + ", ".join(f"{s['slot_id']} {s['time']}" for s in time_items))
         call_cache[f"slots_{date_arg}"] = result
         return result
 
@@ -328,7 +332,7 @@ async def handle_tool_call(
 
         # Захист від дублікатів
         if call_cache.get("book_new_visit", {}).get("success"):
-            logger.warning("[TOOL 2.1] book_new_visit: вже виконано — повертаємо кеш")
+            logger.warning("[TOOL] book_new_visit: вже виконано — повертаємо кеш")
             return call_cache["book_new_visit"]
 
         try:
@@ -373,11 +377,11 @@ async def handle_tool_call(
                 ),
             }
             call_cache["book_new_visit"] = result
-            logger.info(f"[TOOL 2.1] book_new_visit → new_visit_id={new_visit_id}")
+            logger.info(f"[TOOL] book_new_visit → new_visit_id={new_visit_id}")
             return result
 
         except Exception as e:
-            logger.error(f"[TOOL 2.1] book_new_visit помилка: {e!r}")
+            logger.error(f"[TOOL] book_new_visit помилка: {e!r}")
             result = {
                 "success": False,
                 "error": (
@@ -395,14 +399,14 @@ async def handle_tool_call(
         raw_reason = args.get("raw_reason", "")
         result = {"success": True, "category": category, "raw_reason": raw_reason}
         call_cache["decline"] = result
-        logger.info(f"[TOOL 2.1] decline_with_reason: category='{category}'")
+        logger.info(f"[TOOL] decline_with_reason: category='{category}'")
         return result
 
     # ── mark_self_book ──────────────────────────────────────────────────────
     if function_name == "mark_self_book":
         result = {"success": True}
         call_cache["self_book"] = result
-        logger.info("[TOOL 2.1] mark_self_book")
+        logger.info("[TOOL] mark_self_book")
         return result
 
     # ── end_call ────────────────────────────────────────────────────────────
@@ -410,8 +414,8 @@ async def handle_tool_call(
         call_result = args.get("result", "no_result")
         result = {"success": True, "result": call_result}
         call_cache["end_call"] = result
-        logger.info(f"[TOOL 2.1] end_call → {call_result}")
+        logger.info(f"[TOOL] end_call → {call_result}")
         return result
 
-    logger.error(f"[TOOL 2.1] Невідома функція: {function_name}")
+    logger.error(f"[TOOL] Невідома функція: {function_name}")
     return {"error": f"Невідома функція: {function_name}"}

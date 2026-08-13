@@ -137,7 +137,7 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
         }
         return hint, {"result": cache_result, "_ts": time.monotonic()}
     except Exception as _e:
-        logger.debug(f"[AGENT 2.1] _build_slots_hint failed: {_e!r}")
+        logger.debug(f"[AGENT] _build_slots_hint failed: {_e!r}")
         return None, None
 
 
@@ -258,7 +258,7 @@ class RepeatReminderAgent:
 
     async def run_production(self, binotel_call) -> str:
         logger.info("=" * 55)
-        logger.info("[AGENT 2.1] Повторний візит — дзвінок через Binotel")
+        logger.info("[AGENT] Повторний візит — дзвінок через Binotel")
         logger.info(f"  Пацієнт    : {self.visit.get('patient_name')}")
         logger.info(f"  Рекомендація: {self.visit.get('doctor_recommendation')}")
         logger.info(f"  Лікар      : {self.visit.get('doctor_name')}")
@@ -309,10 +309,10 @@ class RepeatReminderAgent:
             async def _do_reconnect() -> bool:
                 async with _reconnect_lock:
                     if _reconnect_count[0] >= _MAX_RECONNECTS:
-                        logger.error("[AGENT 2.1] Reconnect: вичерпано спроби")
+                        logger.error("[AGENT] Reconnect: вичерпано спроби")
                         return False
                     _reconnect_count[0] += 1
-                    logger.warning(f"[AGENT 2.1] Reconnect #{_reconnect_count[0]}/{_MAX_RECONNECTS}...")
+                    logger.warning(f"[AGENT] Reconnect #{_reconnect_count[0]}/{_MAX_RECONNECTS}...")
                     _reconnecting[0] = True
                     _reconnected_event.clear()
                     try:
@@ -328,10 +328,10 @@ class RepeatReminderAgent:
                                 pass
                         _live_session[0] = new_session
                         _live_cm[0] = new_cm
-                        logger.info(f"[AGENT 2.1] Reconnect #{_reconnect_count[0]} успішний")
+                        logger.info(f"[AGENT] Reconnect #{_reconnect_count[0]} успішний")
                         return True
                     except Exception as _re:
-                        logger.error(f"[AGENT 2.1] Reconnect провалився: {_re!r}")
+                        logger.error(f"[AGENT] Reconnect провалився: {_re!r}")
                         return False
                     finally:
                         _reconnecting[0] = False
@@ -347,9 +347,9 @@ class RepeatReminderAgent:
                     if self._end_event.is_set():
                         return
                     _silence_count += 1
-                    logger.info(f"[AGENT 2.1] Тиша {_silence_count}/{MAX_SILENCE_COUNT}")
+                    logger.info(f"[AGENT] Тиша {_silence_count}/{MAX_SILENCE_COUNT}")
                     if _silence_count >= 2 and not _patient_ever_spoke[0]:
-                        logger.warning("[AGENT 2.1] One-way audio — завершуємо")
+                        logger.warning("[AGENT] One-way audio — завершуємо")
                         self.call_result = "no_result"
                         self._end_event.set()
                         return
@@ -414,11 +414,11 @@ class RepeatReminderAgent:
                     _activity[0] = time.time()
                     _watchdog_injected[0] += 1
                     if _watchdog_injected[0] >= 3:
-                        logger.warning(f"[AGENT 2.1] Watchdog: {idle:.0f}с — завершуємо")
+                        logger.warning(f"[AGENT] Watchdog: {idle:.0f}с — завершуємо")
                         self.call_result = "no_result"
                         self._end_event.set()
                         return
-                    logger.warning(f"[AGENT 2.1] Watchdog: {idle:.0f}с — re-inject")
+                    logger.warning(f"[AGENT] Watchdog: {idle:.0f}с — re-inject")
                     try:
                         _suppress_next_audio[0] = False
                         await _live_session[0].send_client_content(
@@ -426,7 +426,7 @@ class RepeatReminderAgent:
                             turn_complete=True,
                         )
                     except Exception as e:
-                        logger.error(f"[AGENT 2.1] Watchdog помилка: {e!r}")
+                        logger.error(f"[AGENT] Watchdog помилка: {e!r}")
                         self._end_event.set()
                         return
 
@@ -448,12 +448,12 @@ class RepeatReminderAgent:
                         turn_complete=True,
                     )
                 except Exception as e:
-                    logger.error(f"[AGENT 2.1] Timeout warning помилка: {e!r}")
+                    logger.error(f"[AGENT] Timeout warning помилка: {e!r}")
                     return
                 await asyncio.sleep(60)
                 if self._end_event.is_set():
                     return
-                logger.warning("[AGENT 2.1] Timeout warning: 60с минуло → no_result")
+                logger.warning("[AGENT] Timeout warning: 60с минуло → no_result")
                 self.call_result = "no_result"
                 self._end_event.set()
 
@@ -462,17 +462,17 @@ class RepeatReminderAgent:
                 while not self._end_event.is_set():
                     await asyncio.sleep(1)
                     if not binotel_call.is_active:
-                        logger.warning("[AGENT 2.1] SIP скинуто — завершуємо")
+                        logger.warning("[AGENT] SIP скинуто — завершуємо")
                         if self.call_result in (None, "no_result"):
                             if _call_cache.get("book_new_visit", {}).get("success"):
                                 self.call_result = "booked"
-                                logger.warning("[AGENT 2.1] SIP drop: book_new_visit вже виконано → booked")
+                                logger.warning("[AGENT] SIP drop: book_new_visit вже виконано → booked")
                             elif _call_cache.get("decline", {}).get("success"):
                                 self.call_result = "declined"
-                                logger.warning("[AGENT 2.1] SIP drop: decline_with_reason вже виконано → declined")
+                                logger.warning("[AGENT] SIP drop: decline_with_reason вже виконано → declined")
                             elif _call_cache.get("self_book", {}).get("success"):
                                 self.call_result = "self_book"
-                                logger.warning("[AGENT 2.1] SIP drop: mark_self_book вже виконано → self_book")
+                                logger.warning("[AGENT] SIP drop: mark_self_book вже виконано → self_book")
                             else:
                                 self.call_result = "no_result"
                         self._end_event.set()
@@ -560,7 +560,7 @@ class RepeatReminderAgent:
                             _suppress_next_audio[0] = False
                             _suppress_set_at[0] = 0.0
                             _suppress_timeout_fired[0] = True
-                            logger.info("[AGENT 2.1] Suppress timeout: знято примусово")
+                            logger.info("[AGENT] Suppress timeout: знято примусово")
                         _last_speech_ts[0] = time.time()
                         _eot_sent[0] = False
                     elif (not _eot_sent[0]
@@ -585,11 +585,11 @@ class RepeatReminderAgent:
                     except (ConnectionClosedError, APIError):
                         if self._end_event.is_set():
                             break
-                        logger.warning("[AGENT 2.1] send_task: з'єднання перервано — чекаємо reconnect")
+                        logger.warning("[AGENT] send_task: з'єднання перервано — чекаємо reconnect")
                         try:
                             await asyncio.wait_for(_reconnected_event.wait(), timeout=15.0)
                         except asyncio.TimeoutError:
-                            logger.error("[AGENT 2.1] send_task: timeout reconnect → завершуємо")
+                            logger.error("[AGENT] send_task: timeout reconnect → завершуємо")
                             break
 
             async def _recv_and_handle() -> None:
@@ -622,7 +622,7 @@ class RepeatReminderAgent:
 
                             # ── Interrupted (перша перевірка — щоб continue пропустив все нижче) ──
                             if resp.server_content and resp.server_content.interrupted:
-                                logger.info("[AGENT 2.1] AI перервано — пацієнт говорить")
+                                logger.info("[AGENT] AI перервано — пацієнт говорить")
                                 binotel_call.flush_audio()
                                 _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True
@@ -682,7 +682,7 @@ class RepeatReminderAgent:
                                             _real_vad_pending[0] = False
                                             _had_patient_said = True
                                             _watchdog_injected[0] = 0
-                                            logger.info(f"[TRANSCRIPT 2.1] Пацієнт: «{txt}»")
+                                            logger.info(f"[TRANSCRIPT] Пацієнт: «{txt}»")
                                             if _suppress_next_audio[0]:
                                                 _suppress_next_audio[0] = False
                                                 _suppress_set_at[0] = 0.0
@@ -702,7 +702,7 @@ class RepeatReminderAgent:
                                             fc.name, args, self.visit, _call_cache
                                         )
                                     except Exception as _te:
-                                        logger.error(f"[AGENT 2.1] tool {fc.name} помилка: {_te!r}")
+                                        logger.error(f"[AGENT] tool {fc.name} помилка: {_te!r}")
                                         result = {
                                             "success": False,
                                             "error": "Технічна помилка. Скажи пацієнту що виникла проблема і запропонуй зателефонувати в клініку.",
@@ -718,22 +718,22 @@ class RepeatReminderAgent:
 
                                     if fc.name == "book_new_visit" and result.get("success"):
                                         self.call_result = "booked"
-                                        logger.info("[AGENT 2.1] book_new_visit → booked")
+                                        logger.info("[AGENT] book_new_visit → booked")
 
                                     if fc.name == "end_call":
                                         raw_result = result.get("result", "no_result")
                                         # Захист: якщо ключова дія вже виконана — гарантуємо правильний result
                                         if _call_cache.get("book_new_visit", {}).get("success") and raw_result != "booked":
-                                            logger.warning(f"[AGENT 2.1] end_call({raw_result}) але book_new_visit виконано → booked")
+                                            logger.warning(f"[AGENT] end_call({raw_result}) але book_new_visit виконано → booked")
                                             raw_result = "booked"
                                         elif _call_cache.get("decline", {}).get("success") and raw_result not in ("declined", "booked"):
-                                            logger.warning(f"[AGENT 2.1] end_call({raw_result}) але decline виконано → declined")
+                                            logger.warning(f"[AGENT] end_call({raw_result}) але decline виконано → declined")
                                             raw_result = "declined"
                                         elif _call_cache.get("self_book", {}).get("success") and raw_result not in ("self_book", "booked", "declined"):
-                                            logger.warning(f"[AGENT 2.1] end_call({raw_result}) але self_book виконано → self_book")
+                                            logger.warning(f"[AGENT] end_call({raw_result}) але self_book виконано → self_book")
                                             raw_result = "self_book"
                                         self.call_result = raw_result
-                                        logger.info(f"[AGENT 2.1] end_call → {self.call_result}")
+                                        logger.info(f"[AGENT] end_call → {self.call_result}")
                                         self._end_event.set()
                                         _after_batch = ("end_call",)
                                         break
@@ -746,24 +746,26 @@ class RepeatReminderAgent:
                         # turn завершено
                         if not turn_had_content:
                             if not self._end_event.is_set() and not _draining:
-                                logger.warning("[AGENT 2.1] recv_task: сесія закрита (no content) — reconnect...")
+                                logger.warning("[AGENT] recv_task: сесія закрита (no content) — reconnect...")
                                 if await _do_reconnect():
                                     continue
-                            logger.warning("[AGENT 2.1] recv_task: вихід (no content)")
+                            logger.warning("[AGENT] recv_task: вихід (no content)")
                             if _draining:
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(2.0)
                             return
 
-                        logger.debug("[AGENT 2.1] recv_task: turn завершено")
+                        if _ai_buf:
+                            logger.info(f"[AI] Оля: «{' '.join(_ai_buf)}»")
+                        logger.debug("[AGENT] recv_task: turn завершено")
 
                         if _draining:
                             if turn_had_audio:
-                                logger.info("[AGENT 2.1] AI завершив прощання — flush + 1с")
+                                logger.info("[AGENT] AI завершив прощання — flush + 1с")
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(1.0)
                             else:
-                                logger.info("[AGENT 2.1] end_call без аудіо — flush + 2с Opus drain")
+                                logger.info("[AGENT] end_call без аудіо — flush + 2с Opus drain")
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(2.0)
                             return
@@ -801,10 +803,10 @@ class RepeatReminderAgent:
                     except Exception as e:
                         if isinstance(e, (ConnectionClosedError, APIError, ConnectionResetError)):
                             if not self._end_event.is_set() and not _draining:
-                                logger.warning(f"[AGENT 2.1] recv_task: з'єднання перервано — reconnect...")
+                                logger.warning(f"[AGENT] recv_task: з'єднання перервано — reconnect...")
                                 if await _do_reconnect():
                                     continue
-                        logger.error(f"[AGENT 2.1] recv_task впав: {e!r}", exc_info=True)
+                        logger.error(f"[AGENT] recv_task впав: {e!r}", exc_info=True)
                         raise
 
             send_task            = asyncio.create_task(_send_patient_audio(), name="b21_send_audio")
@@ -822,9 +824,9 @@ class RepeatReminderAgent:
                         idpoint     = int(self.visit.get("idpoint", 0))
                         _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                         _call_cache["__raw_slots"] = _raw if _raw is not None else []
-                        logger.debug(f"[AGENT 2.1] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів")
+                        logger.debug(f"[AGENT] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів")
                     except Exception as _e:
-                        logger.debug(f"[AGENT 2.1] Cold prefetch failed: {_e!r}")
+                        logger.debug(f"[AGENT] Cold prefetch failed: {_e!r}")
                 asyncio.create_task(_prefetch_slots(), name="b21_prefetch")
 
             if greeting_buffer:
@@ -855,12 +857,12 @@ class RepeatReminderAgent:
                 _, _sh_cache_w = _build_slots_hint(_call_cache.get("__raw_slots"))
                 if _sh_cache_w and "get_available_slots" not in _call_cache:
                     _call_cache["get_available_slots"] = _sh_cache_w
-                    logger.info("[AGENT 2.1] Warmup: кеш слотів pre-populated")
+                    logger.info("[AGENT] Warmup: кеш слотів pre-populated")
 
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
                 _activity[0] = time.time()
-                logger.info("[AGENT 2.1] Стрімінг розпочато (warmup path)")
+                logger.info("[AGENT] Стрімінг розпочато (warmup path)")
                 _schedule_silence_timer()
             else:
                 await _live_session[0].send_client_content(
@@ -871,7 +873,7 @@ class RepeatReminderAgent:
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
                 _activity[0] = time.time()
-                logger.info("[AGENT 2.1] Стрімінг розпочато (cold path)")
+                logger.info("[AGENT] Стрімінг розпочато (cold path)")
 
                 async def _cold_populate_cache() -> None:
                     raw = _call_cache.get("__raw_slots")
@@ -889,7 +891,7 @@ class RepeatReminderAgent:
                     _, _sh = _build_slots_hint(raw)
                     if _sh and "get_available_slots" not in _call_cache:
                         _call_cache["get_available_slots"] = _sh
-                        logger.info("[AGENT 2.1] Cold: кеш слотів pre-populated")
+                        logger.info("[AGENT] Cold: кеш слотів pre-populated")
                 asyncio.create_task(_cold_populate_cache(), name="b21_cold_cache")
 
             try:
@@ -899,17 +901,17 @@ class RepeatReminderAgent:
                 )
                 for t in done:
                     if t.cancelled():
-                        logger.info(f"[AGENT 2.1] '{t.get_name()}' скасовано")
+                        logger.info(f"[AGENT] '{t.get_name()}' скасовано")
                     elif t.exception():
-                        logger.error(f"[AGENT 2.1] '{t.get_name()}' впав: {t.exception()!r}")
+                        logger.error(f"[AGENT] '{t.get_name()}' впав: {t.exception()!r}")
                     else:
-                        logger.info(f"[AGENT 2.1] '{t.get_name()}' завершено")
+                        logger.info(f"[AGENT] '{t.get_name()}' завершено")
 
                 if self._end_event.is_set() and not recv_task.done():
                     try:
                         await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
                     except asyncio.TimeoutError:
-                        logger.warning("[AGENT 2.1] Timeout очікування прощання AI (15с)")
+                        logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
             finally:
                 if _timer_task and not _timer_task.done():
                     _timer_task.cancel()
@@ -933,13 +935,13 @@ class RepeatReminderAgent:
                 if self.call_result in (None, "no_result"):
                     if _call_cache.get("book_new_visit", {}).get("success"):
                         self.call_result = "booked"
-                        logger.warning("[AGENT 2.1] finally: book_new_visit → booked")
+                        logger.warning("[AGENT] finally: book_new_visit → booked")
                     elif _call_cache.get("decline", {}).get("success"):
                         self.call_result = "declined"
-                        logger.warning("[AGENT 2.1] finally: decline → declined")
+                        logger.warning("[AGENT] finally: decline → declined")
                     elif _call_cache.get("self_book", {}).get("success"):
                         self.call_result = "self_book"
-                        logger.warning("[AGENT 2.1] finally: self_book → self_book")
+                        logger.warning("[AGENT] finally: self_book → self_book")
 
                 self._last_patient_text = _last_patient_said_text[0]
                 self._last_ai_text = _last_ai_said[0]
@@ -958,7 +960,7 @@ class RepeatReminderAgent:
 
         if getattr(self, "_session_reconnected", False) and warmup_session and greeting_buffer:
             _stale_warmup[0] = True
-            logger.info("[AGENT 2.1] Session відновлена через handle → primer буде надіслано")
+            logger.info("[AGENT] Session відновлена через handle → primer буде надіслано")
 
         try:
             if warmup_session and warmup_cm:
@@ -982,13 +984,13 @@ class RepeatReminderAgent:
                     except Exception:
                         pass
         except Exception as e:
-            logger.error(f"[AGENT 2.1] Помилка в production: {e}", exc_info=True)
+            logger.error(f"[AGENT] Помилка в production: {e}", exc_info=True)
 
         self.call_duration = time.time() - start
         result = self.call_result or "no_result"
         self.call_commentary = self._build_commentary(result)
         logger.info(
-            f"[AGENT 2.1] Завершено. Тривалість: {self.call_duration:.0f}с. "
+            f"[AGENT] Завершено. Тривалість: {self.call_duration:.0f}с. "
             f"Результат: {result} | {self.call_commentary}"
         )
         return result
@@ -1013,9 +1015,9 @@ class RepeatReminderAgent:
                 idpoint     = int(self.visit.get("idpoint", 0))
                 _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
                 self._prefetched_raw_slots = _raw if _raw is not None else []
-                logger.debug(f"[AGENT 2.1] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів")
+                logger.debug(f"[AGENT] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів")
             except Exception as _e:
-                logger.debug(f"[AGENT 2.1] Warmup prefetch failed: {_e!r}")
+                logger.debug(f"[AGENT] Warmup prefetch failed: {_e!r}")
 
         prefetch_task = asyncio.create_task(_warmup_prefetch(), name="b21_warmup_prefetch")
 
@@ -1035,7 +1037,7 @@ class RepeatReminderAgent:
                                     and msg.session_resumption_update.new_handle):
                                 self._resumption_handle = msg.session_resumption_update.new_handle
                             if msg.go_away:
-                                logger.warning(f"[AGENT 2.1] Monitor: GoAway — відновлення...")
+                                logger.warning(f"[AGENT] Monitor: GoAway — відновлення...")
                                 session_dead = True
                                 break
                     except asyncio.CancelledError:
@@ -1043,13 +1045,13 @@ class RepeatReminderAgent:
                     except Exception as _e:
                         _name = type(_e).__name__
                         if "ConnectionClosedOK" not in _name and getattr(_e, "code", None) != 1000:
-                            logger.info(f"[AGENT 2.1] Monitor: сесія закрита ({_name}) — відновлення...")
+                            logger.info(f"[AGENT] Monitor: сесія закрита ({_name}) — відновлення...")
                         session_dead = True
 
                     if not session_dead:
                         break
                     if not self._resumption_handle:
-                        logger.warning("[AGENT 2.1] Monitor: немає handle → cold path")
+                        logger.warning("[AGENT] Monitor: немає handle → cold path")
                         self._warmup_session = None
                         self._warmup_cm = None
                         break
@@ -1069,11 +1071,11 @@ class RepeatReminderAgent:
                         self._warmup_cm = new_cm
                         self._warmup_time = time.time()
                         self._session_reconnected = True
-                        logger.info("[AGENT 2.1] Monitor: warmup сесію відновлено")
+                        logger.info("[AGENT] Monitor: warmup сесію відновлено")
                     except asyncio.CancelledError:
                         raise
                     except Exception as _re:
-                        logger.error(f"[AGENT 2.1] Monitor: відновлення провалилось: {_re!r}")
+                        logger.error(f"[AGENT] Monitor: відновлення провалилось: {_re!r}")
                         self._warmup_session = None
                         self._warmup_cm = None
                         break
@@ -1110,7 +1112,7 @@ class RepeatReminderAgent:
                     pass
 
             logger.info(
-                f"[AGENT 2.1] Warmup готовий: {len(self._greeting_buffer)} chunks"
+                f"[AGENT] Warmup готовий: {len(self._greeting_buffer)} chunks"
                 f" ({self._greeting_duration:.1f}с)"
                 + (f", {len(self._prefetched_raw_slots)} слотів" if self._prefetched_raw_slots else "")
             )
@@ -1120,7 +1122,7 @@ class RepeatReminderAgent:
             _warmup_cm = None
             self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
         except Exception as e:
-            logger.warning(f"[AGENT 2.1] Warmup помилка: {e} — retry...")
+            logger.warning(f"[AGENT] Warmup помилка: {e} — retry...")
             self._greeting_buffer = []
             self._warmup_session = None
             self._warmup_cm = None
@@ -1141,10 +1143,10 @@ class RepeatReminderAgent:
                 self._warmup_session = warmup_session
                 self._warmup_time = time.time()
                 _warmup_cm = None
-                logger.info(f"[AGENT 2.1] Warmup retry успішний: {len(self._greeting_buffer)} chunks")
+                logger.info(f"[AGENT] Warmup retry успішний: {len(self._greeting_buffer)} chunks")
                 self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
             except Exception as e2:
-                logger.warning(f"[AGENT 2.1] Warmup retry провалився: {e2} — cold path")
+                logger.warning(f"[AGENT] Warmup retry провалився: {e2} — cold path")
                 self._greeting_buffer = []
                 self._warmup_session = None
                 self._warmup_cm = None
