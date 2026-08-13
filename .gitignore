@@ -9,3 +9,5 @@ info.txt
 credentials.json
 /test/
 /debug.txt
+old_prompt.yaml
+__pycache__/
