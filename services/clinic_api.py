@@ -488,7 +488,7 @@ async def update_repeat_call_status(source_visit_id: str, status: int, commentar
     status: 2=Відмовився, 3=Сам запишеться, 4=Не додзвонились/Помилка
     """
     commentary = (commentary or "")[:512]
-    _STATUS_LABELS = {2: "Відмовився", 3: "Сам запишеться", 4: "Не додзвонились"}
+    _STATUS_LABELS = {2: "Відмовився", 3: "Сам запишеться", 4: "Не додзвонились", 5: "Без результату"}
     label = _STATUS_LABELS.get(status, str(status))
 
     if DEBUG:

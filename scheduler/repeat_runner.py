@@ -67,7 +67,7 @@ _STATUS_API_MAP = {
     "declined":  2,
     "self_book": 3,
     "no_answer": 4,
-    "no_result": 4,
+    "no_result": 5,
 }
 
 
