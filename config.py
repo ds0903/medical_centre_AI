@@ -151,13 +151,13 @@ _b2_excl_raw = os.getenv("B2_EXCLUDED_LINES", "910")
 B2_EXCLUDED_LINES: set[str] = {l.strip() for l in _b2_excl_raw.split(",") if l.strip()}
 
 # ---------------------------------------------------------------------------
-# Модуль 2.2 — Email звітність
+# Модуль 2.1 — Email звітність (щотижнева + щомісячна)
 # ---------------------------------------------------------------------------
 SMTP_HOST        = os.getenv("SMTP_HOST", "")
 SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER        = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM        = os.getenv("SMTP_FROM", "")
-B3_REPORT_EMAILS: list[str] = [
-    e.strip() for e in os.getenv("B3_REPORT_EMAILS", "").split(",") if e.strip()
+B2_REPORT_EMAILS: list[str] = [
+    e.strip() for e in os.getenv("B2_REPORT_EMAILS", "").split(",") if e.strip()
 ]

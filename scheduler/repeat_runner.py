@@ -40,8 +40,8 @@ WORK_HOURS = {
     2: (9, 0, 17, 0),   # середа
     3: (9, 0, 17, 0),   # четвер
     4: (9, 0, 17, 0),   # п'ятниця
-    5: (9, 0, 14, 0),   # субота
-    6: (10, 0, 14, 0),  # неділя
+    # субота та неділя — бот не дзвонить у вихідні
+    6: (0, 0, 23, 59),  # TEST ONLY: неділя — прибрати після тесту
 }
 
 _RESULT_MAP = {
@@ -419,7 +419,7 @@ async def _send_api_status(task: RepeatCallTask, result_str: str, commentary: st
 
     try:
         from services import clinic_api as _capi
-        await _capi.update_repeat_call_status(str(task.id), api_status, commentary)
+        await _capi.update_repeat_call_status(str(task.source_visit_id), api_status, commentary)
     except Exception as e:
         logger.warning(f"[B2 CALLS] update_repeat_call_status помилка: {e}")
 
@@ -503,6 +503,10 @@ async def run_repeat_calls() -> None:
 
     logger.info(f"[B2 RUNNER] Запуск о {now.strftime('%H:%M')} (Пн-Нд)")
 
+    # Email звіти (перевіряємо щогодини — шлемо лише якщо потрібно)
+    from services.email_reporter import check_and_send_reports
+    await check_and_send_reports()
+
     # Фетч: формуємо чергу якщо ще не сформовано
     if SKIP_FETCH:
         logger.info("[B2 RUNNER] SKIP_FETCH=true — пропускаємо fetch, беремо existing задачі з БД")
@@ -522,9 +526,9 @@ def setup_scheduler(scheduler: AsyncIOScheduler) -> None:
     _tz = ZoneInfo("Europe/Kyiv")
     scheduler.add_job(
         run_repeat_calls,
-        CronTrigger(hour="9-21", minute="0", day_of_week="mon-sun", timezone=_tz),
+        CronTrigger(hour="9-18", minute="0", day_of_week="mon-sun", timezone=_tz),
         id="b2_repeat_calls",
         name="Модуль 2.1: нагадування про повторні візити",
         replace_existing=True,
     )
-    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-21, всі дні)")
+    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-18, всі дні)")

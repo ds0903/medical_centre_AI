@@ -355,7 +355,7 @@ async def get_repeat_visit_reminders() -> list[dict]:
     Повертає пацієнтів з ONDATE від завтра до +4 днів.
 
     Returns: list of dicts з внутрішніми ключами:
-        source_visit_id      : str  (= GLOBALKEY)
+        source_visit_id      : str  (= ID — числовий ID запису, передається в ai_savestate)
         patient_name         : str  (= PATIENT)
         patient_phone        : str  (= PATPHONE, нормалізований)
         patient_id           : str  (= GLOBALID)
@@ -398,7 +398,7 @@ def _map_followup_record(r: dict) -> dict:
     else:
         phone = raw_phone
     return {
-        "source_visit_id":      str(r.get("GLOBALKEY", "")),
+        "source_visit_id":      str(r.get("ID", "")),
         "patient_name":         str(r.get("PATIENT", "")),
         "patient_phone":        phone,
         "patient_id":           str(r.get("GLOBALID", "")),
@@ -478,12 +478,12 @@ async def save_b2_booking(slot_id: str, patient_name: str, patphone: str) -> Opt
             return slot_id
 
 
-async def update_repeat_call_status(task_id: str, status: int, commentary: str = "") -> None:
+async def update_repeat_call_status(source_visit_id: str, status: int, commentary: str = "") -> None:
     """
     Зафіксувати результат дзвінка Модуля 2.1 для статусів ≠ 1 (booked).
 
     STATUS=1 (booked) → обробляється через save_b2_booking() під час дзвінка.
-    STATUS≠1 → ai_savestate: [task_id (UUID з repeat_call_tasks), status_code]
+    STATUS≠1 → ai_savestate: [source_visit_id (ID з API клініки), status_code]
 
     status: 2=Відмовився, 3=Сам запишеться, 4=Не додзвонились/Помилка
     """
@@ -492,21 +492,21 @@ async def update_repeat_call_status(task_id: str, status: int, commentary: str =
     label = _STATUS_LABELS.get(status, str(status))
 
     if DEBUG:
-        logger.info(f"[DEBUG] update_repeat_call_status id={task_id} STATUS={status} ({label})")
+        logger.info(f"[DEBUG] update_repeat_call_status source_visit_id={source_visit_id} STATUS={status} ({label})")
         return
 
     if SKIP_POST:
-        logger.info(f"[API] update_repeat_call_status (SKIP_POST): id={task_id} STATUS={status} ({label})")
+        logger.info(f"[API] update_repeat_call_status (SKIP_POST): source_visit_id={source_visit_id} STATUS={status} ({label})")
         return
 
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/ai_savestate",
             headers=_make_headers(),
-            json={"fields": [str(task_id), status]},
+            json={"fields": [str(source_visit_id), status]},
         ) as resp:
             resp.raise_for_status()
-            logger.info(f"[API] ai_savestate → id={task_id} STATUS={status} ({label})")
+            logger.info(f"[API] ai_savestate → source_visit_id={source_visit_id} STATUS={status} ({label})")
 
 
 async def update_event_status(event_id: str, status: int, commentary: str = "") -> None:

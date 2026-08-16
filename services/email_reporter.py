@@ -1,360 +1,326 @@
 """
-Модуль 2.2 — Email звітність.
+Email звітність Модуля 2.1 — щотижнева та щомісячна розсилка.
 
-Щотижневий: кожен понеділок — кількість дзвінків, середні оцінки, топ порушень.
-Щомісячний: 1-го числа — рейтинг операторів, найгірші критерії, рекомендації.
-
-Читає дані з Google Sheets (аркуш Результати).
-Відправляє HTML листи через SMTP.
+Стан надсилання зберігається в data/report_state.json:
+  {"weekly_last": "2026-08-11", "monthly_last": "2026-08"}
 """
-
-import asyncio
+import json
 import logging
 import smtplib
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 
-from config import (
-    B2_CREDENTIALS_PATH,
-    B2_RESULT_SHEET_NAME,
-    B2_RESULT_SHEETS_ID,
-    B3_REPORT_EMAILS,
-    SMTP_FROM,
-    SMTP_HOST,
-    SMTP_PASSWORD,
-    SMTP_PORT,
-    SMTP_USER,
-)
+from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
 
-_MONTHS_UA = [
-    "", "Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень",
-    "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень",
-]
+_STATE_FILE = Path(__file__).parent.parent / "data" / "report_state.json"
 
-_FIXED_COLS = {
-    "ID дзвінка", "Дата/час", "Лінія", "Оператор", "Напрям",
-    "Тривалість (с)", "Оцінка (%)", "AI коментар", "Маркери (є)", "Маркери (немає)",
+_RESULT_LABELS = {
+    "booked":    "Записано",
+    "declined":  "Відмовились",
+    "self_book": "Самостійно запишуться",
+    "no_answer": "Не додзвонились",
+    "no_result": "Без результату",
+}
+
+_DECLINE_LABELS = {
+    1:  "Не вказали причину",
+    2:  "Не встигають доїхати",
+    3:  "Змінилися плани",
+    4:  "Викликали на роботу",
+    5:  "Їде у відрядження",
+    6:  "Одужання",
+    7:  "Хотіли швидше",
+    8:  "Були в іншого фахівця",
+    9:  "Дорого",
+    10: "Захворіла дитина",
+    11: "Вже не треба",
+    12: "Потрапили в лікарню",
+    13: "Уже були на прийомі",
+    14: "Не готові всі відповіді аналізів",
+    15: "Записані в інший день",
+    16: "Захворіли",
+    17: "Поїхали",
+    18: "За сімейними обставинами",
+    19: "Нема з ким залишити дитину",
+    20: "Погодні умови",
+    21: "Викликали додому лікаря",
+    22: "За станом здоров'я (гін.)",
+    23: "Знайшли територіально ближче",
+    24: "Транспортні проблеми",
+    25: "Смерть пацієнта",
+    26: "Повітряна тривога",
 }
 
 
-class EmailReporter:
+# ---------------------------------------------------------------------------
+# Стан
+# ---------------------------------------------------------------------------
 
-    def __init__(self):
-        self._service = None
-
-    # ------------------------------------------------------------------
-    # Читання Sheets
-    # ------------------------------------------------------------------
-
-    def _get_service(self):
-        if self._service:
-            return self._service
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        creds = service_account.Credentials.from_service_account_file(
-            B2_CREDENTIALS_PATH,
-            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-        )
-        self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        return self._service
-
-    def _read_sheet_sync(self) -> list[list]:
-        svc = self._get_service()
-        res = (
-            svc.spreadsheets().values()
-            .get(spreadsheetId=B2_RESULT_SHEETS_ID, range=f"{B2_RESULT_SHEET_NAME}!A1:ZZ")
-            .execute()
-        )
-        return res.get("values", [])
-
-    async def _read_rows(self) -> list[dict]:
-        rows = await asyncio.to_thread(self._read_sheet_sync)
-        if not rows or len(rows) < 2:
-            return []
-        headers = rows[0]
-        result = []
-        for row in rows[1:]:
-            padded = row + [""] * max(0, len(headers) - len(row))
-            result.append(dict(zip(headers, padded)))
-        return result
-
-    # ------------------------------------------------------------------
-    # Утиліти
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_dt(val: str) -> datetime | None:
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
-            try:
-                return datetime.strptime(val.strip()[:len(fmt)], fmt)
-            except Exception:
-                pass
-        return None
-
-    @staticmethod
-    def _parse_score(val: str) -> float:
+def _load_state() -> dict:
+    if _STATE_FILE.exists():
         try:
-            return float(val.replace("%", "").strip()) / 100
+            return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            return 0.0
+            pass
+    return {}
 
-    async def _rows_in_range(self, since: datetime, until: datetime) -> list[dict]:
-        all_rows = await self._read_rows()
-        result = []
-        for r in all_rows:
-            dt = self._parse_dt(r.get("Дата/час", ""))
-            if dt and since <= dt < until:
-                result.append(r)
-        return result
 
-    # ------------------------------------------------------------------
-    # Щотижневий звіт
-    # ------------------------------------------------------------------
+def _save_state(state: dict) -> None:
+    _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    async def send_weekly_report(self, since: datetime, until: datetime) -> None:
-        if not self._can_send():
-            return
-        rows = await self._rows_in_range(since, until)
-        logger.info(f"[REPORTER] Тижневий звіт: {len(rows)} дзвінків ({since.date()}–{until.date()})")
-        html = self._weekly_html(rows, since, until)
-        subject = (
-            f"Тижневий звіт колл-центру "
-            f"({since.strftime('%d.%m')}–{(until - timedelta(days=1)).strftime('%d.%m.%Y')})"
-        )
-        await asyncio.to_thread(self._send, subject, html)
 
-    def _weekly_html(self, rows: list[dict], since: datetime, until: datetime) -> str:
-        total = len(rows)
-        period = f"{since.strftime('%d.%m.%Y')} – {(until - timedelta(days=1)).strftime('%d.%m.%Y')}"
+# ---------------------------------------------------------------------------
+# Перевірка чи треба надсилати
+# ---------------------------------------------------------------------------
 
-        if not total:
-            return f"<p>За тиждень {period} дзвінків не знайдено.</p>"
+def should_send_weekly() -> bool:
+    today = date.today()
+    if today.weekday() != 0:  # 0 = понеділок
+        return False
+    state = _load_state()
+    return state.get("weekly_last") != today.isoformat()
 
-        scores = [self._parse_score(r.get("Оцінка (%)", "0")) for r in rows]
-        avg = sum(scores) / len(scores)
 
-        # Оцінки по операторах
-        op_scores: dict[str, list[float]] = defaultdict(list)
-        for r, s in zip(rows, scores):
-            op_scores[r.get("Оператор", "?") or "?"].append(s)
+def should_send_monthly() -> bool:
+    today = date.today()
+    if today.day != 1:
+        return False
+    state = _load_state()
+    month_key = today.strftime("%Y-%m")
+    return state.get("monthly_last") != month_key
 
-        # Топ порушень маркерів
-        violations: dict[str, int] = defaultdict(int)
-        for r in rows:
-            bad = r.get("Маркери (немає)", "") or ""
-            if bad and bad != "—":
-                for v in bad.split(","):
-                    v = v.strip()
-                    if v:
-                        violations[v] += 1
-        top_viol = sorted(violations.items(), key=lambda x: -x[1])[:5]
 
-        op_rows_html = ""
-        for op, sc_list in sorted(op_scores.items()):
-            op_avg = sum(sc_list) / len(sc_list)
-            color = self._score_color(op_avg)
-            op_rows_html += (
-                f"<tr>"
-                f"<td style='padding:8px;border:1px solid #ddd'>{op}</td>"
-                f"<td style='padding:8px;border:1px solid #ddd;text-align:center'>{len(sc_list)}</td>"
-                f"<td style='padding:8px;border:1px solid #ddd;text-align:center;"
-                f"color:{color};font-weight:bold'>{op_avg * 100:.1f}%</td>"
-                f"</tr>"
+# ---------------------------------------------------------------------------
+# Запити до БД
+# ---------------------------------------------------------------------------
+
+async def _fetch_stats(date_from: datetime, date_to: datetime) -> dict:
+    from db.database import get_session
+    from db.models import RepeatCallTask, RepeatCallStatus, RepeatCallResult
+
+    async with get_session() as session:
+        # Підрахунок по результатах
+        rows = await session.execute(
+            select(RepeatCallTask.result, func.count().label("cnt"))
+            .where(
+                RepeatCallTask.completed_at >= date_from,
+                RepeatCallTask.completed_at < date_to,
+                RepeatCallTask.status.in_([
+                    RepeatCallStatus.completed,
+                    RepeatCallStatus.failed,
+                ]),
             )
+            .group_by(RepeatCallTask.result)
+        )
+        result_counts = {str(r.result.value if r.result else "no_result"): r.cnt for r in rows}
 
-        viol_html = "".join(f"<li><b>{p}</b> — {n} раз(и)</li>" for p, n in top_viol)
-        if not viol_html:
-            viol_html = "<li>Порушень не виявлено</li>"
+        # Підрахунок категорій відмов
+        declined_rows = await session.execute(
+            select(RepeatCallTask.decline_category, func.count().label("cnt"))
+            .where(
+                RepeatCallTask.completed_at >= date_from,
+                RepeatCallTask.completed_at < date_to,
+                RepeatCallTask.result == RepeatCallResult.declined,
+                RepeatCallTask.decline_category.isnot(None),
+                RepeatCallTask.decline_category != "",
+            )
+            .group_by(RepeatCallTask.decline_category)
+            .order_by(func.count().desc())
+        )
+        decline_counts = {r.decline_category: r.cnt for r in declined_rows}
 
-        return f"""
-<html><body style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#2c3e50">
-<h2>📊 Тижневий звіт колл-центру Медіком</h2>
-<p style="color:#7f8c8d">{period}</p>
-<table style="width:100%;border-collapse:collapse;margin:12px 0">
-  <tr style="background:#ecf0f1">
-    <td style="padding:10px;border:1px solid #bdc3c7"><b>Всього дзвінків</b></td>
-    <td style="padding:10px;border:1px solid #bdc3c7;font-size:22px"><b>{total}</b></td>
-  </tr>
-  <tr>
-    <td style="padding:10px;border:1px solid #bdc3c7"><b>Середня оцінка</b></td>
-    <td style="padding:10px;border:1px solid #bdc3c7;font-size:22px;
-       color:{self._score_color(avg)};font-weight:bold">{avg * 100:.1f}%</td>
-  </tr>
-</table>
-<h3>Оператори</h3>
-<table style="width:100%;border-collapse:collapse">
-  <tr style="background:#3498db;color:white">
-    <th style="padding:8px;text-align:left">Оператор</th>
-    <th style="padding:8px">Дзвінків</th>
-    <th style="padding:8px">Середня оцінка</th>
-  </tr>
-  {op_rows_html}
-</table>
-<h3>Топ порушень фраз-маркерів</h3>
-<ul>{viol_html}</ul>
-<hr style="border:none;border-top:1px solid #ecf0f1;margin:20px 0">
-<p style="color:#95a5a6;font-size:12px">Звіт сформовано автоматично · Медіком AI</p>
-</body></html>
+        total = await session.scalar(
+            select(func.count())
+            .where(
+                RepeatCallTask.completed_at >= date_from,
+                RepeatCallTask.completed_at < date_to,
+                RepeatCallTask.status.in_([
+                    RepeatCallStatus.completed,
+                    RepeatCallStatus.failed,
+                ]),
+            )
+        ) or 0
+
+    return {
+        "total": total,
+        "result_counts": result_counts,
+        "decline_counts": decline_counts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Форматування тексту листа
+# ---------------------------------------------------------------------------
+
+def _fmt_results(result_counts: dict, total: int) -> str:
+    lines = []
+    for key, label in _RESULT_LABELS.items():
+        cnt = result_counts.get(key, 0)
+        pct = round(cnt / total * 100) if total else 0
+        lines.append(f"  • {label}: {cnt} ({pct}%)")
+    return "\n".join(lines)
+
+
+def _fmt_declines(decline_counts: dict, top: int | None = None) -> str:
+    if not decline_counts:
+        return "  Немає даних"
+    items = sorted(decline_counts.items(), key=lambda x: x[1], reverse=True)
+    if top:
+        items = items[:top]
+    lines = []
+    for category, cnt in items:
+        lines.append(f"  • {category}: {cnt}")
+    return "\n".join(lines)
+
+
+def _build_weekly_body(stats: dict, period_start: date, period_end: date) -> str:
+    total = stats["total"]
+    booked = stats["result_counts"].get("booked", 0)
+    conversion = round(booked / total * 100) if total else 0
+    return f"""Щотижневий звіт — Модуль 2.1 «Повторні візити»
+Період: {period_start.strftime('%d.%m.%Y')} – {period_end.strftime('%d.%m.%Y')}
+
+ЗАГАЛЬНА СТАТИСТИКА
+  Всього дзвінків: {total}
+  Конверсія (записано): {conversion}%
+
+РОЗПОДІЛ ЗА СТАТУСАМИ
+{_fmt_results(stats['result_counts'], total)}
+
+ПРИЧИНИ ВІДМОВ
+{_fmt_declines(stats['decline_counts'])}
 """
 
-    # ------------------------------------------------------------------
-    # Щомісячний звіт
-    # ------------------------------------------------------------------
 
-    async def send_monthly_report(self, year: int, month: int) -> None:
-        if not self._can_send():
-            return
-        since = datetime(year, month, 1)
-        until = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
-        rows = await self._rows_in_range(since, until)
-        logger.info(f"[REPORTER] Місячний звіт {year}-{month:02d}: {len(rows)} дзвінків")
-        html = self._monthly_html(rows, since)
-        subject = f"Місячний звіт колл-центру — {_MONTHS_UA[month]} {year}"
-        await asyncio.to_thread(self._send, subject, html)
+def _build_monthly_body(
+    stats: dict,
+    prev_stats: dict,
+    period_start: date,
+    period_end: date,
+) -> str:
+    total = stats["total"]
+    booked = stats["result_counts"].get("booked", 0)
+    conversion = round(booked / total * 100) if total else 0
 
-    def _monthly_html(self, rows: list[dict], since: datetime) -> str:
-        total = len(rows)
-        month_label = f"{_MONTHS_UA[since.month]} {since.year}"
+    prev_total = prev_stats["total"]
+    prev_booked = prev_stats["result_counts"].get("booked", 0)
+    prev_conversion = round(prev_booked / prev_total * 100) if prev_total else 0
 
-        if not total:
-            return f"<p>За {month_label} дзвінків не знайдено.</p>"
+    delta_total = total - prev_total
+    delta_conv  = conversion - prev_conversion
 
-        scores = [self._parse_score(r.get("Оцінка (%)", "0")) for r in rows]
-        avg = sum(scores) / len(scores)
+    return f"""Щомісячний звіт — Модуль 2.1 «Повторні візити»
+Період: {period_start.strftime('%d.%m.%Y')} – {period_end.strftime('%d.%m.%Y')}
 
-        # Дані по операторах
-        op_data: dict[str, dict] = {}
-        for r, s in zip(rows, scores):
-            op = r.get("Оператор", "?") or "?"
-            if op not in op_data:
-                op_data[op] = {"scores": [], "violations": defaultdict(int)}
-            op_data[op]["scores"].append(s)
-            bad = r.get("Маркери (немає)", "") or ""
-            if bad and bad != "—":
-                for v in bad.split(","):
-                    v = v.strip()
-                    if v:
-                        op_data[op]["violations"][v] += 1
+ЗАГАЛЬНА СТАТИСТИКА
+  Всього дзвінків: {total} (зміна: {delta_total:+d} порівняно з минулим місяцем)
+  Конверсія (записано): {conversion}% (зміна: {delta_conv:+d}%)
 
-        # Рейтинг операторів (за середньою оцінкою)
-        op_ranked = sorted(
-            op_data.items(),
-            key=lambda x: sum(x[1]["scores"]) / len(x[1]["scores"]),
-            reverse=True,
-        )
+РОЗПОДІЛ ЗА СТАТУСАМИ
+{_fmt_results(stats['result_counts'], total)}
 
-        # Найгірші критерії
-        criteria_keys = [k for k in (rows[0].keys() if rows else []) if k not in _FIXED_COLS]
-        criteria_fail: dict[str, int] = {}
-        for k in criteria_keys:
-            criteria_fail[k] = sum(1 for r in rows if r.get(k, "✓") == "✗")
-        worst_criteria = sorted(criteria_fail.items(), key=lambda x: -x[1])[:5]
+ТОП-5 ПРИЧИН ВІДМОВ
+{_fmt_declines(stats['decline_counts'], top=5)}
 
-        # Рекомендації
-        recommendations = []
-        for criterion, cnt in worst_criteria:
-            pct = cnt / total * 100
-            if pct > 25:
-                recommendations.append(
-                    f"Навчання з теми «{criterion}» (порушення у {pct:.0f}% дзвінків)"
-                )
-
-        medals = ["🥇", "🥈", "🥉"]
-        op_rows_html = ""
-        for i, (op, d) in enumerate(op_ranked):
-            op_avg = sum(d["scores"]) / len(d["scores"])
-            color = self._score_color(op_avg)
-            badge = medals[i] if i < 3 else f"{i + 1}."
-            op_rows_html += (
-                f"<tr>"
-                f"<td style='padding:8px;border:1px solid #ddd'>{badge} {op}</td>"
-                f"<td style='padding:8px;border:1px solid #ddd;text-align:center'>{len(d['scores'])}</td>"
-                f"<td style='padding:8px;border:1px solid #ddd;text-align:center;"
-                f"color:{color};font-weight:bold'>{op_avg * 100:.1f}%</td>"
-                f"</tr>"
-            )
-
-        worst_html = "".join(
-            f"<li><b>{c}</b> — {n} порушень ({n / total * 100:.0f}%)</li>"
-            for c, n in worst_criteria
-        ) or "<li>Немає даних</li>"
-
-        rec_html = "".join(f"<li>{r}</li>" for r in recommendations)
-        if not rec_html:
-            rec_html = "<li>Всі показники в нормі — навчання не потребується</li>"
-
-        return f"""
-<html><body style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#2c3e50">
-<h2>📊 Місячний звіт колл-центру Медіком — {month_label}</h2>
-<table style="width:100%;border-collapse:collapse;margin:12px 0">
-  <tr style="background:#ecf0f1">
-    <td style="padding:10px;border:1px solid #bdc3c7"><b>Всього дзвінків</b></td>
-    <td style="padding:10px;border:1px solid #bdc3c7;font-size:22px"><b>{total}</b></td>
-  </tr>
-  <tr>
-    <td style="padding:10px;border:1px solid #bdc3c7"><b>Середня оцінка за місяць</b></td>
-    <td style="padding:10px;border:1px solid #bdc3c7;font-size:22px;
-       color:{self._score_color(avg)};font-weight:bold">{avg * 100:.1f}%</td>
-  </tr>
-</table>
-<h3>🏆 Рейтинг операторів</h3>
-<table style="width:100%;border-collapse:collapse">
-  <tr style="background:#3498db;color:white">
-    <th style="padding:8px;text-align:left">Оператор</th>
-    <th style="padding:8px">Дзвінків</th>
-    <th style="padding:8px">Середня оцінка</th>
-  </tr>
-  {op_rows_html}
-</table>
-<h3>⚠️ Найчастіші порушення критеріїв</h3>
-<ul>{worst_html}</ul>
-<h3>📚 Рекомендації щодо навчання</h3>
-<ul>{rec_html}</ul>
-<hr style="border:none;border-top:1px solid #ecf0f1;margin:20px 0">
-<p style="color:#95a5a6;font-size:12px">Звіт сформовано автоматично · Медіком AI</p>
-</body></html>
+ПОРІВНЯННЯ З МИНУЛИМ МІСЯЦЕМ
+  Дзвінків: {prev_total} → {total}
+  Записано: {prev_booked} → {booked}
+  Конверсія: {prev_conversion}% → {conversion}%
 """
 
-    # ------------------------------------------------------------------
-    # SMTP
-    # ------------------------------------------------------------------
 
-    def _can_send(self) -> bool:
-        if not SMTP_HOST:
-            logger.warning("[REPORTER] SMTP_HOST не задано — email вимкнено")
-            return False
-        if not B3_REPORT_EMAILS:
-            logger.warning("[REPORTER] B3_REPORT_EMAILS не задано — нікому надсилати")
-            return False
-        if not B2_RESULT_SHEETS_ID:
-            logger.warning("[REPORTER] B2_RESULT_SHEETS_ID не задано — немає звідки читати дані")
-            return False
-        return True
+# ---------------------------------------------------------------------------
+# Надсилання SMTP
+# ---------------------------------------------------------------------------
 
-    def _send(self, subject: str, html: str) -> None:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = SMTP_FROM or SMTP_USER
-        msg["To"]      = ", ".join(B3_REPORT_EMAILS)
-        msg.attach(MIMEText(html, "html", "utf-8"))
-        try:
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.login(SMTP_USER, SMTP_PASSWORD)
-                smtp.sendmail(msg["From"], B3_REPORT_EMAILS, msg.as_string())
-            logger.info(f"[REPORTER] Надіслано: «{subject}» → {B3_REPORT_EMAILS}")
-        except Exception as e:
-            logger.error(f"[REPORTER] Помилка відправки: {e!r}")
+def _send_email(subject: str, body: str) -> None:
+    from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, B2_REPORT_EMAILS
 
-    @staticmethod
-    def _score_color(score: float) -> str:
-        if score >= 0.8:
-            return "#2d8a4e"
-        if score >= 0.6:
-            return "#e67e22"
-        return "#c0392b"
+    if not SMTP_HOST or not B2_REPORT_EMAILS:
+        logger.warning("[REPORT] SMTP не налаштовано або B2_REPORT_EMAILS порожній — пропускаємо")
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = SMTP_FROM
+    msg["To"]      = ", ".join(B2_REPORT_EMAILS)
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.login(SMTP_USER, SMTP_PASSWORD)
+            smtp.sendmail(SMTP_FROM, B2_REPORT_EMAILS, msg.as_bytes())
+        logger.info(f"[REPORT] Надіслано: {subject} → {B2_REPORT_EMAILS}")
+    except Exception as e:
+        logger.error(f"[REPORT] Помилка надсилання: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Публічні функції
+# ---------------------------------------------------------------------------
+
+async def send_weekly_report() -> None:
+    today = date.today()
+    period_end   = today
+    period_start = today - timedelta(days=7)
+
+    date_from = datetime(period_start.year, period_start.month, period_start.day, tzinfo=None)
+    date_to   = datetime(period_end.year,   period_end.month,   period_end.day,   tzinfo=None)
+
+    logger.info(f"[REPORT] Тижневий звіт: {period_start} – {period_end}")
+    stats = await _fetch_stats(date_from, date_to)
+    body  = _build_weekly_body(stats, period_start, period_end)
+    subject = f"[Медіком] Тижневий звіт — повторні візити ({today.strftime('%d.%m.%Y')})"
+    _send_email(subject, body)
+
+    state = _load_state()
+    state["weekly_last"] = today.isoformat()
+    _save_state(state)
+
+
+async def send_monthly_report() -> None:
+    today = date.today()
+    # Поточний місяць
+    period_start = date(today.year, today.month, 1)
+    if today.month == 12:
+        period_end = date(today.year + 1, 1, 1)
+    else:
+        period_end = date(today.year, today.month + 1, 1)
+
+    # Попередній місяць
+    if today.month == 1:
+        prev_start = date(today.year - 1, 12, 1)
+        prev_end   = date(today.year, 1, 1)
+    else:
+        prev_start = date(today.year, today.month - 1, 1)
+        prev_end   = period_start
+
+    date_from = datetime(period_start.year, period_start.month, period_start.day)
+    date_to   = datetime(period_end.year,   period_end.month,   period_end.day)
+    prev_from = datetime(prev_start.year,   prev_start.month,   prev_start.day)
+    prev_to   = datetime(prev_end.year,     prev_end.month,     prev_end.day)
+
+    logger.info(f"[REPORT] Місячний звіт: {period_start} – {period_end}")
+    stats      = await _fetch_stats(date_from, date_to)
+    prev_stats = await _fetch_stats(prev_from, prev_to)
+    body    = _build_monthly_body(stats, prev_stats, period_start, period_end - timedelta(days=1))
+    subject = f"[Медіком] Місячний звіт — повторні візити ({period_start.strftime('%m.%Y')})"
+    _send_email(subject, body)
+
+    state = _load_state()
+    state["monthly_last"] = today.strftime("%Y-%m")
+    _save_state(state)
+
+
+async def check_and_send_reports() -> None:
+    """Викликається щогодини планувальником — надсилає звіт якщо потрібно."""
+    if should_send_weekly():
+        await send_weekly_report()
+    if should_send_monthly():
+        await send_monthly_report()
