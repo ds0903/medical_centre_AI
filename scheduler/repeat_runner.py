@@ -41,7 +41,6 @@ WORK_HOURS = {
     3: (9, 0, 17, 0),   # четвер
     4: (9, 0, 17, 0),   # п'ятниця
     # субота та неділя — бот не дзвонить у вихідні
-    6: (0, 0, 23, 59),  # TEST ONLY: неділя — прибрати після тесту
 }
 
 _RESULT_MAP = {
@@ -231,8 +230,22 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
 
         logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
 
-        # Перевіряємо слоти лікаря перед дзвінком
         from services import clinic_api as _capi
+
+        # Перевіряємо чи ще актуальний запис перед дзвінком (ai_checkstate)
+        enabled = await _capi.check_call_enabled(task.source_visit_id)
+        if not enabled:
+            logger.info(f"[B2 CALLS] ENABLED=0 — пропускаємо: {task.patient_name} visit={task.source_visit_id}")
+            async with get_session() as _s:
+                _t = await _s.get(RepeatCallTask, task.id)
+                if _t:
+                    _t.status = RepeatCallStatus.skipped
+                    _t.result = RepeatCallResult.no_result
+                    _t.operator_note = "пропущено: ENABLED=0 (ai_checkstate)"
+                    _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            continue
+
+        # Перевіряємо слоти лікаря перед дзвінком
         try:
             _slots = await _capi.get_doctor_slots_b2(task.doctor_name, task.idpoint or 0)
             _avail = [
