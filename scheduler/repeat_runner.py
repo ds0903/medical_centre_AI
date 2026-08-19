@@ -35,11 +35,11 @@ _KYIV = ZoneInfo("Europe/Kyiv")
 
 # Робочі години для вихідних дзвінків (год_початку, хв, год_кінця, хв)
 WORK_HOURS = {
-    0: (9, 0, 17, 0),   # понеділок
-    1: (9, 0, 17, 0),   # вівторок
-    2: (9, 0, 17, 0),   # середа
-    3: (9, 0, 17, 0),   # четвер
-    4: (9, 0, 17, 0),   # п'ятниця
+    0: (0, 0, 23, 59),  # понеділок
+    1: (0, 0, 23, 59),  # вівторок
+    2: (0, 0, 23, 59),  # середа
+    3: (0, 0, 23, 59),  # четвер
+    4: (0, 0, 23, 59),  # п'ятниця
     # субота та неділя — бот не дзвонить у вихідні
 }
 
@@ -536,7 +536,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler) -> None:
     _tz = ZoneInfo("Europe/Kyiv")
     scheduler.add_job(
         run_repeat_calls,
-        CronTrigger(hour="9-18", minute="0", day_of_week="mon-sun", timezone=_tz),
+        CronTrigger(hour="*", minute="0", day_of_week="mon-fri", timezone=_tz),
         id="b2_repeat_calls",
         name="Модуль 2.1: нагадування про повторні візити",
         replace_existing=True,
