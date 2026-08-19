@@ -248,10 +248,7 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
         # Перевіряємо слоти лікаря перед дзвінком
         try:
             _slots = await _capi.get_doctor_slots_b2(task.doctor_name, task.idpoint or 0)
-            _avail = [
-                s for s in (_slots or [])
-                if datetime.fromisoformat(s["START_E"]).weekday() < 5
-            ]
+            _avail = list(_slots or [])
         except Exception as _se:
             logger.warning(f"[B2 CALLS] get_doctor_slots_b2 помилка: {_se} — пропускаємо")
             _avail = []
