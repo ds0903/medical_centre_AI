@@ -49,10 +49,9 @@ async def main() -> None:
     setup_b21_scheduler(scheduler)
     scheduler.start()
 
-    if SKIP_SCHEDULER:
-        from scheduler.repeat_runner import run_repeat_calls
-        logger.info("[B2] SKIP_SCHEDULER=true — запускаємо одразу без чекання cron")
-        asyncio.create_task(run_repeat_calls())
+    from scheduler.repeat_runner import run_repeat_calls
+    logger.info("[B2] Запускаємо одразу при старті (не чекаємо cron)")
+    asyncio.create_task(run_repeat_calls())
 
     loop = asyncio.get_running_loop()
     try:
