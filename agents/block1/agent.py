@@ -1678,7 +1678,7 @@ class Block1Agent:
                                 self._resumption_handle = msg.session_resumption_update.new_handle
                                 logger.debug("[AGENT] Monitor: resumption handle оновлено")
                             if msg.go_away:
-                                logger.warning(
+                                logger.debug(
                                     f"[AGENT] Monitor: GoAway ({msg.go_away.time_left})"
                                     " — відновлюємо сесію..."
                                 )
@@ -1724,7 +1724,7 @@ class Block1Agent:
                         self._warmup_cm = new_cm
                         self._warmup_time = time.time()
                         self._session_reconnected = True
-                        logger.info("[AGENT] Monitor: warmup сесію відновлено через handle")
+                        logger.debug("[AGENT] Monitor: warmup сесію відновлено через handle")
                         # Продовжуємо зовнішній while True з новою сесією
                     except asyncio.CancelledError:
                         raise

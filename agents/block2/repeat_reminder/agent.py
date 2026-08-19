@@ -1086,7 +1086,7 @@ class RepeatReminderAgent:
                                     and msg.session_resumption_update.new_handle):
                                 self._resumption_handle = msg.session_resumption_update.new_handle
                             if msg.go_away:
-                                logger.warning(f"[AGENT] Monitor: GoAway — відновлення...")
+                                logger.debug(f"[AGENT] Monitor: GoAway — відновлення...")
                                 session_dead = True
                                 break
                     except asyncio.CancelledError:
@@ -1120,7 +1120,7 @@ class RepeatReminderAgent:
                         self._warmup_cm = new_cm
                         self._warmup_time = time.time()
                         self._session_reconnected = True
-                        logger.info("[AGENT] Monitor: warmup сесію відновлено")
+                        logger.debug("[AGENT] Monitor: warmup сесію відновлено")
                     except asyncio.CancelledError:
                         raise
                     except Exception as _re:

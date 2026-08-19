@@ -102,6 +102,9 @@ class BinotelWebSocket:
                     except json.JSONDecodeError:
                         logger.debug(f"[WS] Не JSON: {raw[:100]}")
                         continue
+                    if not isinstance(data, dict):
+                        logger.debug(f"[WS] Не dict: {raw[:100]}")
+                        continue
                     self._handle_event(data)
 
             except asyncio.CancelledError:
