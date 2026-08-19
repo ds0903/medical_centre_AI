@@ -66,9 +66,52 @@ async def init_db() -> None:
 async def _migrate(conn) -> None:
     """Додати відсутні колонки та оновити enum типи."""
     migrations = [
+        # call_tasks
         "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS message VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS appointment VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS preparation VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS call_session VARCHAR",
         "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS error_message VARCHAR",
         "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS operator_note VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS commentary VARCHAR(512)",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS doctor_specialization VARCHAR",
+        "ALTER TABLE call_tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+        # call_history
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS message VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS appointment VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS preparation VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS call_session VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS error_message VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS operator_note VARCHAR",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS commentary VARCHAR(512)",
+        "ALTER TABLE call_history ADD COLUMN IF NOT EXISTS doctor_specialization VARCHAR",
+        # repeat_call_tasks
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS patient_id VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS previous_doctor VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS doctor_id VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS doctor_specialization VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS doctor_recommendation VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS repeat_visit_date TIMESTAMP",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS decline_category VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS new_visit_id VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS error_message VARCHAR",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS idpoint INTEGER",
+        "ALTER TABLE repeat_call_tasks ADD COLUMN IF NOT EXISTS commentary VARCHAR(512)",
+        # repeat_call_history
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS patient_id VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS previous_doctor VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS doctor_id VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS doctor_specialization VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS doctor_recommendation VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS repeat_visit_date TIMESTAMP",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS decline_category VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS new_visit_id VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS error_message VARCHAR",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS idpoint INTEGER",
+        "ALTER TABLE repeat_call_history ADD COLUMN IF NOT EXISTS commentary VARCHAR(512)",
+        # analyzed_calls
+        "ALTER TABLE analyzed_calls ADD COLUMN IF NOT EXISTS sheets_row INTEGER",
+        "ALTER TABLE analyzed_calls ADD COLUMN IF NOT EXISTS error_message VARCHAR",
     ]
     for sql in migrations:
         await conn.execute(text(sql))
