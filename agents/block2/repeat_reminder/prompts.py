@@ -64,6 +64,12 @@ def _get_today_date() -> str:
     return f"{weekday}, {now.day} {month} {now.year} р."
 
 
+_CLINIC_ADDRESSES: dict[str, str] = {
+    "1": "Сонячний мікрорайон, 59, Кривий Ріг",
+    "3": "вулиця Пушкіна, 13-О, Кривий Ріг",
+}
+
+
 def _get_greeting() -> str:
     hour = datetime.now(ZoneInfo("Europe/Kyiv")).hour
     if hour < 12:
@@ -124,6 +130,12 @@ def build_system_prompt(visit_context: dict) -> str:
         else:
             recommendation = "прийти на повторний прийом"
 
+    idpoint = str(visit_context.get("idpoint", ""))
+    clinic_address = _CLINIC_ADDRESSES.get(idpoint, "")
+    clinic_address_phrase = (
+        f" Чекаємо вас за адресою: {clinic_address}." if clinic_address else ""
+    )
+
     return template.format(
         today_date=_get_today_date(),
         greeting=_get_greeting(),
@@ -136,6 +148,7 @@ def build_system_prompt(visit_context: dict) -> str:
         doctor_recommendation=recommendation,
         repeat_visit_date=repeat_date,
         decline_categories=decline_list,
+        clinic_address_phrase=clinic_address_phrase,
     )
 
 
