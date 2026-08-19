@@ -320,8 +320,6 @@ async def get_doctor_slots_b2(doctor_name: str, idpoint: int) -> list[dict]:
         slots = []
         for day_offset in range(1, 8):
             day = base + timedelta(days=day_offset)
-            if day.weekday() >= 5:
-                continue
             slots.extend([
                 {"ID": 9100000 + day_offset * 10 + 1, "START_E": day.strftime("%Y-%m-%d 09:00:00")},
                 {"ID": 9100000 + day_offset * 10 + 2, "START_E": day.strftime("%Y-%m-%d 11:00:00")},

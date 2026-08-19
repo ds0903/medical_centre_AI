@@ -202,13 +202,10 @@ async def handle_tool_call(
                 logger.error(f"[TOOL] get_doctor_slots_b2 помилка: {e!r}")
                 raw = []
 
-        # Фільтр вихідних
         filtered: list[dict] = []
         for item in (raw or []):
             try:
-                dt = datetime.fromisoformat(item["START_E"])
-                if dt.weekday() >= 5:
-                    continue
+                datetime.fromisoformat(item["START_E"])  # валідація формату
                 filtered.append(item)
             except Exception:
                 pass

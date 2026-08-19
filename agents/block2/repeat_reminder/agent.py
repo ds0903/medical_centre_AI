@@ -107,8 +107,6 @@ def _build_slots_hint(raw_slots: list | None) -> tuple[str | None, dict | None]:
             if count >= 5:
                 break
             d = _dt.fromisoformat(item["START_E"])
-            if d.weekday() >= 5:
-                continue
             date_str = f"{_ua_ordinal(d.day)} {_MONTHS_UA[d.month - 1]}"
             hour_str = _format_hour_ua(d.hour, d.minute)
             grouped.setdefault(date_str, []).append({"hour_ua": hour_str, "slot_id": str(item["ID"])})
