@@ -45,7 +45,7 @@ async def main() -> None:
 
     await init_db()
 
-    scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
+    scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
     setup_b21_scheduler(scheduler)
     scheduler.start()
 

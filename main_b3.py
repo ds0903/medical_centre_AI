@@ -133,7 +133,7 @@ async def main() -> None:
 
     await init_db()
 
-    scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
+    scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
     _setup_email_scheduler(scheduler)
     scheduler.start()
 
