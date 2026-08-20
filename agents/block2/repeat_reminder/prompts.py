@@ -66,7 +66,7 @@ def _get_today_date() -> str:
 
 _CLINIC_ADDRESSES: dict[str, str] = {
     "1": "Сонячний мікрорайон, 59, Кривий Ріг",
-    "3": "вулиця Пушкіна, 13-О, Кривий Ріг",
+    "3": "вулиця Гірничих Інженерів, 13, Кривий Ріг",
 }
 
 
@@ -86,6 +86,16 @@ def _format_date(iso_str: str) -> str:
         return f"{dt.day} {_MONTHS_UA[dt.month - 1]} {dt.year} р."
     except Exception:
         return iso_str
+
+
+def _extract_address_name(full_name: str) -> str:
+    """З 'ПРІЗВИЩЕ ІМ'Я ПОБАТЬКОВІ' витягує 'Ім'я По-батькові' або 'Ім'я'."""
+    parts = full_name.strip().split()
+    if len(parts) >= 3:
+        return f"{parts[1].capitalize()} {parts[2].capitalize()}"
+    if len(parts) == 2:
+        return parts[1].capitalize()
+    return ""  # тільки прізвище — не звертаємось по імені
 
 
 def build_system_prompt(visit_context: dict) -> str:
@@ -136,10 +146,13 @@ def build_system_prompt(visit_context: dict) -> str:
         f" Чекаємо вас за адресою: {clinic_address}." if clinic_address else ""
     )
 
+    patient_address = _extract_address_name(visit_context.get("patient_name", ""))
+
     return template.format(
         today_date=_get_today_date(),
         greeting=_get_greeting(),
         patient_name=visit_context.get("patient_name", ""),
+        patient_address=patient_address,
         patient_phone=visit_context.get("patient_phone", ""),
         previous_visit_date=prev_date,
         previous_doctor=visit_context.get("previous_doctor", ""),
