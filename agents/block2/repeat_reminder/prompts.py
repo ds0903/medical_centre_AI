@@ -98,6 +98,15 @@ def _extract_address_name(full_name: str) -> str:
     return ""  # тільки прізвище — не звертаємось по імені
 
 
+def _extract_doctor_brief(doctor_name: str, doctor_specialization: str) -> str:
+    """'ПРІЗВИЩЕ ІМ'Я ПО-БАТЬКОВІ' + спеціалізація → 'спеціалізація Прізвище'."""
+    parts = doctor_name.strip().split()
+    surname = parts[0].capitalize() if parts else ""
+    if doctor_specialization and surname:
+        return f"{doctor_specialization} {surname}"
+    return doctor_specialization or surname
+
+
 def build_system_prompt(visit_context: dict) -> str:
     """
     Будує системний промпт для агента Модуля 2.1.
@@ -147,6 +156,7 @@ def build_system_prompt(visit_context: dict) -> str:
     )
 
     patient_address = _extract_address_name(visit_context.get("patient_name", ""))
+    doctor_brief = _extract_doctor_brief(doctor_name, doctor_spec)
 
     return template.format(
         today_date=_get_today_date(),
@@ -158,6 +168,7 @@ def build_system_prompt(visit_context: dict) -> str:
         previous_doctor=visit_context.get("previous_doctor", ""),
         doctor_name=doctor_name,
         doctor_specialization=doctor_spec,
+        doctor_brief=doctor_brief,
         doctor_recommendation=recommendation,
         repeat_visit_date=repeat_date,
         decline_categories=decline_list,
@@ -166,7 +177,7 @@ def build_system_prompt(visit_context: dict) -> str:
 
 
 _FALLBACK_TEMPLATE = """\
-Ти — Оля, голосовий асистент медичного центру «Медіком» (Кривий Ріг).
+Ти — Оля, голосовий асистент медичного центру «Медіком Кривбас».
 Сьогодні: {today_date}. {greeting}.
 
 Телефонуєш пацієнту {patient_name} щодо повторного прийому.
