@@ -540,5 +540,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         id="b2_repeat_calls",
         name="Модуль 2.1: нагадування про повторні візити",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-18, всі дні)")

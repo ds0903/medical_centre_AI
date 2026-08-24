@@ -673,6 +673,8 @@ def create_scheduler() -> AsyncIOScheduler:
         id="calls_morning",
         name=f"Ранковий обдзвін ({SCHEDULER_MORNING_CALL_HOUR}:{SCHEDULER_MORNING_CALL_MINUTE:02d}-{SCHEDULER_MORNING_CALL_END_HOUR}:00)",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         _fetch_evening,
@@ -687,6 +689,8 @@ def create_scheduler() -> AsyncIOScheduler:
         id="calls_evening",
         name=f"Вечірній обдзвін ({SCHEDULER_EVENING_CALL_HOUR}:{SCHEDULER_EVENING_CALL_MINUTE:02d}-{SCHEDULER_EVENING_CALL_END_HOUR}:00)",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         _cleanup_logs,
