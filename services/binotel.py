@@ -114,11 +114,17 @@ async def shutdown() -> None:
             pass
         _ws = None
     if _sip:
+        sip_ref = _sip
+        _sip = None
         try:
-            _sip.stop()
+            await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, sip_ref.stop),
+                timeout=10,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[BINOTEL] SIP stop timeout (10с) — продовжуємо без очікування")
         except Exception:
             pass
-        _sip = None
     logger.info("[BINOTEL] Сервіси зупинено")
 
 
