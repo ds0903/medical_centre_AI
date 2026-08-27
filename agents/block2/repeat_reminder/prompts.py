@@ -99,12 +99,10 @@ def _extract_address_name(full_name: str) -> str:
 
 
 def _extract_doctor_brief(doctor_name: str, doctor_specialization: str) -> str:
-    """'ПРІЗВИЩЕ ІМ'Я ПО-БАТЬКОВІ' + спеціалізація → 'спеціалізація Прізвище'."""
+    """'ПРІЗВИЩЕ ІМ'Я ПО-БАТЬКОВІ' → 'лікар Прізвище'."""
     parts = doctor_name.strip().split()
     surname = parts[0].capitalize() if parts else ""
-    if doctor_specialization and surname:
-        return f"{doctor_specialization.capitalize()} {surname}"
-    return doctor_specialization.capitalize() if doctor_specialization else surname
+    return f"лікар {surname}" if surname else "лікар"
 
 
 def build_system_prompt(visit_context: dict) -> str:
