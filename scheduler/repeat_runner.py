@@ -33,15 +33,6 @@ logger = logging.getLogger(__name__)
 
 _KYIV = ZoneInfo("Europe/Kyiv")
 
-# Робочі години для вихідних дзвінків (год_початку, хв, год_кінця, хв)
-WORK_HOURS = {
-    0: (0, 0, 23, 59),  # понеділок
-    1: (0, 0, 23, 59),  # вівторок
-    2: (0, 0, 23, 59),  # середа
-    3: (0, 0, 23, 59),  # четвер
-    4: (0, 0, 23, 59),  # п'ятниця
-    # субота та неділя — бот не дзвонить у вихідні
-}
 
 _RESULT_MAP = {
     "booked":    RepeatCallResult.booked,
@@ -70,19 +61,12 @@ _STATUS_API_MAP = {
 }
 
 
-def _is_work_time(dt: datetime | None = None) -> bool:
-    """Чи зараз робочі години для вихідних дзвінків."""
-    if dt is None:
-        dt = datetime.now(_KYIV)
-    elif dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_KYIV)
-    hours = WORK_HOURS.get(dt.weekday())
-    if not hours:
-        return False
-    sh, sm, eh, em = hours
-    start = dt.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    end   = dt.replace(hour=eh, minute=em, second=0, microsecond=0)
-    return start <= dt < end
+def _is_workday() -> bool:
+    """Пн-Пт = робочі дні. Вимикається через SCHEDULER_SAFETY_GUARDS=false."""
+    from config import SCHEDULER_SAFETY_GUARDS
+    if not SCHEDULER_SAFETY_GUARDS:
+        return True
+    return datetime.now(_KYIV).weekday() < 5  # 0=Пн, 5=Сб, 6=Нд
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +169,7 @@ async def fetch_and_queue_repeat_calls(days_before: int = 2) -> int:
 
 async def process_repeat_calls(max_retry: int = 2) -> None:
     """Обробити всі pending задачі з repeat_call_tasks."""
-    from config import DEBUG, CALL_TIMEOUT_SEC, PAUSE_BETWEEN_CALLS_SEC
+    from config import DEBUG, CALL_TIMEOUT_SEC, PAUSE_BETWEEN_CALLS_SEC, B2_CALL_END_HOUR, SKIP_SCHEDULER
 
     logger.info("[B2 CALLS] Починаємо обдзвін щодо повторних візитів")
 
@@ -222,10 +206,13 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
 
     logger.info(f"[B2 CALLS] Задач для обдзвону: {len(tasks)}")
 
-    from config import SKIP_SCHEDULER as _skip_sched
     for i, task in enumerate(tasks):
-        if not _skip_sched and not _is_work_time():
-            logger.info(f"[B2 CALLS] Вийшли за межі робочого часу — зупиняємось ({len(tasks) - i} залишилось)")
+        now_hour = datetime.now(_KYIV).hour
+        if not SKIP_SCHEDULER and now_hour >= B2_CALL_END_HOUR:
+            logger.info(
+                f"[B2 CALLS] Кінець робочого часу ({B2_CALL_END_HOUR}:00). "
+                f"Залишилось: {len(tasks) - i}. Зупиняємось."
+            )
             break
 
         logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
@@ -504,14 +491,19 @@ async def archive_repeat_tasks() -> None:
 
 async def run_repeat_calls() -> None:
     """Основний щогодинний job."""
-    from config import B2_CALL_DAYS_BEFORE, B2_MAX_RETRY, SKIP_SCHEDULER, SKIP_FETCH  # type: ignore[import-not-found]
+    from config import B2_CALL_DAYS_BEFORE, B2_MAX_RETRY, B2_CALL_START_HOUR, SKIP_SCHEDULER, SKIP_FETCH  # type: ignore[import-not-found]
 
     now = datetime.now(_KYIV)
-    if not SKIP_SCHEDULER and not _is_work_time(now):
-        logger.info(f"[B2 RUNNER] Поза робочим часом ({now.strftime('%H:%M')}) — пропускаємо")
+
+    if not SKIP_SCHEDULER and not _is_workday():
+        logger.info(f"[B2 RUNNER] Вихідний день ({now.strftime('%A')}) — пропускаємо")
         return
 
-    logger.info(f"[B2 RUNNER] Запуск о {now.strftime('%H:%M')} (Пн-Нд)")
+    if not SKIP_SCHEDULER and now.hour < B2_CALL_START_HOUR:
+        logger.info(f"[B2 RUNNER] Ще не робочий час ({now.strftime('%H:%M')}, старт о {B2_CALL_START_HOUR}:00) — пропускаємо")
+        return
+
+    logger.info(f"[B2 RUNNER] Запуск о {now.strftime('%H:%M')} (Пн-Пт)")
 
     # Email звіти (перевіряємо щогодини — шлемо лише якщо потрібно)
     from services.email_reporter import check_and_send_reports
@@ -543,4 +535,4 @@ def setup_scheduler(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         coalesce=True,
     )
-    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини 9-18, всі дні)")
+    logger.info("[B2 RUNNER] Планувальник зареєстровано (щогодини Пн-Пт 09:00–17:00)")
