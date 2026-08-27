@@ -21,6 +21,20 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # не потрібен для
 GEMINI_MODEL        = os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 GEMINI_FLASH_MODEL  = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
 
+# Cartesia TTS (Block1 ASR pipeline)
+CARTESIA_API_KEY  = os.getenv("CARTESIA_API_KEY", "")
+CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "")
+CARTESIA_MODEL_ID = os.getenv("CARTESIA_MODEL_ID", "sonic-3.5")
+CARTESIA_LANGUAGE = os.getenv("CARTESIA_LANGUAGE", "uk")
+
+# Fish Audio ASR (Block1 ASR pipeline)
+FISH_API_KEY  = os.getenv("FISH_API_KEY", "")
+FISH_LANGUAGE = os.getenv("FISH_LANGUAGE", "uk")
+
+# Gemini TTS (Block1 ASR pipeline)
+GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Zephyr")
+
 # PostgreSQL
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
