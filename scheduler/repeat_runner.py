@@ -188,83 +188,86 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
                 t.result = RepeatCallResult.no_result
                 logger.warning(f"[B2 CALLS] Краш під час дзвінка → failed: {t.patient_name}")
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(RepeatCallTask).where(RepeatCallTask.status == RepeatCallStatus.pending)
-            .order_by(RepeatCallTask.created_at)
-        )
-        tasks = result.scalars().all()
-
     from config import ALLOWED_PHONES
-    if ALLOWED_PHONES:
-        tasks = [t for t in tasks if t.patient_phone in ALLOWED_PHONES]
-        logger.info(f"[B2 CALLS] Після whitelist-фільтру (ALLOWED_PHONES) залишилось {len(tasks)} задач")
 
-    if not tasks:
-        logger.info("[B2 CALLS] Немає pending задач")
-        return
+    passes = ["Основний обдзвін", "Повторний обдзвін (не відповіли)"]
 
-    logger.info(f"[B2 CALLS] Задач для обдзвону: {len(tasks)}")
-
-    for i, task in enumerate(tasks):
-        now_hour = datetime.now(_KYIV).hour
-        if not SKIP_SCHEDULER and now_hour >= B2_CALL_END_HOUR:
-            logger.info(
-                f"[B2 CALLS] Кінець робочого часу ({B2_CALL_END_HOUR}:00). "
-                f"Залишилось: {len(tasks) - i}. Зупиняємось."
+    for label in passes:
+        async with get_session() as session:
+            result = await session.execute(
+                select(RepeatCallTask).where(RepeatCallTask.status == RepeatCallStatus.pending)
+                .order_by(RepeatCallTask.created_at)
             )
+            tasks = result.scalars().all()
+
+        if ALLOWED_PHONES:
+            tasks = [t for t in tasks if t.patient_phone in ALLOWED_PHONES]
+
+        if not tasks:
+            logger.info(f"[B2 CALLS] {label}: немає задач — завершуємо")
             break
 
-        logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
+        logger.info(f"[B2 CALLS] {label}: {len(tasks)} задач")
 
-        from services import clinic_api as _capi
+        for i, task in enumerate(tasks):
+            now_hour = datetime.now(_KYIV).hour
+            if not SKIP_SCHEDULER and now_hour >= B2_CALL_END_HOUR:
+                logger.info(
+                    f"[B2 CALLS] Кінець робочого часу ({B2_CALL_END_HOUR}:00). "
+                    f"Залишилось: {len(tasks) - i}. Зупиняємось."
+                )
+                break
 
-        # Перевіряємо чи ще актуальний запис перед дзвінком (ai_checkstate)
-        enabled = await _capi.check_call_enabled(task.source_visit_id)
-        if not enabled:
-            logger.info(f"[B2 CALLS] ENABLED=0 — пропускаємо: {task.patient_name} visit={task.source_visit_id}")
-            async with get_session() as _s:
-                _t = await _s.get(RepeatCallTask, task.id)
-                if _t:
-                    _t.status = RepeatCallStatus.skipped
-                    _t.result = RepeatCallResult.no_result
-                    _t.operator_note = "пропущено: ENABLED=0 (ai_checkstate)"
-                    _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            continue
+            logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
 
-        # Перевіряємо слоти лікаря перед дзвінком
-        try:
-            _slots = await _capi.get_doctor_slots_b2(task.doctor_name, task.idpoint or 0)
-            _avail = list(_slots or [])
-        except Exception as _se:
-            logger.warning(f"[B2 CALLS] get_doctor_slots_b2 помилка: {_se} — пропускаємо")
-            _avail = []
+            from services import clinic_api as _capi
 
-        if not _avail:
-            logger.info(f"[B2 CALLS] Немає вільних слотів → skipped: {task.patient_name}")
-            async with get_session() as _s:
-                _t = await _s.get(RepeatCallTask, task.id)
-                if _t:
-                    _t.status = RepeatCallStatus.skipped
-                    _t.result = RepeatCallResult.no_result
-                    _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            continue
+            # Перевіряємо чи ще актуальний запис перед дзвінком (ai_checkstate)
+            enabled = await _capi.check_call_enabled(task.source_visit_id)
+            if not enabled:
+                logger.info(f"[B2 CALLS] ENABLED=0 — пропускаємо: {task.patient_name} visit={task.source_visit_id}")
+                async with get_session() as _s:
+                    _t = await _s.get(RepeatCallTask, task.id)
+                    if _t:
+                        _t.status = RepeatCallStatus.skipped
+                        _t.result = RepeatCallResult.no_result
+                        _t.operator_note = "пропущено: ENABLED=0 (ai_checkstate)"
+                        _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                continue
 
-        try:
-            await asyncio.wait_for(
-                _execute_repeat_call(task, max_retry),
-                timeout=CALL_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[B2 CALLS] Таймаут дзвінка ({CALL_TIMEOUT_SEC}с): {task.patient_name}")
-            await _save_repeat_error(task, f"Таймаут дзвінка ({CALL_TIMEOUT_SEC}с)")
-        except Exception as e:
-            logger.error(f"[B2 CALLS] Помилка дзвінка {task.patient_name}: {e}", exc_info=True)
-            await _save_repeat_error(task, str(e))
+            # Перевіряємо слоти лікаря перед дзвінком
+            try:
+                _slots = await _capi.get_doctor_slots_b2(task.doctor_name, task.idpoint or 0)
+                _avail = list(_slots or [])
+            except Exception as _se:
+                logger.warning(f"[B2 CALLS] get_doctor_slots_b2 помилка: {_se} — пропускаємо")
+                _avail = []
 
-        if i < len(tasks) - 1:
-            from config import PAUSE_BETWEEN_CALLS_SEC as _pause
-            await asyncio.sleep(_pause)
+            if not _avail:
+                logger.info(f"[B2 CALLS] Немає вільних слотів → skipped: {task.patient_name}")
+                async with get_session() as _s:
+                    _t = await _s.get(RepeatCallTask, task.id)
+                    if _t:
+                        _t.status = RepeatCallStatus.skipped
+                        _t.result = RepeatCallResult.no_result
+                        _t.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                continue
+
+            try:
+                await asyncio.wait_for(
+                    _execute_repeat_call(task, max_retry),
+                    timeout=CALL_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[B2 CALLS] Таймаут дзвінка ({CALL_TIMEOUT_SEC}с): {task.patient_name}")
+                await _save_repeat_error(task, f"Таймаут дзвінка ({CALL_TIMEOUT_SEC}с)")
+            except Exception as e:
+                logger.error(f"[B2 CALLS] Помилка дзвінка {task.patient_name}: {e}", exc_info=True)
+                await _save_repeat_error(task, str(e))
+
+            if i < len(tasks) - 1:
+                from config import PAUSE_BETWEEN_CALLS_SEC as _pause
+                await asyncio.sleep(_pause)
 
     logger.info("[B2 CALLS] Обдзвін завершено")
 
