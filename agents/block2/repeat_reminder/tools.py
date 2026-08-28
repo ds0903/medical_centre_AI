@@ -169,6 +169,30 @@ TOOLS = [
                 ),
             ),
 
+            types.FunctionDeclaration(
+                name="transfer_to_operator",
+                description=(
+                    "Перемкнути дзвінок на менеджера (лінія 914). "
+                    "ОБОВ'ЯЗКОВИЙ алгоритм перед викликом: "
+                    "1) СПОЧАТКУ скажи пацієнту 'Бажаєте з'єднати з менеджером?' "
+                    "2) МОВЧКИ ЧЕКАЙ відповідь пацієнта. "
+                    "3) Тільки якщо пацієнт явно сказав 'так' / 'бажаю' / 'з'єднайте' — "
+                    "скажи 'Добре, перенаправляю ваш дзвінок до менеджера. До побачення!' і виклич цю функцію. "
+                    "ЗАБОРОНЕНО: питати 'Бажаєте?' і одразу викликати без очікування відповіді. "
+                    "ЗАБОРОНЕНО: викликати якщо пацієнт не сказав явного 'так'."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "reason": types.Schema(
+                            type="STRING",
+                            description="Причина передачі (для логування)",
+                        ),
+                    },
+                    required=["reason"],
+                ),
+            ),
+
         ]
     )
 ]
@@ -412,6 +436,13 @@ async def handle_tool_call(
         result = {"success": True, "result": call_result}
         call_cache["end_call"] = result
         logger.info(f"[TOOL] end_call → {call_result}")
+        return result
+
+    if function_name == "transfer_to_operator":
+        reason = args.get("reason", "")
+        logger.info(f"[TOOL] transfer_to_operator → {reason}")
+        result = {"success": True, "reason": reason}
+        call_cache["transfer_to_operator"] = result
         return result
 
     logger.error(f"[TOOL] Невідома функція: {function_name}")

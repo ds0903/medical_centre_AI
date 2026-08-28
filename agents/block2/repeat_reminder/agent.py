@@ -43,7 +43,7 @@ from config import (
     GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION,
     SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC,
     INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, CALL_TIMEOUT_SEC,
-    GEMINI_API_KEY,
+    GEMINI_API_KEY, TRANSFER_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -296,6 +296,7 @@ class RepeatReminderAgent:
             _allow_next_turn = [False]
             _last_ai_turn_end = [0.0]
             _suppress_timeout_fired = [False]
+            _transfer_reason = [""]
 
             _MAX_RECONNECTS = 3
             _live_session = [session]
@@ -757,6 +758,14 @@ class RepeatReminderAgent:
                                         self.call_result = "booked"
                                         logger.info("[AGENT] book_new_visit → booked")
 
+                                    if fc.name == "transfer_to_operator":
+                                        _transfer_reason[0] = result.get("reason", "")
+                                        self.call_result = "transferred"
+                                        logger.info(f"[AGENT] transfer_to_operator → {_transfer_reason[0]}")
+                                        self._end_event.set()
+                                        _after_batch = ("transfer_to_operator",)
+                                        break
+
                                     if fc.name == "end_call":
                                         raw_result = result.get("result", "no_result")
                                         # Захист: якщо ключова дія вже виконана — гарантуємо правильний result
@@ -808,7 +817,7 @@ class RepeatReminderAgent:
 
                         if _draining:
                             if turn_had_audio:
-                                _farewell_wait = 5.0 if self.call_result == "booked" else 1.0
+                                _farewell_wait = 5.0 if self.call_result == "booked" else 3.0
                                 logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_farewell_wait)
@@ -915,7 +924,7 @@ class RepeatReminderAgent:
                 _schedule_silence_timer()
             else:
                 await _live_session[0].send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про рекомендацію лікаря щодо повторного прийому (максимум 2-3 речення)"}]},
+                    turns={"parts": [{"text": "Починай розмову — привітайся, представся як Оля та нагадай про рекомендацію лікаря щодо повторного прийому (2-3 речення)"}]},
                     turn_complete=True,
                 )
                 _greeting_done.set()
@@ -961,6 +970,11 @@ class RepeatReminderAgent:
                         await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
                     except asyncio.TimeoutError:
                         logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
+                if _transfer_reason[0]:
+                    if TRANSFER_ENABLED:
+                        await binotel_call.transfer_to_operator(_transfer_reason[0])
+                    else:
+                        logger.debug(f"[AGENT] TRANSFER_ENABLED=false → пропускаємо transfer ({_transfer_reason[0]})")
             finally:
                 if _timer_task and not _timer_task.done():
                     _timer_task.cancel()
@@ -1133,7 +1147,7 @@ class RepeatReminderAgent:
         async def _generate_greeting(session) -> None:
             await session.send_client_content(
                 turns={"parts": [{"text": (
-                    "Починай розмову — коротко привітайся та нагадай чому дзвониш (максимум 2 речення)"
+                    "Починай розмову — привітайся, представся як Оля та нагадай чому дзвониш (2-3 речення)"
                 )}]},
                 turn_complete=True,
             )
@@ -1263,6 +1277,9 @@ class RepeatReminderAgent:
 
         if result == "self_book":
             return "Пацієнт запишеться самостійно."
+
+        if result == "transferred":
+            return "Дзвінок переведено на менеджера."
 
         _TEMPLATES = {
             "no_answer": "Пацієнт не підняв трубку.",
