@@ -170,6 +170,7 @@ def build_system_prompt(visit_context: dict) -> str:
         doctor_recommendation=recommendation,
         repeat_visit_date=repeat_date,
         decline_categories=decline_list,
+        clinic_address=clinic_address,
         clinic_address_phrase=clinic_address_phrase,
     )
 
