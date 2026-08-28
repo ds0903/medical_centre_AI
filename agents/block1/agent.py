@@ -269,7 +269,7 @@ class Block1Agent:
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=600,
+                    silence_duration_ms=500,
                 )
             ),
             # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
