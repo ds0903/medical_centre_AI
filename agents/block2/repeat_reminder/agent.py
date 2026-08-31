@@ -297,6 +297,7 @@ class RepeatReminderAgent:
             _last_ai_turn_end = [0.0]
             _suppress_timeout_fired = [False]
             _transfer_reason = [""]
+            _farewell_injected = [False]
 
             _MAX_RECONNECTS = 3
             _live_session = [session]
@@ -627,7 +628,23 @@ class RepeatReminderAgent:
                             # ── Interrupted (перша перевірка — щоб continue пропустив все нижче) ──
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
-                                binotel_call.flush_audio()
+                                if self.call_result is None:
+                                    binotel_call.flush_audio()
+                                elif not _farewell_injected[0]:
+                                    _farewell_injected[0] = True
+                                    try:
+                                        await _live_session[0].send_client_content(
+                                            turns={"parts": [{"text": (
+                                                "Тебе перебили під час прощання — відновни його повністю. "
+                                                "Якщо записав — скажи: підтвердження дати і часу запису, адресу клініки (якщо є), «На все добре!». "
+                                                "Якщо відмовився або інший результат — скажи відповідне прощання. "
+                                                "Потім одразу виклич end_call."
+                                            )}]},
+                                            turn_complete=True,
+                                        )
+                                        logger.info("[AGENT] Inject: повне прощання після переривання")
+                                    except Exception as _ie:
+                                        logger.warning(f"[AGENT] Inject farewell (interrupted): {_ie!r}")
                                 _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True
                                 _patient_spoke.set()
@@ -756,11 +773,13 @@ class RepeatReminderAgent:
 
                                     if fc.name == "book_new_visit" and result.get("success"):
                                         self.call_result = "booked"
+                                        _interrupted_pause_until[0] = time.time() + 15.0
                                         logger.info("[AGENT] book_new_visit → booked")
 
                                     if fc.name == "transfer_to_operator":
                                         _transfer_reason[0] = result.get("reason", "")
                                         self.call_result = "transferred"
+                                        _interrupted_pause_until[0] = time.time() + 15.0
                                         logger.info(f"[AGENT] transfer_to_operator → {_transfer_reason[0]}")
                                         self._end_event.set()
                                         _after_batch = ("transfer_to_operator",)
@@ -779,6 +798,7 @@ class RepeatReminderAgent:
                                             logger.warning(f"[AGENT] end_call({raw_result}) але self_book виконано → self_book")
                                             raw_result = "self_book"
                                         self.call_result = raw_result
+                                        _interrupted_pause_until[0] = time.time() + 15.0
                                         logger.info(f"[AGENT] end_call → {self.call_result}")
                                         self._end_event.set()
                                         _after_batch = ("end_call",)
@@ -821,11 +841,28 @@ class RepeatReminderAgent:
                                 logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_farewell_wait)
+                            elif not _farewell_injected[0]:
+                                _farewell_injected[0] = True
+                                logger.info("[AGENT] end_call без аудіо — inject fallback farewell")
+                                try:
+                                    await _live_session[0].send_client_content(
+                                        turns={"parts": [{"text": (
+                                            "Відновни прощання повністю: "
+                                            "якщо записав — підтверди дату, час, адресу клініки (якщо є) і скажи «На все добре!»; "
+                                            "якщо інший результат — скажи відповідне прощання. "
+                                            "Потім виклич end_call."
+                                        )}]},
+                                        turn_complete=True,
+                                    )
+                                    continue
+                                except Exception as _fe:
+                                    logger.warning(f"[AGENT] Inject farewell (draining): {_fe!r}")
+                                    binotel_call.flush_encode_buffer()
+                                    await asyncio.sleep(2.0)
                             else:
-                                _no_audio_wait = 5.0 if self.call_result == "booked" else 2.0
-                                logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
+                                logger.info("[AGENT] end_call без аудіо (повторно) — flush + 2с drain")
                                 binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(_no_audio_wait)
+                                await asyncio.sleep(2.0)
                             return
 
                         _ai_turn_active[0] = False
