@@ -297,7 +297,6 @@ class RepeatReminderAgent:
             _last_ai_turn_end = [0.0]
             _suppress_timeout_fired = [False]
             _transfer_reason = [""]
-            _farewell_injected = [False]
 
             _MAX_RECONNECTS = 3
             _live_session = [session]
@@ -520,6 +519,8 @@ class RepeatReminderAgent:
                                     )
                                 except (ConnectionClosedError, APIError):
                                     break
+                            # пацієнт говорив під час gate → дозволяємо відповідь Gemini (suppress bypass)
+                            _allow_next_turn[0] = True
                         _preroll_buf.clear()
                         _preroll_has_vad[0] = False
 
@@ -628,23 +629,7 @@ class RepeatReminderAgent:
                             # ── Interrupted (перша перевірка — щоб continue пропустив все нижче) ──
                             if resp.server_content and resp.server_content.interrupted:
                                 logger.info("[AGENT] AI перервано — пацієнт говорить")
-                                if self.call_result is None:
-                                    binotel_call.flush_audio()
-                                elif not _farewell_injected[0]:
-                                    _farewell_injected[0] = True
-                                    try:
-                                        await _live_session[0].send_client_content(
-                                            turns={"parts": [{"text": (
-                                                "Тебе перебили під час прощання — відновни його повністю. "
-                                                "Якщо записав — скажи: підтвердження дати і часу запису, адресу клініки (якщо є), «На все добре!». "
-                                                "Якщо відмовився або інший результат — скажи відповідне прощання. "
-                                                "Потім одразу виклич end_call."
-                                            )}]},
-                                            turn_complete=True,
-                                        )
-                                        logger.info("[AGENT] Inject: повне прощання після переривання")
-                                    except Exception as _ie:
-                                        logger.warning(f"[AGENT] Inject farewell (interrupted): {_ie!r}")
+                                binotel_call.flush_audio()
                                 _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True
                                 _patient_spoke.set()
@@ -773,7 +758,6 @@ class RepeatReminderAgent:
 
                                     if fc.name == "book_new_visit" and result.get("success"):
                                         self.call_result = "booked"
-                                        _interrupted_pause_until[0] = time.time() + 15.0
                                         logger.info("[AGENT] book_new_visit → booked")
 
                                     if fc.name == "transfer_to_operator":
@@ -841,26 +825,8 @@ class RepeatReminderAgent:
                                 logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_farewell_wait)
-                            elif not _farewell_injected[0]:
-                                _farewell_injected[0] = True
-                                logger.info("[AGENT] end_call без аудіо — inject fallback farewell")
-                                try:
-                                    await _live_session[0].send_client_content(
-                                        turns={"parts": [{"text": (
-                                            "Відновни прощання повністю: "
-                                            "якщо записав — підтверди дату, час, адресу клініки (якщо є) і скажи «На все добре!»; "
-                                            "якщо інший результат — скажи відповідне прощання. "
-                                            "Потім виклич end_call."
-                                        )}]},
-                                        turn_complete=True,
-                                    )
-                                    continue
-                                except Exception as _fe:
-                                    logger.warning(f"[AGENT] Inject farewell (draining): {_fe!r}")
-                                    binotel_call.flush_encode_buffer()
-                                    await asyncio.sleep(2.0)
                             else:
-                                logger.info("[AGENT] end_call без аудіо (повторно) — flush + 2с drain")
+                                logger.info("[AGENT] end_call без аудіо — flush + 2с drain")
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(2.0)
                             return
@@ -961,7 +927,11 @@ class RepeatReminderAgent:
                 _schedule_silence_timer()
             else:
                 await _live_session[0].send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — привітайся, представся як Оля та нагадай про рекомендацію лікаря щодо повторного прийому (2-3 речення)"}]},
+                    turns={"parts": [{"text": (
+                        "Починай розмову — привітайся, представся як Оля та нагадай про рекомендацію лікаря щодо повторного прийому (2-3 речення). "
+                        "Говори ДУЖЕ ПОВІЛЬНО і ПЛАВНО — з чіткою паузою між кожним словом і між реченнями. "
+                        "Пацієнт щойно підняв трубку — дай йому час зорієнтуватись."
+                    )}]},
                     turn_complete=True,
                 )
                 _greeting_done.set()
@@ -1184,7 +1154,9 @@ class RepeatReminderAgent:
         async def _generate_greeting(session) -> None:
             await session.send_client_content(
                 turns={"parts": [{"text": (
-                    "Починай розмову — привітайся, представся як Оля та нагадай чому дзвониш (2-3 речення)"
+                    "Починай розмову — привітайся, представся як Оля та нагадай чому дзвониш (2-3 речення). "
+                    "Говори ДУЖЕ ПОВІЛЬНО і ПЛАВНО — з чіткою паузою між кожним словом і між реченнями. "
+                    "Пацієнт щойно підняв трубку — дай йому час зорієнтуватись."
                 )}]},
                 turn_complete=True,
             )
