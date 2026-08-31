@@ -519,8 +519,6 @@ class RepeatReminderAgent:
                                     )
                                 except (ConnectionClosedError, APIError):
                                     break
-                            # пацієнт говорив під час gate → дозволяємо відповідь Gemini (suppress bypass)
-                            _allow_next_turn[0] = True
                         _preroll_buf.clear()
                         _preroll_has_vad[0] = False
 
@@ -826,9 +824,10 @@ class RepeatReminderAgent:
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_farewell_wait)
                             else:
-                                logger.info("[AGENT] end_call без аудіо — flush + 2с drain")
+                                _no_audio_wait = 5.0 if self.call_result == "booked" else 2.0
+                                logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
                                 binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(2.0)
+                                await asyncio.sleep(_no_audio_wait)
                             return
 
                         _ai_turn_active[0] = False
