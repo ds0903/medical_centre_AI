@@ -140,12 +140,7 @@ def build_system_prompt(visit_context: dict) -> str:
     doctor_spec = visit_context.get("doctor_specialization", "")
     recommendation = visit_context.get("doctor_recommendation", "").strip()
     if not recommendation:
-        if doctor_spec:
-            recommendation = f"прийти повторно до {doctor_spec.lower()}"
-        elif doctor_name:
-            recommendation = f"прийти повторно до лікаря"
-        else:
-            recommendation = "прийти на повторний прийом"
+        recommendation = "прийти на повторний прийом"
 
     idpoint = str(visit_context.get("idpoint", ""))
     clinic_address = _CLINIC_ADDRESSES.get(idpoint, "")
