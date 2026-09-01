@@ -33,7 +33,7 @@ from google.genai.errors import APIError
 from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
-from agents.block1.tools import TOOLS, handle_tool_call
+from agents.block1.tools import TOOLS, handle_tool_call, _CLINIC_ADDRESSES
 from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
@@ -1191,7 +1191,27 @@ class Block1Agent:
                                                     )
                                                     if _rr.get("success"):
                                                         logger.info("[AGENT] Auto-reschedule виконано → дозволяємо end_call")
-                                                        # fall through — end_call виконається нижче
+                                                        try:
+                                                            _ec_res = await handle_tool_call("end_call", args, self.visit, _call_cache)
+                                                        except Exception as _ec_err:
+                                                            logger.error(f"[AGENT] Auto-reschedule end_call помилка: {_ec_err!r}")
+                                                            _ec_res = {"success": True}
+                                                        _place_id = str((self.visit or {}).get("place_id", ""))
+                                                        _addr = _CLINIC_ADDRESSES.get(_place_id, "")
+                                                        _farewell_auto = (
+                                                            f"Чудово! Ваш запис перенесено. Чекаємо вас за адресою: {_addr}. На все добре!"
+                                                            if _addr else
+                                                            "Чудово! Ваш запис перенесено. Чекаємо вас! На все добре!"
+                                                        )
+                                                        _ec_res = dict(_ec_res)
+                                                        _ec_res["message"] = f"Скажи пацієнту точно: '{_farewell_auto}'"
+                                                        binotel_call.flush_audio()
+                                                        _batch.append(types.FunctionResponse(id=fc.id, name=fc.name, response=_ec_res))
+                                                        _reschedule_state[0] = 2
+                                                        self.call_result = "rescheduled"
+                                                        self._end_event.set()
+                                                        _after_batch = ("end_call",)
+                                                        break
                                                     else:
                                                         logger.warning(f"[AGENT] Auto-reschedule не вдався: {_rr}")
                                                         _batch.append(types.FunctionResponse(
