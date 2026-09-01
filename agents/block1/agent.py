@@ -1076,6 +1076,64 @@ class Block1Agent:
                                             },
                                         ))
                                         continue
+                                    # cancel_visit при _reschedule_state=1: AI чекає підтвердження
+                                    # переносу — скасування заборонено якщо пацієнт не сказав
+                                    # явного "скасуйте/не треба/ні".
+                                    # Без цього захисту: ghost turn забруднює контекст → Gemini
+                                    # викликає cancel замість reschedule після "Так" пацієнта.
+                                    if fc.name == "cancel_visit" and _reschedule_state[0] == 1:
+                                        _last_lower = _last_patient_said_text[0].lower()
+                                        _cancel_words = ("скасу", "відміняйт", "відмовляюс")
+                                        if not any(w in _last_lower for w in _cancel_words):
+                                            logger.warning(
+                                                "[AGENT] cancel_visit заблоковано при reschedule_state=1 "
+                                                "(пацієнт сказав: '%s')", _last_patient_said_text[0]
+                                            )
+                                            binotel_call.flush_audio()
+                                            _suppress_next_audio[0] = True
+                                            _suppress_set_at[0] = time.time()
+                                            _batch.append(types.FunctionResponse(
+                                                id=fc.id, name=fc.name,
+                                                response={
+                                                    "success": False,
+                                                    "message": (
+                                                        "СТОП. Пацієнт підтвердив перенос — ЗАБОРОНЕНО скасовувати. "
+                                                        "ОДРАЗУ виклич reschedule_visit(visit_id=..., slot_id=...) "
+                                                        "з slot_id зі списку слотів що вже були отримані. "
+                                                        "Якщо пацієнт хотів скасувати — спочатку перепитай: "
+                                                        "'Ви хочете скасувати запис чи перенести на новий час?'"
+                                                    ),
+                                                },
+                                            ))
+                                            continue
+                                    # confirm_visit при _reschedule_state=1: пацієнт в процесі переносу
+                                    # — підтвердження оригінального запису заборонено якщо пацієнт
+                                    # не сказав явного "залишаємо/не треба/прийду як є".
+                                    if fc.name == "confirm_visit" and _reschedule_state[0] == 1:
+                                        _last_lower = _last_patient_said_text[0].lower()
+                                        _keep_words = ("залиш", "не треба", "прийду як", "буду як", "не хочу переносити", "залишаємо")
+                                        if not any(w in _last_lower for w in _keep_words):
+                                            logger.warning(
+                                                "[AGENT] confirm_visit заблоковано при reschedule_state=1 "
+                                                "(пацієнт сказав: '%s')", _last_patient_said_text[0]
+                                            )
+                                            binotel_call.flush_audio()
+                                            _suppress_next_audio[0] = True
+                                            _suppress_set_at[0] = time.time()
+                                            _batch.append(types.FunctionResponse(
+                                                id=fc.id, name=fc.name,
+                                                response={
+                                                    "success": False,
+                                                    "message": (
+                                                        "СТОП. Пацієнт підтверджував ПЕРЕНОС — ЗАБОРОНЕНО підтверджувати оригінальний запис. "
+                                                        "ОДРАЗУ виклич reschedule_visit(visit_id=..., slot_id=...) "
+                                                        "з slot_id зі списку слотів що вже були отримані. "
+                                                        "Якщо пацієнт хоче залишити оригінальний запис — перепитай: "
+                                                        "'Тобто залишаємо запис як є, чи переносимо?'"
+                                                    ),
+                                                },
+                                            ))
+                                            continue
                                     # Safety fallback: Gemini іноді викликає end_call("cancelled")
                                     # без попереднього cancel_visit (пропускає крок або каже
                                     # прощання і відразу end_call). Виконуємо cancel автоматично.

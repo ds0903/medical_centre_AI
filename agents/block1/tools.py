@@ -17,6 +17,11 @@ from services import clinic_api
 
 logger = logging.getLogger(__name__)
 
+_CLINIC_ADDRESSES: dict[str, str] = {
+    "1": "Сонячний мікрорайон, 59, Кривий Ріг",
+    "3": "вулиця Гірничих Інженерів, 13-О, Кривий Ріг",
+}
+
 _MONTHS_UA = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
@@ -701,10 +706,17 @@ async def handle_tool_call(
             visit_id=args["visit_id"],
             slot_id=slot_id,
         )
+        _place_id = str(visit_context.get("place_id", ""))
+        _addr = _CLINIC_ADDRESSES.get(_place_id, "")
+        _farewell = (
+            f"Чудово! Ваш запис перенесено. Чекаємо вас за адресою: {_addr}. На все добре!"
+            if _addr else
+            "Чудово! Ваш запис перенесено. Чекаємо вас! На все добре!"
+        )
         result = {
             "success": success,
             "message": (
-                "Візит перенесено. Тепер ОДРАЗУ виклич end_call(result='rescheduled'). НЕ питай нічого більше."
+                f"Візит перенесено. Скажи: '{_farewell}' і виклич end_call(result='rescheduled')."
                 if success else
                 "Помилка переносу. Скажи пацієнту і заверши дзвінок."
             ),
