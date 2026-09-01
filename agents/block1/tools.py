@@ -17,11 +17,6 @@ from services import clinic_api
 
 logger = logging.getLogger(__name__)
 
-_CLINIC_ADDRESSES: dict[str, str] = {
-    "1": "Сонячний мікрорайон, 59, Кривий Ріг",
-    "3": "вулиця Гірничих Інженерів, 13-О, Кривий Ріг",
-}
-
 _MONTHS_UA = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
@@ -655,13 +650,6 @@ async def handle_tool_call(
                 f"  ХОЧЕ ТОЙ САМИЙ ДЕНЬ → 'На жаль, на {_vd_ordinal} вільного часу вже немає. Але є {natural}. Бажаєте перенести на інший день?'"
             )
 
-        _gs_place_id = str((visit_context or {}).get("place_id", ""))
-        _gs_addr = _CLINIC_ADDRESSES.get(_gs_place_id, "")
-        _gs_farewell = (
-            f"Чудово! Ваш запис перенесено. Чекаємо вас за адресою: {_gs_addr}. На все добре!"
-            if _gs_addr else
-            "Чудово! Ваш запис перенесено. Чекаємо вас! На все добре!"
-        )
         result = {
             "success": True,
             "message": (
@@ -677,7 +665,7 @@ async def handle_tool_call(
                 f"КРОК 3. Після підтвердження дати → МОВЧКИ виклич get_available_slots(date='[дата]').\n"
                 f"Результат скаже які часи є. Потім:\n"
                 f"→ Запитай фінальне підтвердження: 'Переносимо на [дата] о [час]. Все вірно?'\n"
-                f"→ 'так/вірно/давай' → reschedule_visit(visit_id, slot_id) → ПОТІМ скажи: '{_gs_farewell}' → end_call(rescheduled)\n"
+                f"→ 'так/вірно/давай' → reschedule_visit(visit_id, slot_id) → 'Чудово! Запис перенесено. На все добре!' → end_call(rescheduled)\n"
                 f"→ 'ні' + хоче іншу дату → повернись до КРОК 2\n\n"
                 f"ЯКЩО ПАЦІЄНТ ВІДМОВЛЯЄТЬСЯ ВІД ПЕРЕНОСУ:\n"
                 f"→ 'скасуйте/не хочу/відміняйте' → 'Добре, скасовуємо. До побачення!' → cancel_visit() → end_call(cancelled)\n"
@@ -716,7 +704,7 @@ async def handle_tool_call(
         result = {
             "success": success,
             "message": (
-                "Перенос виконано. Виклич end_call(result='rescheduled')."
+                "Візит перенесено. Тепер ОДРАЗУ виклич end_call(result='rescheduled'). НЕ питай нічого більше."
                 if success else
                 "Помилка переносу. Скажи пацієнту і заверши дзвінок."
             ),
