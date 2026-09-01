@@ -1047,6 +1047,21 @@ class Block1Agent:
                                             },
                                         ))
                                         continue
+                                    # При state=1: якщо Gemini викликає reschedule_visit з ІНШИМ
+                                    # slot_id ніж був підтверджений — пацієнт змінив час.
+                                    # Скидаємо state=0 → guard нижче знову блокує і спитає
+                                    # "Все вірно?" вже для нового слоту.
+                                    # Порівнюємо slot_id (не слова пацієнта) — надійніше.
+                                    if fc.name == "reschedule_visit" and _reschedule_state[0] == 1:
+                                        _new_slot = str(args.get("slot_id", ""))
+                                        _old_slot = str((_pending_reschedule_args[0] or {}).get("slot_id", ""))
+                                        if _old_slot and _new_slot and _new_slot != _old_slot:
+                                            _reschedule_state[0] = 0
+                                            logger.info(
+                                                "[AGENT] reschedule state=1: новий slot=%s ≠ очікуваний slot=%s "
+                                                "→ state reset=0 → guard перезапитає підтвердження",
+                                                _new_slot, _old_slot,
+                                            )
                                     # reschedule_visit — блокуємо тільки першу спробу (state=0).
                                     # AI отримує інструкцію спитати підтвердження → state→1.
                                     # Якщо AI вирішила що пацієнт підтвердив — сама знову викличе reschedule_visit.
