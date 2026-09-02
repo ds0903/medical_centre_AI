@@ -359,6 +359,8 @@ class Block1Agent:
             # скористався цим сигналом. (Резервний захист — input_transcription сам по собі
             # надійний, але _real_vad_pending додає ще один рівень безпеки.)
             _real_vad_pending = [False]
+            _eot_sent_at = [0.0]
+            _turn_counter = [0]
             # Стан підтвердження переносу:
             # 0 = reschedule ще не викликався
             # 1 = заблоковано, AI запитав "Все вірно?" — чекаємо відповідь пацієнта
@@ -759,6 +761,8 @@ class Block1Agent:
                             await _live_session[0].send_realtime_input(
                                 activity_end=types.ActivityEnd()
                             )
+                            _eot_sent_at[0] = time.time()
+                            logger.info("[LATENCY] EOT → чекаємо відповідь Gemini")
                             logger.debug(f"[VAD] Early EOT: {(time.time()-_last_speech_ts[0])*1000:.0f}мс тиші")
                         except Exception:
                             pass  # якщо SDK не підтримує — ігноруємо, Gemini VAD спрацює самостійно
@@ -801,6 +805,8 @@ class Block1Agent:
                         _ai_buf.clear()
                         _ai_turn_active[0] = True
                         _ai_turn_started_at[0] = time.time()
+                        _turn_counter[0] += 1
+                        _turn_first_audio_logged = False
                         async for resp in _live_session[0].receive():
                             turn_had_content = True
                             # Зберігаємо resumption handle для можливого reconnect під час дзвінка
@@ -957,6 +963,10 @@ class Block1Agent:
                                     _had_patient_said = False
                             if resp.data and _greeting_done.is_set():
                                 turn_audio_bytes += len(resp.data)
+                                if not _turn_first_audio_logged:
+                                    _turn_first_audio_logged = True
+                                    _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
+                                    logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
                                 if _suppress_slots_turn and not _allow_next_turn[0]:
                                     pass  # Turn 1 після get_available_slots(no date) → завжди drop, Turn 2 грає замість
                                 elif not _suppress_next_audio[0] or _allow_next_turn[0]:

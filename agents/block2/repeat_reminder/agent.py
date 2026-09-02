@@ -294,6 +294,8 @@ class RepeatReminderAgent:
             _real_vad_pending = [False]
             _date_slots_fetched = [False]
             _allow_next_turn = [False]
+            _eot_sent_at = [0.0]
+            _turn_counter = [0]
             _last_ai_turn_end = [0.0]
             _suppress_timeout_fired = [False]
             _transfer_reason = [""]
@@ -577,6 +579,8 @@ class RepeatReminderAgent:
                             await _live_session[0].send_realtime_input(
                                 activity_end=types.ActivityEnd()
                             )
+                            _eot_sent_at[0] = time.time()
+                            logger.info("[LATENCY] EOT → чекаємо відповідь Gemini")
                         except Exception:
                             pass
 
@@ -613,6 +617,8 @@ class RepeatReminderAgent:
                         _ai_buf.clear()
                         _ai_turn_active[0] = True
                         _ai_turn_started_at[0] = time.time()
+                        _turn_counter[0] += 1
+                        _turn_first_audio_logged = False
 
                         async for resp in _live_session[0].receive():
                             if self._end_event.is_set() and not _draining:
@@ -641,6 +647,10 @@ class RepeatReminderAgent:
                                     continue  # greeting buffer handled in warmup
                                 turn_had_audio = True
                                 turn_audio_bytes += len(resp.data)
+                                if not _turn_first_audio_logged:
+                                    _turn_first_audio_logged = True
+                                    _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
+                                    logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
                                 if _suppress_next_audio[0] and not _allow_next_turn[0]:
                                     continue  # suppress ghost turns
                                 _allow_next_turn[0] = False
