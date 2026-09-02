@@ -67,7 +67,7 @@ async def run_debug() -> None:
         while True:
             await asyncio.sleep(60)
     except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False)
         await close_db()
         logger.info("Зупинено.")
 
@@ -146,7 +146,7 @@ async def run_production() -> None:
         while True:
             await asyncio.sleep(60)
     except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False)
         await close_db()
         logger.info("Зупинено.")
 
