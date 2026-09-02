@@ -819,12 +819,12 @@ class RepeatReminderAgent:
 
                         if _draining:
                             if turn_had_audio:
-                                _farewell_wait = 5.0 if self.call_result == "booked" else 3.0
+                                _farewell_wait = 7.0 if self.call_result == "booked" else 3.0
                                 logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_farewell_wait)
                             else:
-                                _no_audio_wait = 5.0 if self.call_result == "booked" else 2.0
+                                _no_audio_wait = 7.0 if self.call_result == "booked" else 2.0
                                 logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
                                 binotel_call.flush_encode_buffer()
                                 await asyncio.sleep(_no_audio_wait)
