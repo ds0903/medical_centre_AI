@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 _rest = BinotelRestClient()
 _ws: Optional[BinotelWebSocket] = None
 _sip: Optional[BinotelSipClient] = None
+_active_call: Optional["BinotelCall"] = None  # активний дзвінок (щоб shutdown не вбивав SIP під час прощання)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,18 @@ async def startup() -> None:
 async def shutdown() -> None:
     """Зупинити Binotel сервіси (безпечний для повторного виклику)."""
     global _ws, _sip
+    # Якщо є активний дзвінок — чекаємо завершення щоб прощання AI дійшло до пацієнта.
+    # Це запобігає race condition коли block1/block2 паралельно викликають shutdown()
+    # поки інший runner ще в drain-фазі (flush + 5с sleep після end_call).
+    _ac = _active_call
+    if _ac is not None and _ac.is_active:
+        logger.warning("[BINOTEL] Shutdown: активний дзвінок — чекаємо завершення (до 30с)...")
+        _loop = asyncio.get_event_loop()
+        _deadline = _loop.time() + 30.0
+        while _ac.is_active and _loop.time() < _deadline:
+            await asyncio.sleep(0.3)
+        if _ac.is_active:
+            logger.warning("[BINOTEL] Shutdown: таймаут — примусово зупиняємо")
     if _ws:
         try:
             await _ws.disconnect()
@@ -253,9 +266,11 @@ class BinotelCall:
 
     async def hangup(self) -> None:
         """Завершити дзвінок (SIP + REST якщо є call_id)."""
+        global _active_call
         if not self.is_active:
             return
         self.is_active = False
+        _active_call = None
         reset_state()
         _opus_codec.reset()
 
@@ -271,9 +286,11 @@ class BinotelCall:
         Args:
             reason: причина передачі (для логування)
         """
+        global _active_call
         if not self.is_active:
             return
         self.is_active = False
+        _active_call = None
         reset_state()
 
         logger.info(f"[BINOTEL] Передача оператору ({BINOTEL_OPERATOR_NUMBER}): {reason}")
@@ -490,4 +507,6 @@ async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optio
         return None
 
     logger.info(f"[BINOTEL] Пацієнт відповів. Починаємо розмову: {patient_name}")
-    return BinotelCall(general_call_id, sip_audio)
+    global _active_call
+    _active_call = BinotelCall(general_call_id, sip_audio)
+    return _active_call
