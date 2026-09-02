@@ -14,7 +14,7 @@ if os.path.exists(_creds):
 
 # Vertex AI
 VERTEX_PROJECT  = os.getenv("VERTEX_PROJECT_ID", "")
-VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "europe-central2")
 
 # Gemini (через Vertex AI)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # не потрібен для Vertex, лишаємо для сумісності
