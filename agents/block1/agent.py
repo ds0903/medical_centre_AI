@@ -34,7 +34,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
+from config import GEMINI_API_KEY, GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -220,10 +220,15 @@ class Block1Agent:
 
     def __init__(self, visit: dict) -> None:
         self.visit = visit
+        # Vertex AI (EU data residency, europe-central2):
+        # self.client = genai.Client(
+        #     vertexai=True,
+        #     project=VERTEX_PROJECT,
+        #     location=VERTEX_LOCATION,
+        # )
+        # AI Studio (gemini-3.1-flash-live-preview доступна тут):
         self.client = genai.Client(
-            vertexai=True,
-            project=VERTEX_PROJECT,
-            location=VERTEX_LOCATION,
+            api_key=GEMINI_API_KEY,
         )
         self.call_result: str | None = None
         self.call_duration: float = 0.0
@@ -256,10 +261,16 @@ class Block1Agent:
                 parts=[types.Part(text=prompt)]
             ),
             tools=TOOLS,
-            # Вимикаємо "thinking" — для real-time голосу паузи на "обдумування"
-            # неприйнятні: пацієнт чує мовчання, потім весь текст відразу (розмазаний звук).
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-            output_audio_transcription=types.AudioTranscriptionConfig() if GEMINI_LOGS else None,
+            # Вимикаємо "thinking" — для real-time голосу паузи неприйнятні.
+            # thinking_budget=0 → Gemini 2.5 (0=DISABLED)
+            # 3.1+: не передаємо thinking_config взагалі — сервер сам вирішує
+            thinking_config=(
+                types.ThinkingConfig(thinking_budget=0)
+                if "2.5" in GEMINI_MODEL
+                else None
+            ),
+            # output_audio_transcription: в 3.1+ потребує TEXT modality — вимикаємо для AUDIO-only
+            output_audio_transcription=types.AudioTranscriptionConfig() if (GEMINI_LOGS and "2.5" in GEMINI_MODEL) else None,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             # VAD на стороні Gemini.
             # START_SENSITIVITY_LOW: Gemini не реагує на тихі/короткі фонові звуки (TV, шум).
@@ -273,11 +284,12 @@ class Block1Agent:
                 )
             ),
             # Session resumption: дозволяє відновити сесію після розриву за токеном (handle).
-            # Замінює silence keepalive — більше не треба надсилати тишу щоб утримати сесію.
-            # resume_handle=None → нова сесія; resume_handle=<token> → відновлення контексту.
-            session_resumption=types.SessionResumptionConfig(
-                handle=resume_handle,
-                transparent=True,
+            # Передаємо тільки коли є реальний handle (не None) — деякі preview-моделі
+            # відкидають SessionResumptionConfig з handle=None як invalid argument (1007).
+            session_resumption=(
+                types.SessionResumptionConfig(handle=resume_handle)
+                if resume_handle
+                else None
             ),
         )
 

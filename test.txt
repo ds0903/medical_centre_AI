@@ -1,0 +1,46 @@
+<sys>:0: UserWarning: RTP Payload type opus not found.
+2026-09-01 15:01:04,768 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Warmup готовий: 64 chunks (14.1с), 54 слотів
+2026-09-01 15:01:05,063 [INFO] services.binotel_sip: [SIP] Вхідний дзвінок від unknown
+2026-09-01 15:01:05,065 [INFO] services.audio_bridge: [BRIDGE] Codec → Opus
+2026-09-01 15:01:05,065 [INFO] services.binotel_sip: [SIP] Opus ін'єктовано в SDP → trans() використає Opus
+2026-09-01 15:01:05,066 [INFO] services.binotel_sip: [OPUS] trans() Opus mode active
+2026-09-01 15:01:05,066 [INFO] services.binotel_sip: [SIP] Дзвінок прийнято від unknown
+2026-09-01 15:01:05,088 [INFO] services.opus_codec: [OPUS] Decoder ініціалізовано (16kHz output — нативний libopus)
+2026-09-01 15:01:10,114 [INFO] services.binotel_rest: [BINOTEL REST] Дзвінок ініційовано. generalCallID=6828755203
+2026-09-01 15:01:19,305 [INFO] services.binotel: [BINOTEL] Пацієнт відповів. Починаємо розмову: КАРАУЛОВ ІВАН ІВАНОВИЧ
+2026-09-01 15:01:19,305 [INFO] agents.block2.repeat_reminder.agent: =======================================================
+2026-09-01 15:01:19,305 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Повторний візит — дзвінок через Binotel
+2026-09-01 15:01:19,305 [INFO] agents.block2.repeat_reminder.agent:   Пацієнт    : КАРАУЛОВ ІВАН ІВАНОВИЧ
+2026-09-01 15:01:19,305 [INFO] agents.block2.repeat_reminder.agent:   Рекомендація:
+2026-09-01 15:01:19,306 [INFO] agents.block2.repeat_reminder.agent:   Лікар      : ПРОКОФЬЄВ ВІТАЛІЙ ІВАНОВИЧ
+2026-09-01 15:01:19,306 [INFO] agents.block2.repeat_reminder.agent: =======================================================
+2026-09-01 15:01:19,306 [INFO] services.opus_codec: [OPUS] Encoder ініціалізовано (48kbps, complexity=10, SILK 8kHz, FEC=on, loss=10%)
+2026-09-01 15:01:19,311 [INFO] services.audio_bridge: [BRIDGE] SIP→Gemini: s16 16kHz Opus direct (без u8 деградації, спектр 0-8kHz)
+2026-09-01 15:01:33,387 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Warmup: кеш слотів pre-populated
+2026-09-01 15:01:33,387 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Стрімінг розпочато (warmup path)
+2026-09-01 15:01:39,518 [INFO] agents.block2.repeat_reminder.agent: [TRANSCRIPT] Пацієнт: «Dà?»
+2026-09-01 15:01:39,665 [INFO] agents.block2.repeat_reminder.tools: [TOOL] get_available_slots({})
+2026-09-01 15:01:39,666 [INFO] agents.block2.repeat_reminder.tools: [TOOL] get_available_slots → 5 слотів: 1413321 чотирнадцятого вересня 8:40, 1413322 чотирнадцятого вересня 9:00, 1413323 чотирнадцятого вересня 9:20, 1413324 чотирнадцятого вересня 9:40, 1413325 чотирнадцятого вересня 10:00
+2026-09-01 15:01:42,958 [INFO] agents.block2.repeat_reminder.agent: [AI] Оля: «Є вільний  час:  чотирнадцятого  вересня  о восьмій  сорок,  о дев'ятій,  о дев'ятій  двадцять,  о дев'ятій  сорок  і о  десятій.  Який  Вам зручний?»
+2026-09-01 15:01:47,216 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Suppress timeout: знято примусово
+2026-09-01 15:01:47,590 [INFO] agents.block2.repeat_reminder.agent: [AGENT] AI перервано — пацієнт говорить
+2026-09-01 15:01:49,798 [INFO] agents.block2.repeat_reminder.agent: [TRANSCRIPT] Пацієнт: «добывать 100»
+2026-09-01 15:01:50,710 [INFO] agents.block2.repeat_reminder.tools: [TOOL] book_new_visit({'slot_id': '1413324'})
+2026-09-01 15:01:50,711 [INFO] services.clinic_api: [API] save_b2_booking (SKIP_POST): slot_id=1413324 patient=КАРАУЛОВ ІВАН ІВАНОВИЧ
+2026-09-01 15:01:50,711 [INFO] agents.block2.repeat_reminder.tools: [TOOL] book_new_visit → new_visit_id=SKIP_SLOT_1413324
+2026-09-01 15:01:50,711 [INFO] agents.block2.repeat_reminder.agent: [AGENT] book_new_visit → booked
+2026-09-01 15:01:50,743 [INFO] agents.block2.repeat_reminder.agent: [AI] Оля: «десятій. Який  Вам зручний?»
+2026-09-01 15:01:52,643 [INFO] agents.block2.repeat_reminder.agent: [AI] Оля: «Отже, записую  Вас  на чотирнадцяте  вересня  о дев'ятій  сорок.  Все  вірно?»
+2026-09-01 15:02:02,351 [INFO] agents.block2.repeat_reminder.agent: [TRANSCRIPT] Пацієнт: «Ai, já estourou 8:40.»
+2026-09-01 15:02:03,991 [INFO] agents.block2.repeat_reminder.agent: [AI] Оля: «Вибачте, не  зрозуміла.  Є час  о восьмій  сорок.  Підтверджуєте?»
+2026-09-01 15:02:09,395 [INFO] agents.block2.repeat_reminder.agent: [AGENT] Suppress timeout: знято примусово
+2026-09-01 15:02:12,321 [INFO] agents.block2.repeat_reminder.agent: [TRANSCRIPT] Пацієнт: «Да, давай в 8:40.»
+2026-09-01 15:02:12,503 [INFO] agents.block2.repeat_reminder.tools: [TOOL] book_new_visit({'slot_id': '1413321'})
+2026-09-01 15:02:12,504 [WARNING] agents.block2.repeat_reminder.tools: [TOOL] book_new_visit: вже виконано — повертаємо кеш
+2026-09-01 15:02:12,504 [INFO] agents.block2.repeat_reminder.agent: [AGENT] book_new_visit → booked
+2026-09-01 15:02:15,589 [INFO] agents.block2.repeat_reminder.tools: [TOOL] end_call({'result': 'booked'})
+2026-09-01 15:02:15,589 [INFO] agents.block2.repeat_reminder.tools: [TOOL] end_call → booked
+2026-09-01 15:02:15,590 [INFO] agents.block2.repeat_reminder.agent: [AGENT] end_call → booked
+2026-09-01 15:02:15,617 [INFO] agents.block2.repeat_reminder.agent: [AI] Оля: «Чудово, записала  Вас  на чотирнадцяте  вересня  о восьмій  сорок.  Чекаємо  Вас  за адресою:  Сонячний  мікрорайон,  59,  Кривий  Ріг.  На все  добре!»
+2026-09-01 15:02:15,618 [INFO] agents.block2.repeat_reminder.agent: [AGENT] AI завершив прощання — flush + 5с
+2026-09-01 15:02:15,619 [INFO] agents.block2.repeat_reminder.agent: [AGENT
