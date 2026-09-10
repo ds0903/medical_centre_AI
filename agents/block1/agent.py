@@ -34,7 +34,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_API_KEY, GEMINI_MODEL, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +294,64 @@ class Block1Agent:
         )
 
     # ------------------------------------------------------------------
+    # TTS привітання (замість Live send_client_content)
+    # ------------------------------------------------------------------
+
+    def _build_greeting_text(self) -> str:
+        """Шаблонний текст привітання для TTS — не потребує Live сесії."""
+        from agents.block1.prompts import _get_greeting, _format_visit_date
+        visit = self.visit
+
+        # Ім'я та по-батькові в правильному регістрі (2-е та 3-є слово з ПІБ)
+        parts = visit.get("patient_name", "").split()
+        if len(parts) >= 3:
+            name_call = f"{parts[1].capitalize()} {parts[2].capitalize()}"
+        elif len(parts) == 2:
+            name_call = parts[1].capitalize()
+        else:
+            name_call = parts[0].capitalize() if parts else ""
+
+        visit_dt = visit.get("visit_datetime", "")
+        date_str = _format_visit_date(visit_dt) if visit_dt else ""
+
+        # Спеціалізація в родовому відмінку (після "до"): терапевт → терапевта
+        doc_parts = visit.get("doctor_name", "").split()
+        spec = doc_parts[-1].lower() if doc_parts else ""
+        _vowels = "аеиіоуяєіюь"
+        if spec and spec[-1] not in _vowels:
+            spec += "а"
+        doctor_phrase = f"до {spec}" if spec else "до лікаря"
+
+        greeting = _get_greeting()
+        return (
+            f"{greeting}, {name_call}! Клініка нагадує про ваш запис "
+            f"{doctor_phrase} на {date_str}. Ви плануєте прийти?"
+        )
+
+    async def _generate_tts_greeting(self) -> list[bytes]:
+        """Генерує аудіо привітання через Gemini TTS API (не Live)."""
+        text = self._build_greeting_text()
+        logger.debug(f"[AGENT] TTS greeting text: {text!r}")
+        response = await self.client.aio.models.generate_content(
+            model=GEMINI_TTS_MODEL,
+            contents=text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=GEMINI_TTS_VOICE
+                        )
+                    )
+                ),
+            ),
+        )
+        raw: bytes = response.candidates[0].content.parts[0].inline_data.data
+        # Ділимо на chunks по 0.1с (24kHz 16-bit = 48000 bytes/sec → 4800 bytes/chunk)
+        chunk_size = 4800
+        return [raw[i: i + chunk_size] for i in range(0, len(raw), chunk_size)]
+
+    # ------------------------------------------------------------------
     # DEBUG режим: локальний мікрофон ↔ динамік
     # ------------------------------------------------------------------
 
@@ -478,29 +536,32 @@ class Block1Agent:
                         logger.info("[AGENT] Тиша 3 рази — завершуємо дзвінок")
                         self.call_result = "no_result"
                         self._end_event.set()
-                        _suppress_next_audio[0] = False
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": (
-                                "Пацієнт не відповідає. Скажи коротке прощання і виклич end_call(result='no_answer')."
-                            )}]},
-                            turn_complete=True,
-                        )
+                        if "3.1" not in GEMINI_MODEL:
+                            _suppress_next_audio[0] = False
+                            await _live_session[0].send_client_content(
+                                turns={"parts": [{"text": (
+                                    "Пацієнт не відповідає. Скажи коротке прощання і виклич end_call(result='no_answer')."
+                                )}]},
+                                turn_complete=True,
+                            )
                     elif _silence_count == 1:
-                        _suppress_next_audio[0] = False
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": (
-                                "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."
-                            )}]},
-                            turn_complete=True,
-                        )
+                        if "3.1" not in GEMINI_MODEL:
+                            _suppress_next_audio[0] = False
+                            await _live_session[0].send_client_content(
+                                turns={"parts": [{"text": (
+                                    "Скажи пацієнту: «Повторіть будь ласка, я не почула вас.» — і мовчки чекай."
+                                )}]},
+                                turn_complete=True,
+                            )
                     else:
-                        _suppress_next_audio[0] = False
-                        await _live_session[0].send_client_content(
-                            turns={"parts": [{"text": (
-                                "Скажи пацієнту: «Я все ще чекаю вашої відповіді.» — і мовчки чекай."
-                            )}]},
-                            turn_complete=True,
-                        )
+                        if "3.1" not in GEMINI_MODEL:
+                            _suppress_next_audio[0] = False
+                            await _live_session[0].send_client_content(
+                                turns={"parts": [{"text": (
+                                    "Скажи пацієнту: «Я все ще чекаю вашої відповіді.» — і мовчки чекай."
+                                )}]},
+                                turn_complete=True,
+                            )
 
             async def _start_silence_timer(audio_delay: float = 0.0) -> None:
                 nonlocal _silence_task
@@ -559,6 +620,10 @@ class Block1Agent:
                         return
                     _phase = "до першої репліки" if _patient_said_count[0] == 0 else f"репліка #{_patient_said_count[0]}"
                     logger.warning(f"[AGENT] Watchdog: {idle:.0f}с бездіяльності ({_phase}) — re-inject prompt")
+                    if "3.1" in GEMINI_MODEL:
+                        # send_client_content → 1007 на 3.1 моделі (audio modality не підтримує text inject)
+                        logger.debug("[AGENT] Watchdog: 3.1 model — skip send_client_content")
+                        continue
                     try:
                         _suppress_next_audio[0] = False
                         await _live_session[0].send_client_content(
@@ -584,21 +649,22 @@ class Block1Agent:
                 logger.warning(
                     f"[AGENT] Timeout warning: залишилась 1 хвилина дзвінка"
                 )
-                try:
-                    _suppress_next_audio[0] = False
-                    await _live_session[0].send_client_content(
-                        turns={"parts": [{"text": (
-                            "УВАГА: до завершення дзвінка залишилась 1 хвилина. "
-                            "Скажи пацієнту природно, без паніки: "
-                            "'Вибачте, нам залишилась буквально хвилинка розмови — "
-                            "ви підтверджуєте свій запис чи бажаєте перенести?' "
-                            "Після цього мовчки чекай відповіді."
-                        )}]},
-                        turn_complete=True,
-                    )
-                except Exception as e:
-                    logger.error(f"[AGENT] Timeout warning помилка send: {e!r}")
-                    return
+                if "3.1" not in GEMINI_MODEL:
+                    try:
+                        _suppress_next_audio[0] = False
+                        await _live_session[0].send_client_content(
+                            turns={"parts": [{"text": (
+                                "УВАГА: до завершення дзвінка залишилась 1 хвилина. "
+                                "Скажи пацієнту природно, без паніки: "
+                                "'Вибачте, нам залишилась буквально хвилинка розмови — "
+                                "ви підтверджуєте свій запис чи бажаєте перенести?' "
+                                "Після цього мовчки чекай відповіді."
+                            )}]},
+                            turn_complete=True,
+                        )
+                    except Exception as e:
+                        logger.error(f"[AGENT] Timeout warning помилка send: {e!r}")
+                        return
 
                 # Чекаємо ще 60с — якщо за цей час пацієнт не відповів / дзвінок не завершився
                 await asyncio.sleep(60)
@@ -979,9 +1045,7 @@ class Block1Agent:
                                     _turn_first_audio_logged = True
                                     _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
                                     logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
-                                if _suppress_slots_turn and not _allow_next_turn[0]:
-                                    pass  # Turn 1 після get_available_slots(no date) → завжди drop, Turn 2 грає замість
-                                elif not _suppress_next_audio[0] or _allow_next_turn[0]:
+                                if not _suppress_next_audio[0] or _allow_next_turn[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     await binotel_call.send_audio(resp.data)
                                     _turn_audio_played = True   # аудіо реально дійшло до пацієнта
@@ -1301,16 +1365,9 @@ class Block1Agent:
                                             _slots_fetched = True
                                             if result.get("date"):
                                                 _date_slots_fetched[0] = True
-                                        # Suppress Turn 1 завжди при get_available_slots БЕЗ дати —
-                                        # незалежно від success/failure. Gemini спекулятивно генерує
-                                        # Turn 1 до отримання результату: якщо success=True → галюцинує
-                                        # неправильні дати; якщо success=False ("немає слотів") → галюцинує
-                                        # дати яких немає. В обох випадках Turn 1 неправильний,
-                                        # Turn 2 (з реальним результатом) — правильний.
-                                        if not args.get("date"):
-                                            _suppress_slots_turn = True
-                                            _turn_audio_played = False
-                                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1 (success=%s)", result.get("success"))
+                                        # suppress_slots_turn вимкнено: Gemini 3.1 отримує результат
+                                        # миттєво (кеш) і НЕ генерує Turn 2 — чекає пацієнта.
+                                        # Turn 1 вже містить правильні дати → нічого не глушимо.
                                     if fc.name == "transfer_to_operator":
                                         _transfer_reason[0] = result.get("reason", "")
                                         self.call_result = "transferred"
@@ -1356,13 +1413,6 @@ class Block1Agent:
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
-                        # _suppress_slots_turn = Turn 1 мав get_available_slots(no date).
-                        # Gemini ЗАВЖДИ галюцинує в Turn 1 (неповні дати, неправильний порядок).
-                        # Turn 2 має правильні дати → глушимо Turn 1 і дозволяємо Turn 2 зіграти.
-                        # Стосується будь-якого Turn 1 — незалежно від того чи говорив пацієнт.
-                        if not _draining and _greeting_done.is_set() and _suppress_slots_turn:
-                            _allow_next_turn[0] = True   # Turn 2 (правильні дати) проривається крізь suppress
-                            logger.debug("[AGENT] get_available_slots(no date) → suppress Turn 1, дозволяємо Turn 2")
                         # reschedule_visit щойно заблоковано → AI зараз генерує питання підтвердження.
                         # Це питання мусить пробитись крізь suppress (інакше стає ghost → пацієнт не чує).
                         if not _draining and _greeting_done.is_set() and _reschedule_just_blocked[0]:
@@ -1530,12 +1580,9 @@ class Block1Agent:
                 # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
                 _schedule_silence_timer()
             else:
-                # Cold шлях: тригеримо привітання в реальному часі
-                await _live_session[0].send_client_content(
-                    turns={"parts": [{"text": "Починай розмову — коротко привітайся та нагадай про візит (максимум 2-3 речення). Говори ДУЖЕ ПОВІЛЬНО і ПЛАВНО — з чіткою паузою між кожним словом і між реченнями. Пацієнт щойно підняв трубку — дай йому час зорієнтуватись."}]},
-                    turn_complete=True,
-                )
-                # _greeting_done.set() ОДРАЗУ після тригера — не блокувати recv_task greeting'ом.
+                # Cold шлях: TTS або warmup не вдались — чекаємо першого слова пацієнта.
+                # send_client_content на 3.1 моделі → 1007, тому не викликаємо.
+                # _greeting_done.set() ОДРАЗУ — не блокуємо recv_task.
                 # Slot hint inject нижче — background task, щоб не затримувати _greeting_done
                 # та не ламати suppress/gate логіку greeting туру.
                 _greeting_done.set()
@@ -1850,80 +1897,41 @@ class Block1Agent:
                 if resp.server_content and resp.server_content.turn_complete:
                     break
 
-        # Чекаємо AI верифікацію перед _build_config() — кеш має бути заповнений
+        # Чекаємо AI верифікацію перед build_system_prompt — кеш має бути заповнений
         if not ai_verify_task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(ai_verify_task), timeout=3.0)
             except asyncio.TimeoutError:
-                logger.debug("[AGENT] AI service verify timeout — _build_config() використає fuzzy")
+                logger.debug("[AGENT] AI service verify timeout — використає fuzzy")
 
+        # TTS привітання (замість Live send_client_content → не дає 1007 на 3.1)
         try:
-            _warmup_cm = self.client.aio.live.connect(
-                model=GEMINI_MODEL,
-                config=self._build_config(),
-            )
-            warmup_session = await _warmup_cm.__aenter__()
-            await _generate_greeting(warmup_session)
-
-            # Чекаємо завершення prefetch якщо ще не закінчився (greeting зазвичай довше)
-            if not prefetch_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=2.0)
-                except asyncio.TimeoutError:
-                    logger.debug("[AGENT] Warmup prefetch ще не завершився — _stream() підхопить")
-
+            self._greeting_buffer = await self._generate_tts_greeting()
+            self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
             logger.info(
-                f"[AGENT] Warmup готовий: {len(self._greeting_buffer)} chunks буферизовано"
+                f"[AGENT] TTS greeting готовий: {len(self._greeting_buffer)} chunks"
                 f" ({self._greeting_duration:.1f}с)"
                 + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
             )
-            self._warmup_cm = _warmup_cm
-            self._warmup_session = warmup_session
-            self._warmup_time = time.time()
-            _warmup_cm = None  # не закривати в finally
-
-            self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
         except Exception as e:
-            logger.warning(f"[AGENT] Warmup помилка: {e} — retry через 1с...")
+            logger.warning(f"[AGENT] TTS greeting помилка: {e} — retry через 1с...")
             self._greeting_buffer = []
-            self._warmup_session = None
-            self._warmup_cm = None
-            if _warmup_cm is not None:
-                try:
-                    await _warmup_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                _warmup_cm = None
-            # Retry — у нас є ще ~10-20с поки пацієнт чує гудки
             await asyncio.sleep(1)
             try:
-                _warmup_cm = self.client.aio.live.connect(
-                    model=GEMINI_MODEL,
-                    config=self._build_config(),
-                )
-                warmup_session = await _warmup_cm.__aenter__()
-                await _generate_greeting(warmup_session)
-                self._warmup_cm = _warmup_cm
-                self._warmup_session = warmup_session
-                self._warmup_time = time.time()
-                _warmup_cm = None
-                logger.info(f"[AGENT] Warmup retry успішний: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
-                self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
+                self._greeting_buffer = await self._generate_tts_greeting()
+                self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
+                logger.info(f"[AGENT] TTS greeting retry OK: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
             except Exception as e2:
-                logger.warning(f"[AGENT] Warmup retry також провалився: {e2} — cold path")
+                logger.warning(f"[AGENT] TTS greeting retry провалився: {e2} — cold path без привітання")
                 self._greeting_buffer = []
-                self._warmup_session = None
-                self._warmup_cm = None
-        finally:
-            if _warmup_cm is not None:  # закриваємо тільки якщо не збережено
-                try:
-                    await _warmup_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
-            if not prefetch_task.done():
-                prefetch_task.cancel()
-            if not ai_verify_task.done():
-                ai_verify_task.cancel()
+                self._greeting_duration = 0.0
+
+        self._warmup_session = None
+        self._warmup_cm = None
+        if not prefetch_task.done():
+            prefetch_task.cancel()
+        if not ai_verify_task.done():
+            ai_verify_task.cancel()
 
     # ------------------------------------------------------------------
     # Коментар до дзвінка + класифікація
