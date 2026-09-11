@@ -298,34 +298,30 @@ class Block1Agent:
     # ------------------------------------------------------------------
 
     def _build_greeting_text(self) -> str:
-        """Шаблонний текст привітання для TTS — не потребує Live сесії."""
-        from agents.block1.prompts import _get_greeting, _format_visit_date
+        """Шаблонний текст привітання для TTS — 1в1 як КРОК 1 у prompts.yaml."""
+        from agents.block1.prompts import _visit_label, _format_visit_date
         visit = self.visit
-
-        # Ім'я та по-батькові в правильному регістрі (2-е та 3-є слово з ПІБ)
-        parts = visit.get("patient_name", "").split()
-        if len(parts) >= 3:
-            name_call = f"{parts[1].capitalize()} {parts[2].capitalize()}"
-        elif len(parts) == 2:
-            name_call = parts[1].capitalize()
-        else:
-            name_call = parts[0].capitalize() if parts else ""
 
         visit_dt = visit.get("visit_datetime", "")
         date_str = _format_visit_date(visit_dt) if visit_dt else ""
 
-        # Спеціалізація в родовому відмінку (після "до"): терапевт → терапевта
-        doc_parts = visit.get("doctor_name", "").split()
-        spec = doc_parts[-1].lower() if doc_parts else ""
-        _vowels = "аеиіоуяєіюь"
-        if spec and spec[-1] not in _vowels:
-            spec += "а"
-        doctor_phrase = f"до {spec}" if spec else "до лікаря"
+        label = _visit_label(visit).lower()
+        appointment = visit.get("appointment", "")
+        if appointment:
+            # Процедура → "на [назву]"
+            service_phrase = f"на {label}"
+        else:
+            # Спеціаліст → "до [спеціаліст в род. відмінку]": гінеколог → гінеколога
+            _vowels = "аеиіоуяєіюь"
+            if label and label[-1] not in _vowels:
+                label += "а"
+            service_phrase = f"до {label}" if label else "до лікаря"
 
-        greeting = _get_greeting()
         return (
-            f"{greeting}, {name_call}! Клініка нагадує про ваш запис "
-            f"{doctor_phrase} на {date_str}. Ви плануєте прийти?"
+            f"Вас вітає медичний центр Медіком Кривбас! "
+            f"Мене звати Марія — голосовий помічник медичного центру. "
+            f"У вас запис {service_phrase} {date_str}. "
+            f"Ви плануєте прийти?"
         )
 
     async def _generate_tts_greeting(self) -> list[bytes]:
