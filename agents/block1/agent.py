@@ -34,7 +34,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from agents.block1.prompts import build_system_prompt
 from agents.block1.tools import TOOLS, handle_tool_call
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE, GEMINI_LIVE_VOICE, DEBUG, VERTEX_PROJECT, VERTEX_LOCATION, SILENCE_TIMEOUT_SEC, SILENCE_START_DELAY_SEC, WATCHDOG_TIMEOUT_SEC, INTERRUPTED_PAUSE_SEC, GEMINI_LOGS, LOG_FILE, TRANSFER_ENABLED, CALL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ class Block1Agent:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Zephyr"
+                        voice_name=GEMINI_LIVE_VOICE
                     )
                 ),
                 language_code="uk-UA",

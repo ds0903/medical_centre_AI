@@ -31,9 +31,12 @@ CARTESIA_LANGUAGE = os.getenv("CARTESIA_LANGUAGE", "uk")
 FISH_API_KEY  = os.getenv("FISH_API_KEY", "")
 FISH_LANGUAGE = os.getenv("FISH_LANGUAGE", "uk")
 
+# Gemini голос — один для Live сесії і TTS привітання (щоб звучали однаково)
+GEMINI_LIVE_VOICE = os.getenv("GEMINI_LIVE_VOICE", "Zephyr")
+
 # Gemini TTS (Block1 ASR pipeline)
 GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
-GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Zephyr")
+GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", GEMINI_LIVE_VOICE)
 
 # PostgreSQL
 DATABASE_URL = os.getenv(

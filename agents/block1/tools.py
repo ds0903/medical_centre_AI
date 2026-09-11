@@ -457,9 +457,16 @@ async def handle_tool_call(
                         _found = True
                         break
                 if not _found:
-                    # Числовий fallback: "16" або "16 жовтня" → шістнадцяте
-                    try:
-                        _req_day = int(_req_l.split()[0])
+                    # Числовий fallback: "16", "16 жовтня", "пацієнт обрав 16", "п'ятниця 25 вересня" →
+                    # шукаємо будь-яке слово в рядку що є числом (int), не лише split()[0]
+                    _req_day = None
+                    for _word in _req_l.split():
+                        try:
+                            _req_day = int(_word)
+                            break
+                        except ValueError:
+                            pass
+                    if _req_day is not None:
                         for _id in _initial_dates:
                             # ordinal може бути складеним ("двадцять перше квітня") —
                             # беремо всі слова крім останнього (місяця)
@@ -467,14 +474,14 @@ async def handle_tool_call(
                             if _NUM_FROM_ORDINAL.get(_ordinal_part) == _req_day:
                                 _found = True
                                 break
-                    except (ValueError, IndexError):
-                        pass
                 if not _found:
-                    # День тижня fallback: "понеділок" / "вівторок" / ... → конкретна дата
+                    # День тижня fallback: "п'ятниця" / "п'ятниця 25 вересня" → конкретна дата
+                    # Перевіряємо і рівність і входження (Gemini часто додає число до дня тижня)
                     for _d in _initial_call["result"].get("available_dates", []):
-                        if _d.get("weekday", "").lower() == _req_l:
+                        _wd = _d.get("weekday", "").lower()
+                        if _wd and (_wd == _req_l or _wd in _req_l):
                             logger.info(
-                                f"[TOOL] get_available_slots: день тижня '{_req_l}' → дата '{_d['date']}'"
+                                f"[TOOL] get_available_slots: день тижня '{_wd}' → дата '{_d['date']}'"
                             )
                             requested_date = _d["date"]
                             _found = True
@@ -516,17 +523,22 @@ async def handle_tool_call(
                         matched_date_key = d
                         break
             if not matched_slots:
-                # Числовий fallback: AI передала "12" або "12 жовтня" → шукаємо ordinal ключ
-                try:
-                    _req_day = int(_req.split()[0])
+                # Числовий fallback: "12", "12 жовтня", "пацієнт обрав 12", "п'ятниця 25 вересня" →
+                # шукаємо будь-яке слово в рядку що є числом, не лише split()[0]
+                _req_day2 = None
+                for _word in _req.split():
+                    try:
+                        _req_day2 = int(_word)
+                        break
+                    except ValueError:
+                        pass
+                if _req_day2 is not None:
                     for d, slots in dates_map.items():
                         _ordinal_part = " ".join(d.split()[:-1])
-                        if _NUM_FROM_ORDINAL.get(_ordinal_part) == _req_day:
+                        if _NUM_FROM_ORDINAL.get(_ordinal_part) == _req_day2:
                             matched_slots = slots
                             matched_date_key = d
                             break
-                except (ValueError, IndexError):
-                    pass
             if not matched_slots:
                 return {
                     "success": False,
