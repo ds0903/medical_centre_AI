@@ -91,11 +91,13 @@ async def run_production() -> None:
         # Графік вимкнено — одразу fetch + дзвінки без state
         now = datetime.now(ZoneInfo("Europe/Kyiv"))
         if now.hour >= SCHEDULER_EVENING_FETCH_HOUR:
-            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_EVENING_FETCH_HOUR}:00 — вечірній fetch")
+            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_EVENING_FETCH_HOUR}:00 — вечірній fetch+дзвінки")
             await fetch_and_schedule_calls(shift=1)
+            await process_pending_calls(call_end_hour=SCHEDULER_EVENING_CALL_END_HOUR, archive=True)
         elif now.hour >= SCHEDULER_MORNING_FETCH_HOUR:
-            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_MORNING_FETCH_HOUR}:00 — ранковий fetch")
+            logger.info(f"[MAIN] Час {now.strftime('%H:%M')} ≥ {SCHEDULER_MORNING_FETCH_HOUR}:00 — ранковий fetch+дзвінки")
             await fetch_and_schedule_calls(shift=0)
+            await process_pending_calls(call_end_hour=SCHEDULER_MORNING_CALL_END_HOUR, archive=False)
     else:
         # Графік увімкнено — відновлення після рестарту по стану БД
         from scheduler.daily_runner import _has_pending_tasks, _is_workday
