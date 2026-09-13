@@ -452,7 +452,7 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
                 call_task.cancel()
             if not warmup_task.done():
                 warmup_task.cancel()
-            if binotel_call is not None:
+            if binotel_call is not None and call_result != "transferred":
                 try:
                     await binotel_call.hangup()
                 except (asyncio.CancelledError, Exception):
