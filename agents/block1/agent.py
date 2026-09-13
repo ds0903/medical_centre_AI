@@ -414,10 +414,13 @@ class Block1Agent:
             # повторним input_transcription від того ж мовлення.
             _suppress_next_audio = [False]
             _suppress_set_at = [0.0]        # час коли suppress був виставлений (для таймаута)
-            # True до завершення Turn 1 (greeting turn): блокує ТІЛЬКИ Turn 1 аудіо.
+            # True до завершення Turn 1 (greeting turn): блокує ТІЛЬКИ Turn 1 аудіо (TTS path).
             # На відміну від suppress: не заважає input_transcription одразу скидати suppress.
             # Знімається на turn_complete Turn 1 або interrupted → Turn 2 може грати.
             _turn1_audio_block = [False]
+            # True для 3.1 під час Turn 1: блокує пацієнта → Gemini поки Gemini не договорить привітання.
+            # Інакше пацієнт перебиває привітання → Gemini генерує Turn 2 (продовження) → цикл.
+            _block_patient_during_turn1 = [False]
             _ai_turn_active = [False]       # True поки Gemini генерує відповідь у цьому турі
             _ai_turn_started_at = [0.0]    # час початку поточного туру (для watchdog grace period)
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
@@ -741,6 +744,10 @@ class Block1Agent:
                         break
                     if not _greeting_done.is_set():
                         continue
+                    # Для 3.1: блокуємо пацієнта поки Gemini не договорить привітання (Turn 1).
+                    # Інакше пацієнт перебиває → Gemini генерує Turn 2 (продовження) → цикл без кінця.
+                    if _block_patient_during_turn1[0]:
+                        continue
                     # Ехо-гейт: після interrupted ігноруємо аудіо поки не розсіється відлуння
                     if time.time() < _interrupted_pause_until[0]:
                         _preroll_buf.append(chunk)  # зберігаємо поки в gate
@@ -949,12 +956,14 @@ class Block1Agent:
                                             from services import call_logger
                                             call_logger.log_patient(_it_text)
                                 if sc.turn_complete:
-                                    if _turn1_audio_block[0]:
-                                        # Turn 1 (Gemini greeting) завершено → знімаємо блок аудіо.
-                                        # suppress вже скинуто input_transcription → Turn 2 одразу грає.
+                                    if _turn1_audio_block[0] or _block_patient_during_turn1[0]:
+                                        # Turn 1 (Gemini greeting) завершено:
+                                        # TTS path: знімаємо блок Gemini аудіо → patient.
+                                        # 3.1 path: знімаємо блок patient аудіо → Gemini → пацієнт може говорити.
                                         _turn1_audio_block[0] = False
+                                        _block_patient_during_turn1[0] = False
                                         _activity[0] = time.time()
-                                        logger.info("[AGENT] Turn 1 complete → _turn1_audio_block знято")
+                                        logger.info("[AGENT] Turn 1 complete → audio gates знято (пацієнт може говорити)")
                                     if _ai_buf:
                                         # Ghost = аудіо так і не дійшло до пацієнта в цьому турі
                                         _is_ghost = not _turn_audio_played
@@ -1051,6 +1060,12 @@ class Block1Agent:
                                     _turn_first_audio_logged = True
                                     _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
                                     logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
+                                    # 3.1 no-TTS: Gemini почала Turn 1 (greeting) → блокуємо пацієнта.
+                                    # Без блокування: пацієнт перебиває → Gemini генерує Turn 2 (продовження) → цикл.
+                                    # Динамічний блок (не в cold path): інакше Gemini ніколи не чує пацієнта і не стартує.
+                                    if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0]:
+                                        _block_patient_during_turn1[0] = True
+                                        logger.debug("[AGENT] 3.1 Turn 1 started → пацієнт заблокований до turn_complete")
                                 if (not _suppress_next_audio[0] or _allow_next_turn[0]) and not _turn1_audio_block[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
                                     # _turn1_audio_block=True → Turn 1 аудіо заблоковано (TTS вже зіграло → без подвійного привітання).
@@ -1603,12 +1618,11 @@ class Block1Agent:
                 logger.info("[AGENT] Стрімінг розпочато")
                 _schedule_silence_timer()
             else:
-                # Cold шлях: TTS або warmup не вдались — чекаємо першого слова пацієнта.
-                # send_client_content на 3.1 моделі → 1007, тому не викликаємо.
-                # _greeting_done.set() ОДРАЗУ — не блокуємо recv_task.
-                # Slot hint inject нижче — background task, щоб не затримувати _greeting_done
-                # та не ламати suppress/gate логіку greeting туру.
+                # Cold шлях (включаючи 3.1 без TTS): _greeting_done.set() одразу → Gemini аудіо грає.
+                # Але для 3.1: блокуємо пацієнта → Gemini поки Turn 1 не завершено (_block_patient_during_turn1).
+                # Без цього: пацієнт перебиває Turn 1 → Gemini генерує Turn 2 (продовження) → цикл.
                 _greeting_done.set()
+                # _block_patient_during_turn1 встановлюється динамічно в resp.data Turn 1 (для 3.1).
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
                 _activity[0] = time.time()
@@ -1927,27 +1941,32 @@ class Block1Agent:
             except asyncio.TimeoutError:
                 logger.debug("[AGENT] AI service verify timeout — використає fuzzy")
 
-        # TTS привітання (замість Live send_client_content → не дає 1007 на 3.1)
-        try:
-            self._greeting_buffer = await self._generate_tts_greeting()
-            self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
-            logger.info(
-                f"[AGENT] TTS greeting готовий: {len(self._greeting_buffer)} chunks"
-                f" ({self._greeting_duration:.1f}с)"
-                + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
-            )
-        except Exception as e:
-            logger.warning(f"[AGENT] TTS greeting помилка: {e} — retry через 1с...")
-            self._greeting_buffer = []
-            await asyncio.sleep(1)
+        # TTS привітання: тільки для не-3.1 моделей.
+        # 3.1: send_client_content → 1007; TTS → Turn 1 заблоковано → пацієнт чує 7с тиші.
+        # 3.1 path: greeting_buffer=[] → Gemini привітається сама в Turn 1 (без подвійного привітання).
+        if "3.1" in GEMINI_MODEL:
+            logger.info("[AGENT] 3.1 model: TTS пропущено — Gemini привітається напряму в Turn 1")
+        else:
             try:
                 self._greeting_buffer = await self._generate_tts_greeting()
                 self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
-                logger.info(f"[AGENT] TTS greeting retry OK: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
-            except Exception as e2:
-                logger.warning(f"[AGENT] TTS greeting retry провалився: {e2} — cold path без привітання")
+                logger.info(
+                    f"[AGENT] TTS greeting готовий: {len(self._greeting_buffer)} chunks"
+                    f" ({self._greeting_duration:.1f}с)"
+                    + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
+                )
+            except Exception as e:
+                logger.warning(f"[AGENT] TTS greeting помилка: {e} — retry через 1с...")
                 self._greeting_buffer = []
-                self._greeting_duration = 0.0
+                await asyncio.sleep(1)
+                try:
+                    self._greeting_buffer = await self._generate_tts_greeting()
+                    self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
+                    logger.info(f"[AGENT] TTS greeting retry OK: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
+                except Exception as e2:
+                    logger.warning(f"[AGENT] TTS greeting retry провалився: {e2} — cold path без привітання")
+                    self._greeting_buffer = []
+                    self._greeting_duration = 0.0
 
         self._warmup_session = None
         self._warmup_cm = None
