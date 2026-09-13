@@ -1676,12 +1676,12 @@ class Block1Agent:
                         logger.info(f"[AGENT] '{t.get_name()}' завершено нормально")
 
                 # Якщо end_call/transfer_to_operator спрацював — recv_task ще грає прощання AI.
-                # Чекаємо поки AI договорить (max 15с) перш ніж обривати дзвінок.
+                # Чекаємо поки AI договорить (max 10с) перш ніж обривати дзвінок.
                 if self._end_event.is_set() and not recv_task.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
+                        await asyncio.wait_for(asyncio.shield(recv_task), timeout=10.0)
                     except asyncio.TimeoutError:
-                        logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
+                        logger.warning("[AGENT] Timeout очікування прощання AI (10с)")
                 # Виконуємо transfer після того як AI договорила прощання
                 if _transfer_reason[0]:
                     if TRANSFER_ENABLED:
