@@ -310,27 +310,47 @@ class Block1Agent:
 
     def _build_greeting_text(self) -> str:
         """Шаблонний текст привітання для TTS — 1в1 як КРОК 1 у prompts.yaml."""
-        from agents.block1.prompts import _visit_label, _format_visit_date
+        from agents.block1.prompts import _visit_label, _format_visit_date, _MONTHS_UA
+        from datetime import datetime
         visit = self.visit
+        linked = visit.get("linked_visits", [])
 
+        intro = (
+            "Вас вітає медичний центр Медіком Кривбас! "
+            "Мене звати Марія — голосовий помічник медичного центру. "
+        )
+
+        if linked:
+            # Multi-visit: перелік всіх записів як у prompts_multi.yaml КРОК 1
+            all_visits = [visit] + linked
+            count = len(all_visits)
+            dt = datetime.fromisoformat(visit["visit_datetime"])
+            date_str = f"{dt.day} {_MONTHS_UA[dt.month - 1]}"
+            count_word = "запис" if count == 1 else "записи" if count < 5 else "записів"
+            items = []
+            for v in all_visits:
+                items.append(_visit_label(v) + " — " + _format_visit_date(v["visit_datetime"]))
+            records = "; ".join(items)
+            return (
+                f"{intro}"
+                f"У вас {count} {count_word} {date_str}: {records}. "
+                f"Ви плануєте прийти на всі записи?"
+            )
+
+        # Single-visit
         visit_dt = visit.get("visit_datetime", "")
         date_str = _format_visit_date(visit_dt) if visit_dt else ""
-
         label = _visit_label(visit).lower()
         appointment = visit.get("appointment", "")
         if appointment:
-            # Процедура → "на [назву]"
             service_phrase = f"на {label}"
         else:
-            # Спеціаліст → "до [спеціаліст в род. відмінку]": гінеколог → гінеколога
             _vowels = "аеиіоуяєіюь"
             if label and label[-1] not in _vowels:
                 label += "а"
             service_phrase = f"до {label}" if label else "до лікаря"
-
         return (
-            f"Вас вітає медичний центр Медіком Кривбас! "
-            f"Мене звати Марія — голосовий помічник медичного центру. "
+            f"{intro}"
             f"У вас запис {service_phrase} {date_str}. "
             f"Ви плануєте прийти?"
         )
