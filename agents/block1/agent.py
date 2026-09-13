@@ -1404,6 +1404,19 @@ class Block1Agent:
                                         break
                                 if _batch:
                                     await _live_session[0].send_tool_response(function_responses=_batch)
+                                # Auto-drain: Gemini виконала confirm/cancel але забула викликати end_call.
+                                # Виставляємо _draining щоб після прощання дзвінок завершився автоматично.
+                                if _after_batch is None:
+                                    if _call_cache.get("confirm_visit", {}).get("success"):
+                                        self.call_result = "confirmed"
+                                        self._end_event.set()
+                                        _after_batch = ("end_call",)
+                                        logger.info("[AGENT] Auto-drain: confirm_visit без end_call → завершуємо дзвінок")
+                                    elif _call_cache.get("cancel_visit", {}).get("success"):
+                                        self.call_result = "cancelled"
+                                        self._end_event.set()
+                                        _after_batch = ("end_call",)
+                                        logger.info("[AGENT] Auto-drain: cancel_visit без end_call → завершуємо дзвінок")
                                 if _after_batch:
                                     _draining = True
                         # session.receive() вийшов (turn_complete або сесія закрита)
@@ -1548,9 +1561,11 @@ class Block1Agent:
                 # FIX 1 — suppress: завжди виставляємо після buffer, незалежно від primer.
                 # Діє так само як recv_task виставляє після будь-якого реального AI-туру.
                 _suppress_next_audio[0] = True
-                # Блокуємо Turn 1 аудіо (Gemini greeting continuation) — TTS вже зіграло.
-                # Знімається в turn_complete Turn 1 → Turn 2 (реальна відповідь) грає нормально.
-                _turn1_audio_block[0] = True
+                # Блокуємо Turn 1 аудіо тільки для 3.1 моделі.
+                # 3.1: завжди генерує привітання в Turn 1, навіть якщо пацієнт вже говорив.
+                # 2.5 flash: Turn 1 = реальна відповідь пацієнту ("Так, чую вас!") → не блокуємо.
+                if "3.1" in GEMINI_MODEL:
+                    _turn1_audio_block[0] = True
                 _last_ai_turn_end[0] = time.time()   # double-turn guard baseline
                 #
                 # FIX 2 — echo gate: greeting щойно відіграло через SIP-динамік пацієнта.
