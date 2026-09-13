@@ -19,7 +19,7 @@ VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "europe-central2")
 # Gemini (через Vertex AI)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # не потрібен для Vertex, лишаємо для сумісності
 GEMINI_MODEL        = os.getenv("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
-GEMINI_FLASH_MODEL  = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+GEMINI_FLASH_MODEL  = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash-lite")
 
 # Cartesia TTS (Block1 ASR pipeline)
 CARTESIA_API_KEY  = os.getenv("CARTESIA_API_KEY", "")

@@ -414,6 +414,10 @@ class Block1Agent:
             # повторним input_transcription від того ж мовлення.
             _suppress_next_audio = [False]
             _suppress_set_at = [0.0]        # час коли suppress був виставлений (для таймаута)
+            # True до завершення Turn 1 (greeting turn): блокує ТІЛЬКИ Turn 1 аудіо.
+            # На відміну від suppress: не заважає input_transcription одразу скидати suppress.
+            # Знімається на turn_complete Turn 1 або interrupted → Turn 2 може грати.
+            _turn1_audio_block = [False]
             _ai_turn_active = [False]       # True поки Gemini генерує відповідь у цьому турі
             _ai_turn_started_at = [0.0]    # час початку поточного туру (для watchdog grace period)
             _last_patient_said_text = [""]  # текст останньої НОВОЇ транскрипції пацієнта
@@ -945,6 +949,12 @@ class Block1Agent:
                                             from services import call_logger
                                             call_logger.log_patient(_it_text)
                                 if sc.turn_complete:
+                                    if _turn1_audio_block[0]:
+                                        # Turn 1 (Gemini greeting) завершено → знімаємо блок аудіо.
+                                        # suppress вже скинуто input_transcription → Turn 2 одразу грає.
+                                        _turn1_audio_block[0] = False
+                                        _activity[0] = time.time()
+                                        logger.info("[AGENT] Turn 1 complete → _turn1_audio_block знято")
                                     if _ai_buf:
                                         # Ghost = аудіо так і не дійшло до пацієнта в цьому турі
                                         _is_ghost = not _turn_audio_played
@@ -1041,8 +1051,9 @@ class Block1Agent:
                                     _turn_first_audio_logged = True
                                     _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
                                     logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
-                                if not _suppress_next_audio[0] or _allow_next_turn[0]:
+                                if (not _suppress_next_audio[0] or _allow_next_turn[0]) and not _turn1_audio_block[0]:
                                     # Грає коли: suppress вимкнений АБО _allow_next_turn bypass (ghost з датами).
+                                    # _turn1_audio_block=True → Turn 1 аудіо заблоковано (TTS вже зіграло → без подвійного привітання).
                                     await binotel_call.send_audio(resp.data)
                                     _turn_audio_played = True   # аудіо реально дійшло до пацієнта
                                     # Гейт "ковзає" разом з мовою AI під час стріму.
@@ -1537,6 +1548,9 @@ class Block1Agent:
                 # FIX 1 — suppress: завжди виставляємо після buffer, незалежно від primer.
                 # Діє так само як recv_task виставляє після будь-якого реального AI-туру.
                 _suppress_next_audio[0] = True
+                # Блокуємо Turn 1 аудіо (Gemini greeting continuation) — TTS вже зіграло.
+                # Знімається в turn_complete Turn 1 → Turn 2 (реальна відповідь) грає нормально.
+                _turn1_audio_block[0] = True
                 _last_ai_turn_end[0] = time.time()   # double-turn guard baseline
                 #
                 # FIX 2 — echo gate: greeting щойно відіграло через SIP-динамік пацієнта.
@@ -1551,7 +1565,9 @@ class Block1Agent:
                 # Primer — тільки для stale сесії (відновленої через handle):
                 # нова сесія не має history привітання → треба повідомити Gemini.
                 # turn_complete=False ЗАБОРОНЕНО: Gemini галюцинує в незавершеному стані.
-                _needs_primer = _stale_warmup[0]
+                # Primer: тільки для stale-сесії (відновленої) і тільки якщо не 3.1.
+                # 3.1: send_client_content → 1007. На 3.1 Turn 1 просто суппресується.
+                _needs_primer = _stale_warmup[0] and "3.1" not in GEMINI_MODEL
                 if _needs_primer:
                     await _live_session[0].send_client_content(
                         turns={"parts": [{"text": "Ти вже привіталась і нагадала пацієнту про його візит. Не повторюй привітання. Слухай що скаже пацієнт."}]},
@@ -1562,20 +1578,14 @@ class Block1Agent:
                     logger.info("[AGENT] Fresh warmup: suppress + echo gate встановлено")
                 _greeting_done.set()
                 # Кеш слотів — warmup path (без hint inject → без ghost туру).
-                # send_client_content(turn_complete=True) завжди тригерить ghost-відповідь Gemini.
-                # Ghost з датами/питаннями потрапляє в контекст → пацієнт своєю першою фразою
-                # "відповідає" на ghost → AI веде розмову в неправильному напрямку.
-                # Кешу достатньо: get_available_slots tool → cache hit ~0мс → Gemini не встигає
-                # галюцинувати до отримання реального результату.
                 _, _sh_cache_w = _build_slots_hint(_call_cache.get("__raw_slots"))
                 if _sh_cache_w and "get_available_slots" not in _call_cache:
                     _call_cache["get_available_slots"] = _sh_cache_w
                     logger.info("[AGENT] Warmup: кеш слотів pre-populated")
                 from services.audio_bridge import enable_noise_profiling
                 enable_noise_profiling()
-                _activity[0] = time.time()  # watchdog рахує тільки після привітання
+                _activity[0] = time.time()
                 logger.info("[AGENT] Стрімінг розпочато")
-                # turn_complete вже відбувся під час warmup — запускаємо таймер одразу
                 _schedule_silence_timer()
             else:
                 # Cold шлях: TTS або warmup не вдались — чекаємо першого слова пацієнта.
