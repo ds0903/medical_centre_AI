@@ -1009,7 +1009,7 @@ class Block1Agent:
                                         # Чекаємо поки AI договорить перед завершенням
                                         if turn_had_audio:
                                             _has_prep = self.visit.get("_has_preparation", False)
-                                            _farewell_wait = (10.0 if _has_prep else 5.0) if self.call_result in ("rescheduled", "confirmed") else 1.0
+                                            _farewell_wait = (10.0 if _has_prep else 3.0) if self.call_result in ("rescheduled", "confirmed") else 1.0
                                             logger.info("[AGENT] AI завершив прощання — чекаємо %.0fс...", _farewell_wait)
                                             binotel_call.flush_encode_buffer()  # гарантуємо останній фрейм
                                             await asyncio.sleep(_farewell_wait)
@@ -1019,7 +1019,7 @@ class Block1Agent:
                                             # "До побачення!" до confirm_visit, потім end_call окремо).
                                             # confirmed/rescheduled мають довге прощання з адресою → 5с.
                                             _has_prep2 = self.visit.get("_has_preparation", False)
-                                            _no_audio_wait = (10.0 if _has_prep2 else 5.0) if self.call_result in ("confirmed", "rescheduled") else 2.0
+                                            _no_audio_wait = (10.0 if _has_prep2 else 3.0) if self.call_result in ("confirmed", "rescheduled") else 2.0
                                             logger.info("[AGENT] end_call без аудіо — чекаємо %.0fс для Opus drain...", _no_audio_wait)
                                             binotel_call.flush_encode_buffer()
                                             await asyncio.sleep(_no_audio_wait)
@@ -1456,6 +1456,11 @@ class Block1Agent:
                                 await asyncio.sleep(2.0)
                             return
                         logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
+                        # Draining: AI сказала прощання → виходимо (не чекаємо наступного туру).
+                        if _draining:
+                            binotel_call.flush_encode_buffer()
+                            await asyncio.sleep(1.5)
+                            return
                         # Запускаємо таймер тиші тільки якщо AI реально говорила в цьому турі.
                         # Якщо тур був лише tool_call (без аудіо) — таймер не запускаємо,
                         # щоб він не тік поки AI формує та озвучує відповідь у наступному турі.
