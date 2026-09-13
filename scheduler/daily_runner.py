@@ -427,7 +427,20 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
                 # else: linked залишаються pending — retry-прохід згрупує їх знову через dedup
                 return
 
-            await warmup_task
+            # Чекаємо warmup максимум 2с після того як пацієнт відповів.
+            # Якщо TTS ще генерується — скасовуємо, cold path (Gemini привітається сама).
+            if not warmup_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(warmup_task), timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.warning("[CALLS] Warmup не встиг за 2с після відповіді — cold path")
+                    warmup_task.cancel()
+                    try:
+                        await warmup_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            else:
+                await warmup_task
             call_result = await agent.run(binotel_call)
             call_duration = agent.call_duration
             call_commentary = agent.call_commentary

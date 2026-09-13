@@ -247,6 +247,15 @@ class Block1Agent:
         if not hasattr(self, '_cached_prompt'):
             self._cached_prompt = build_system_prompt(self.visit)
         prompt = self._cached_prompt
+        # Якщо TTS привітання вже готове — говоримо Gemini що КРОК 1 пропущено.
+        # Gemini не повинна вітатись в Turn 1, одразу слухає пацієнта.
+        if getattr(self, '_greeting_buffer', None):
+            tts_prefix = (
+                "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
+                "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання.\n"
+                "Одразу слухай пацієнта і відповідай на його слова (КРОК 2).\n\n"
+            )
+            prompt = tts_prefix + prompt
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
@@ -1576,11 +1585,8 @@ class Block1Agent:
                 # FIX 1 — suppress: завжди виставляємо після buffer, незалежно від primer.
                 # Діє так само як recv_task виставляє після будь-якого реального AI-туру.
                 _suppress_next_audio[0] = True
-                # Блокуємо Turn 1 аудіо тільки для 3.1 моделі.
-                # 3.1: завжди генерує привітання в Turn 1, навіть якщо пацієнт вже говорив.
-                # 2.5 flash: Turn 1 = реальна відповідь пацієнту ("Так, чую вас!") → не блокуємо.
-                if "3.1" in GEMINI_MODEL:
-                    _turn1_audio_block[0] = True
+                # _turn1_audio_block не ставимо: промпт каже Gemini вже привіталась →
+                # Turn 1 = слухає пацієнта і відповідає одразу (без ghosting).
                 _last_ai_turn_end[0] = time.time()   # double-turn guard baseline
                 #
                 # FIX 2 — echo gate: greeting щойно відіграло через SIP-динамік пацієнта.
@@ -1590,7 +1596,7 @@ class Block1Agent:
                 # Gate = 1.5с (SIP jitter ~50мс + room echo decay ~800мс + запас 650мс).
                 # Greeting грає в real-time (sleep у циклі) → по виходу залишок відтворення ≈ 0 →
                 # потрібна тільки затримка затухання ехо кімнати.
-                _interrupted_pause_until[0] = time.time() + 0.0
+                _interrupted_pause_until[0] = time.time() + 1.0
                 # ────────────────────────────────────────────────────────────────────────
                 # Primer — тільки для stale сесії (відновленої через handle):
                 # нова сесія не має history привітання → треба повідомити Gemini.
@@ -1941,32 +1947,29 @@ class Block1Agent:
             except asyncio.TimeoutError:
                 logger.debug("[AGENT] AI service verify timeout — використає fuzzy")
 
-        # TTS привітання: тільки для не-3.1 моделей.
-        # 3.1: send_client_content → 1007; TTS → Turn 1 заблоковано → пацієнт чує 7с тиші.
-        # 3.1 path: greeting_buffer=[] → Gemini привітається сама в Turn 1 (без подвійного привітання).
-        if "3.1" in GEMINI_MODEL:
-            logger.info("[AGENT] 3.1 model: TTS пропущено — Gemini привітається напряму в Turn 1")
-        else:
+        # TTS привітання для всіх моделей (включаючи 3.1).
+        # 3.1: Turn 1 Gemini (повторне привітання) блокується _turn1_audio_block.
+        # Пацієнт чує тільки TTS (pre-generated під час гудків) — без затримки.
+        try:
+            self._greeting_buffer = await self._generate_tts_greeting()
+            self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
+            logger.info(
+                f"[AGENT] TTS greeting готовий: {len(self._greeting_buffer)} chunks"
+                f" ({self._greeting_duration:.1f}с)"
+                + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
+            )
+        except Exception as e:
+            logger.warning(f"[AGENT] TTS greeting помилка: {e} — retry через 1с...")
+            self._greeting_buffer = []
+            await asyncio.sleep(1)
             try:
                 self._greeting_buffer = await self._generate_tts_greeting()
                 self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
-                logger.info(
-                    f"[AGENT] TTS greeting готовий: {len(self._greeting_buffer)} chunks"
-                    f" ({self._greeting_duration:.1f}с)"
-                    + (f", {len(self._prefetched_raw_slots)} слотів prefetch" if self._prefetched_raw_slots else "")
-                )
-            except Exception as e:
-                logger.warning(f"[AGENT] TTS greeting помилка: {e} — retry через 1с...")
+                logger.info(f"[AGENT] TTS greeting retry OK: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
+            except Exception as e2:
+                logger.warning(f"[AGENT] TTS greeting retry провалився: {e2} — cold path без привітання")
                 self._greeting_buffer = []
-                await asyncio.sleep(1)
-                try:
-                    self._greeting_buffer = await self._generate_tts_greeting()
-                    self._greeting_duration = sum(len(c) for c in self._greeting_buffer) / 48000
-                    logger.info(f"[AGENT] TTS greeting retry OK: {len(self._greeting_buffer)} chunks ({self._greeting_duration:.1f}с)")
-                except Exception as e2:
-                    logger.warning(f"[AGENT] TTS greeting retry провалився: {e2} — cold path без привітання")
-                    self._greeting_buffer = []
-                    self._greeting_duration = 0.0
+                self._greeting_duration = 0.0
 
         self._warmup_session = None
         self._warmup_cm = None
