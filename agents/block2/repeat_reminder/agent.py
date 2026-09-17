@@ -827,12 +827,12 @@ class RepeatReminderAgent:
                                     _ai_buf.clear()
                                     if _draining:
                                         if turn_had_audio:
-                                            _farewell_wait = 7.0 if self.call_result == "booked" else 3.0
+                                            _farewell_wait = 3.0 if self.call_result in ("booked", "declined") else 1.0
                                             logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
                                             binotel_call.flush_encode_buffer()
                                             await asyncio.sleep(_farewell_wait)
                                         else:
-                                            _no_audio_wait = 7.0 if self.call_result == "booked" else 2.0
+                                            _no_audio_wait = 3.0 if self.call_result in ("booked", "declined") else 2.0
                                             logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
                                             binotel_call.flush_encode_buffer()
                                             await asyncio.sleep(_no_audio_wait)
@@ -955,6 +955,23 @@ class RepeatReminderAgent:
 
                                 if _batch:
                                     await _live_session[0].send_tool_response(function_responses=_batch)
+                                # Auto-drain: Gemini виконала book/decline але забула викликати end_call.
+                                if _after_batch is None:
+                                    if _call_cache.get("book_new_visit", {}).get("success"):
+                                        self.call_result = "booked"
+                                        self._end_event.set()
+                                        _after_batch = ("end_call",)
+                                        logger.info("[AGENT 2.1] Auto-drain: book_new_visit без end_call → завершуємо")
+                                    elif _call_cache.get("decline", {}).get("success"):
+                                        self.call_result = "declined"
+                                        self._end_event.set()
+                                        _after_batch = ("end_call",)
+                                        logger.info("[AGENT 2.1] Auto-drain: decline без end_call → завершуємо")
+                                    elif _call_cache.get("mark_self_book", {}).get("success"):
+                                        self.call_result = "self_book"
+                                        self._end_event.set()
+                                        _after_batch = ("end_call",)
+                                        logger.info("[AGENT 2.1] Auto-drain: mark_self_book без end_call → завершуємо")
                                 if _after_batch:
                                     _draining = True
 
@@ -1153,9 +1170,9 @@ class RepeatReminderAgent:
 
                 if self._end_event.is_set() and not recv_task.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(recv_task), timeout=15.0)
+                        await asyncio.wait_for(asyncio.shield(recv_task), timeout=10.0)
                     except asyncio.TimeoutError:
-                        logger.warning("[AGENT] Timeout очікування прощання AI (15с)")
+                        logger.warning("[AGENT] Timeout очікування прощання AI (10с)")
                 if _transfer_reason[0]:
                     if TRANSFER_ENABLED:
                         await binotel_call.transfer_to_operator(_transfer_reason[0])
