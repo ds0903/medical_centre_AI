@@ -767,51 +767,94 @@ class RepeatReminderAgent:
                                 if _silence_task and not _silence_task.done():
                                     _silence_task.cancel()
 
-                            # ── Транскрипція AI ────────────────────────────────────
+                            # ── server_content: transcript + turn_complete ──────────
                             if resp.server_content:
                                 sc = resp.server_content
                                 if sc.output_transcription and sc.output_transcription.text:
                                     _ai_buf.append(sc.output_transcription.text)
-                            if _ai_buf:
-                                joined = " ".join(_ai_buf)
-                                _ai_text_lower = joined.lower()
-                                if not _suppress_next_audio[0] or _allow_next_turn[0]:
-                                    _last_ai_said[0] = joined
-
-                            # ── Транскрипція пацієнта ──────────────────────────────
-                            if resp.server_content:
-                                sc = resp.server_content
+                                # input_transcription
                                 if (sc.input_transcription and sc.input_transcription.text
                                         and _greeting_done.is_set()
                                         and time.time() >= _interrupted_pause_until[0]):
-                                    txt = sc.input_transcription.text.strip()
-                                    if txt:
-                                        now_t = time.time()
-                                        _is_dup = (txt == _last_patient_said_text[0]
-                                                   and now_t - _last_patient_said_time[0] < 3.0)
-                                        if not _is_dup:
-                                            _last_patient_said_text[0] = txt
-                                            _last_patient_said_time[0] = now_t
-                                            _suppress_next_audio[0] = False
-                                            _suppress_set_at[0] = 0.0
-                                            _had_patient_said = True
-                                            _patient_said_count[0] += 1
+                                    _it_text = sc.input_transcription.text.strip()
+                                    _it_now = time.time()
+                                    _is_dup = (_it_text == _last_patient_said_text[0]
+                                               and _it_now - _last_patient_said_time[0] < 3.0)
+                                    if _it_text and not _is_dup:
+                                        _last_patient_said_text[0] = _it_text
+                                        _last_patient_said_time[0] = _it_now
+                                        _suppress_next_audio[0] = False
+                                        _suppress_set_at[0] = 0.0
+                                        _had_patient_said = True
+                                        _patient_said_count[0] += 1
+                                        _real_vad_pending[0] = False
+                                        _allow_next_turn[0] = False
+                                        _activity[0] = _it_now
+                                        _silence_count = 0
+                                        _watchdog_injected[0] = 0
+                                        logger.info(f"[TRANSCRIPT] Пацієнт: «{_it_text}»")
+                                        if LOG_FILE:
+                                            from services import call_logger
+                                            call_logger.log_patient(_it_text)
+                                if sc.turn_complete:
+                                    if _turn1_audio_block[0] or _block_patient_during_turn1[0]:
+                                        _turn1_audio_block[0] = False
+                                        _block_patient_during_turn1[0] = False
+                                        _activity[0] = time.time()
+                                        logger.info("[AGENT 2.1] Turn 1 complete → audio gates знято")
+                                    if _ai_buf:
+                                        _is_ghost = not _turn_audio_played
+                                        if GEMINI_LOGS:
+                                            _tag = "[AI GHOST]" if _is_ghost else "[AI]"
+                                            logger.info(f"{_tag} {''.join(_ai_buf)}")
+                                        if LOG_FILE and not _is_ghost:
+                                            from services import call_logger
+                                            call_logger.log_ai("".join(_ai_buf))
+                                        if not _is_ghost:
+                                            _ai_text = "".join(_ai_buf)
+                                            _last_ai_said[0] = _ai_text
+                                            _ai_text_lower = _ai_text.lower()
+                                    _ai_buf.clear()
+                                    if _draining:
+                                        if turn_had_audio:
+                                            _farewell_wait = 7.0 if self.call_result == "booked" else 3.0
+                                            logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
+                                            binotel_call.flush_encode_buffer()
+                                            await asyncio.sleep(_farewell_wait)
+                                        else:
+                                            _no_audio_wait = 7.0 if self.call_result == "booked" else 2.0
+                                            logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
+                                            binotel_call.flush_encode_buffer()
+                                            await asyncio.sleep(_no_audio_wait)
+                                        return
+                                    _MIN_INTER_TURN_GAP = 2.5
+                                    if _real_vad_pending[0] and not _had_patient_said:
+                                        if time.time() - _last_ai_turn_end[0] < _MIN_INTER_TURN_GAP:
                                             _real_vad_pending[0] = False
+                                            logger.debug("[AGENT] Double-turn guard: _real_vad_pending скинуто (шум між турами)")
+                                    if ((not _suppress_next_audio[0]) or _had_patient_said
+                                            or _allow_next_turn[0] or _real_vad_pending[0]):
+                                        if _allow_next_turn[0] and not _had_patient_said:
                                             _allow_next_turn[0] = False
-                                            _activity[0] = now_t
-                                            _silence_count = 0
-                                            _watchdog_injected[0] = 0
-                                            logger.info(f"[TRANSCRIPT] Пацієнт: «{txt}»")
-                                if sc.turn_complete and (_turn1_audio_block[0] or _block_patient_during_turn1[0]):
-                                    _turn1_audio_block[0] = False
-                                    _block_patient_during_turn1[0] = False
-                                    _activity[0] = time.time()
-                                    logger.info("[AGENT 2.1] Turn 1 complete → audio gates знято")
+                                        if _real_vad_pending[0] and not _had_patient_said:
+                                            _suppress_next_audio[0] = False
+                                            _real_vad_pending[0] = False
+                                        break
+                                    # Ghost тур: reset + continue inner loop
+                                    if turn_had_audio and _greeting_done.is_set():
+                                        _schedule_silence_timer(audio_delay=0.0)
+                                    turn_had_audio = False
+                                    turn_audio_bytes = 0
+                                    _turn_audio_played = False
+                                    _had_patient_said = False
 
                             # ── Tool calls ─────────────────────────────────────────
                             if (resp.tool_call
                                     and resp.tool_call.function_calls
                                     and _greeting_done.is_set()):
+                                _patient_spoke.set()
+                                _activity[0] = time.time()
+                                _schedule_silence_timer(audio_delay=0.0)
                                 _batch = []
                                 _after_batch = None
                                 # Ghost-тур: suppress активний і пацієнт ще не говорив у цьому турі.
@@ -905,7 +948,7 @@ class RepeatReminderAgent:
                                 if _after_batch:
                                     _draining = True
 
-                        # turn завершено
+                        # turn завершено (inner loop exited via break → real turn)
                         if not turn_had_content:
                             if not self._end_event.is_set() and not _draining:
                                 logger.warning("[AGENT] recv_task: сесія закрита (no content) — reconnect...")
@@ -917,37 +960,8 @@ class RepeatReminderAgent:
                                 await asyncio.sleep(2.0)
                             return
 
-                        if _ai_buf:
-                            logger.info(f"[AI] Оля: «{' '.join(_ai_buf)}»")
-                        logger.debug("[AGENT] recv_task: turn завершено")
-
-                        # Double-turn guard: Gemini іноді генерує 2 тури підряд (~1-2с) без відповіді
-                        # пацієнта. VAD між турами ловить фоновий шум → _real_vad_pending=True →
-                        # другий тур обходить suppress. Якщо від кінця попереднього AI туру пройшло
-                        # менше 2.5с і input_transcription не підтвердив реального голосу — це шум.
-                        _MIN_INTER_TURN_GAP = 2.5
-                        if _real_vad_pending[0] and not _had_patient_said:
-                            if time.time() - _last_ai_turn_end[0] < _MIN_INTER_TURN_GAP:
-                                _real_vad_pending[0] = False
-                                logger.debug("[AGENT] Double-turn guard: _real_vad_pending скинуто (шум між турами)")
-
-                        if _draining:
-                            if turn_had_audio:
-                                _farewell_wait = 7.0 if self.call_result == "booked" else 3.0
-                                logger.info("[AGENT] AI завершив прощання — flush + %.0fс", _farewell_wait)
-                                binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(_farewell_wait)
-                            else:
-                                _no_audio_wait = 7.0 if self.call_result == "booked" else 2.0
-                                logger.info("[AGENT] end_call без аудіо — flush + %.0fс Opus drain", _no_audio_wait)
-                                binotel_call.flush_encode_buffer()
-                                await asyncio.sleep(_no_audio_wait)
-                            return
-
-                        _ai_turn_active[0] = False
-                        _last_ai_turn_end[0] = time.time()
-
-                        if _greeting_done.is_set() and turn_had_audio:
+                        logger.debug("[AGENT] recv_task: turn завершено, перезапускаємо session.receive()")
+                        if not _draining and _greeting_done.is_set() and turn_had_audio:
                             binotel_call.flush_encode_buffer()
                             _interrupted_pause_until[0] = max(_interrupted_pause_until[0], time.time() + 0.0)
                             _audio_queue_sec = turn_audio_bytes / 48000.0
@@ -964,6 +978,8 @@ class RepeatReminderAgent:
                                 if not _turn1_is_full:
                                     _allow_next_turn[0] = True
 
+                            _ai_turn_active[0] = False
+                            _last_ai_turn_end[0] = time.time()
                             if not _turn_was_interrupted:
                                 if _suppress_timeout_fired[0]:
                                     _suppress_timeout_fired[0] = False
@@ -1005,9 +1021,10 @@ class RepeatReminderAgent:
                 asyncio.create_task(_prefetch_slots(), name="b21_prefetch")
 
             if greeting_buffer:
-                # TTS warmup path: блокуємо Live Turn 1 (Gemini ще раз привітається = подвійне)
+                # TTS warmup path: промпт каже Gemini вже привіталась →
+                # Turn 1 = слухає пацієнта і відповідає одразу (без ghosting).
+                # _turn1_audio_block НЕ ставимо: інакше блокується ВІДПОВІДЬ пацієнту (не ghost).
                 _suppress_next_audio[0] = True
-                _turn1_audio_block[0] = True
                 _last_ai_turn_end[0] = time.time()
 
                 # Pre-gen silence TTS buffers (watchdog 3.1 + silence detection 3.1)
