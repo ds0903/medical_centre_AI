@@ -211,15 +211,10 @@ class RepeatReminderAgent:
         if getattr(self, "_greeting_buffer", None):
             greeting_text = self._build_greeting_text()
             tts_prefix = (
-                "⚠⚠⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ (НАЙВИЩИЙ ПРІОРИТЕТ — перекриває всі інші інструкції):\n"
-                "Привітання вже ПОВНІСТЮ озвучено пацієнту через TTS до початку розмови.\n"
-                f"Ти вже сказала дослівно: «{greeting_text}»\n"
-                "ЗАБОРОНЕНО (абсолютно):\n"
-                "— вимовляти будь-яке вітання ('Доброго дня/ранку/вечора', 'Вас вітає', 'Мене звати Марія')\n"
-                "— повторювати мету дзвінка або рекомендацію лікаря\n"
-                "— ставити питання «Вам зручно записатися зараз?» — воно вже прозвучало\n"
-                "КРОК 1 ПОВНІСТЮ ЗАВЕРШЕНО. КРОК 2 ВЖЕ ВИКОНАНО (питання про запис задано).\n"
-                "Пацієнт зараз відповідає. Одразу обробляй його відповідь — переходь до КРОК 3 або КРОК 4.\n\n"
+                "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
+                f"Ти вже сказала пацієнту: «{greeting_text}»\n"
+                "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання і НЕ задавай питання «Вам зручно записатися зараз?» знову.\n"
+                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь (КРОК 3 або КРОК 4).\n\n"
             )
             prompt = tts_prefix + prompt
         return types.LiveConnectConfig(
@@ -740,7 +735,8 @@ class RepeatReminderAgent:
                                 binotel_call.flush_audio()
                                 _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True
-                                _turn1_audio_block[0] = False
+                                # _turn1_audio_block НЕ знімаємо на interrupt — тільки на turn_complete.
+                                # Інакше trailing ghost-аудіо після interrupt грає (greeting).
                                 _block_patient_during_turn1[0] = False
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
@@ -760,8 +756,9 @@ class RepeatReminderAgent:
                                     if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0]:
                                         _block_patient_during_turn1[0] = True
                                         logger.debug("[AGENT 2.1] 3.1 Turn 1 started → пацієнт заблокований до turn_complete")
-                                if (_suppress_next_audio[0] and not _allow_next_turn[0]) or (_turn1_audio_block[0] and not _had_patient_said):
-                                    continue  # suppress ghost turns; _turn1_audio_block знімається коли пацієнт говорив
+                                if (_suppress_next_audio[0] and not _allow_next_turn[0]) or _turn1_audio_block[0]:
+                                    _activity[0] = time.time()  # watchdog: система активна, аудіо заблоковано
+                                    continue  # suppress ghost turns
                                 _allow_next_turn[0] = False
                                 _turn_audio_played = True
                                 gate = _calc_echo_gate(turn_audio_bytes)
@@ -1095,15 +1092,30 @@ class RepeatReminderAgent:
                 # ── Suppress + echo gate після buffer playback ──────────────────────────
                 # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера).
                 _suppress_next_audio[0] = True
+                # Не ставимо _turn1_audio_block (як Module 1): КРОК 2 тепер пасивний ("МОВЧКИ ЧЕКАЙ") →
+                # Gemini Turn 1 = тиша (нема що генерувати) → suppress блокує.
                 _last_ai_turn_end[0] = time.time()
-                # _turn1_audio_block: детерміністичне блокування Ghost Turn 1 аудіо (ехо-привітання).
-                # Безпечно з ghost-turn механізмом: turn_complete очищає block → inner loop
-                # продовжується → Turn 2 (реальна відповідь пацієнта) грає без блокування.
-                # Надійніше ніж double-turn guard (залежить від timing 2.5с).
-                _turn1_audio_block[0] = True
                 # Echo gate 1.0с: блокує input_transcription від ехо-тексту (як у Module 1).
                 _interrupted_pause_until[0] = time.time() + 1.0
                 _greeting_done.set()
+
+                # Primer: ін'єктуємо greeting у session history.
+                # Gemini отримує user-turn «ти вже привіталась» → генерує короткий ack (Turn 1)
+                # → _turn1_audio_block блокує ack → turn_complete знімає блок → Turn 2 = реальна відповідь без привітання.
+                if "3.1" not in GEMINI_MODEL and _live_session[0] is not None:
+                    try:
+                        _primer_text = self._build_greeting_text()
+                        await _live_session[0].send_client_content(
+                            turns={"parts": [{"text": (
+                                f"Ти вже сказала пацієнту: «{_primer_text}» "
+                                "КРОК 1 і КРОК 2 виконані. НЕ повторюй привітання. "
+                                "Просто чекай відповіді пацієнта."
+                            )}]},
+                            turn_complete=True,
+                        )
+                        logger.info("[AGENT 2.1] Primer: ін'єктовано greeting history")
+                    except Exception as _pe:
+                        logger.warning(f"[AGENT 2.1] Primer send failed (non-critical): {_pe!r}")
 
                 _, _sh_cache_w = _build_slots_hint(_call_cache.get("__raw_slots"))
                 if _sh_cache_w and "get_available_slots" not in _call_cache:
