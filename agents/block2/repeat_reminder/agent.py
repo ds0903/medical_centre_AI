@@ -213,8 +213,8 @@ class RepeatReminderAgent:
             tts_prefix = (
                 "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
                 f"Ти вже сказала пацієнту: «{greeting_text}»\n"
-                "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання і НЕ задавай питання знову.\n"
-                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь.\n\n"
+                "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання і НЕ задавай питання «Вам зручно записатися зараз?» знову.\n"
+                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь (КРОК 2).\n\n"
             )
             prompt = tts_prefix + prompt
         return types.LiveConnectConfig(
@@ -253,22 +253,25 @@ class RepeatReminderAgent:
     # ------------------------------------------------------------------
 
     def _build_greeting_text(self) -> str:
-        """Шаблонний текст привітання для TTS — відповідає КРОК 1 у prompts_b2.yaml."""
-        from agents.block2.repeat_reminder.prompts import _extract_doctor_brief
+        """Шаблонний текст привітання для TTS — точно відповідає КРОК 1 prompts_b2.yaml.
+        Включає ЧАСТИНУ 1 ({greeting}, {patient_address}), щоб tts_prefix покривав весь КРОК 1."""
+        from agents.block2.repeat_reminder.prompts import (
+            _extract_doctor_brief, _extract_address_name, _get_greeting,
+        )
         visit = self.visit
         doctor_name = visit.get("doctor_name", "")
         doctor_spec = visit.get("doctor_specialization", "")
         doctor_brief = _extract_doctor_brief(doctor_name, doctor_spec)
         recommendation = visit.get("doctor_recommendation", "").strip() or "прийти на повторний прийом"
-        intro = (
-            "Вас вітає медичний центр Медіком Кривбас! "
-            "Мене звати Марія — голосовий помічник медичного центру. "
-        )
-        return (
-            f"{intro}"
-            f"{doctor_brief.capitalize()} рекомендував вам {recommendation}. "
-            f"Ви хотіли б записатися на повторний прийом?"
-        )
+        patient_address = _extract_address_name(visit.get("patient_name", ""))
+        greeting = _get_greeting()
+        # ЧАСТИНА 1 (дослівно як у prompts_b2.yaml Крок 1)
+        part1 = f"{greeting}, {patient_address}! " if patient_address else f"{greeting}! "
+        # ЧАСТИНА 2
+        part2 = "Вас вітає медичний центр Медіком Кривбас! Мене звати Марія — голосовий помічник медичного центру. "
+        # ЧАСТИНА 3 + запитання КРОК 2
+        part3 = f"{doctor_brief.capitalize()} рекомендував вам {recommendation}. Ви хотіли б записатися на повторний прийом?"
+        return part1 + part2 + part3
 
     async def _generate_tts_greeting(self) -> list[bytes]:
         """Генерує аудіо привітання через Gemini TTS API (не Live)."""
@@ -760,7 +763,7 @@ class RepeatReminderAgent:
                                     time.time() + gate,
                                 )
                                 await binotel_call.send_audio(resp.data)
-                                _activity[0] = time.time()
+                                _activity[0] = time.time() + (turn_audio_bytes / 48000)
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
                                     _timer_task.cancel()
@@ -841,8 +844,8 @@ class RepeatReminderAgent:
                                             _real_vad_pending[0] = False
                                         break
                                     # Ghost тур: reset + continue inner loop
-                                    if turn_had_audio and _greeting_done.is_set():
-                                        _schedule_silence_timer(audio_delay=0.0)
+                                    # if turn_had_audio and _greeting_done.is_set():
+                                    #     _schedule_silence_timer(audio_delay=0.0)
                                     turn_had_audio = False
                                     turn_audio_bytes = 0
                                     _turn_audio_played = False
@@ -854,7 +857,7 @@ class RepeatReminderAgent:
                                     and _greeting_done.is_set()):
                                 _patient_spoke.set()
                                 _activity[0] = time.time()
-                                _schedule_silence_timer(audio_delay=0.0)
+                                # _schedule_silence_timer(audio_delay=0.0)  # вимкнено в Module 2
                                 _batch = []
                                 _after_batch = None
                                 # Ghost-тур: suppress активний і пацієнт ще не говорив у цьому турі.
@@ -965,7 +968,7 @@ class RepeatReminderAgent:
                             binotel_call.flush_encode_buffer()
                             _interrupted_pause_until[0] = max(_interrupted_pause_until[0], time.time() + 0.0)
                             _audio_queue_sec = turn_audio_bytes / 48000.0
-                            _schedule_silence_timer(audio_delay=_audio_queue_sec)
+                            # _schedule_silence_timer(audio_delay=_audio_queue_sec)  # вимкнено в Module 2
 
                             if _date_slots_fetched[0]:
                                 _date_slots_fetched[0] = False
@@ -1003,7 +1006,7 @@ class RepeatReminderAgent:
             send_task            = asyncio.create_task(_send_patient_audio(), name="b21_send_audio")
             recv_task            = asyncio.create_task(_recv_and_handle(),    name="b21_recv_handle")
             watchdog_task        = asyncio.create_task(_watchdog(),           name="b21_watchdog")
-            timeout_warning_task = asyncio.create_task(_timeout_warning(),    name="b21_timeout_warn")
+            timeout_warning_task = asyncio.create_task(asyncio.sleep(float("inf")), name="b21_timeout_warn_disabled")  # вимкнено
             sip_monitor_task     = asyncio.create_task(_sip_monitor(),        name="b21_sip_monitor")
 
             # Fallback prefetch якщо warmup не запускався
@@ -1021,12 +1024,6 @@ class RepeatReminderAgent:
                 asyncio.create_task(_prefetch_slots(), name="b21_prefetch")
 
             if greeting_buffer:
-                # TTS warmup path: промпт каже Gemini вже привіталась →
-                # Turn 1 = слухає пацієнта і відповідає одразу (без ghosting).
-                # _turn1_audio_block НЕ ставимо: інакше блокується ВІДПОВІДЬ пацієнту (не ghost).
-                _suppress_next_audio[0] = True
-                _last_ai_turn_end[0] = time.time()
-
                 # Pre-gen silence TTS buffers (watchdog 3.1 + silence detection 3.1)
                 async def _gen_silence_buffers() -> None:
                     try:
@@ -1071,7 +1068,17 @@ class RepeatReminderAgent:
                     _slack = (_play_start + _played_dur) - time.monotonic()
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
-                _interrupted_pause_until[0] = time.time() + 0.0
+                # ── Suppress + echo gate після buffer playback ──────────────────────────
+                # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера),
+                # інакше double-turn guard стейл → VAD-ехо від TTS не фільтрується → ghost
+                # Turn 1 (привітання) не пригнічується → подвійне привітання.
+                # _turn1_audio_block НЕ ставимо: промпт каже Gemini вже привіталась →
+                # Turn 1 = слухає пацієнта і відповідає одразу (без ghosting).
+                _suppress_next_audio[0] = True
+                _last_ai_turn_end[0] = time.time()
+                # Echo gate 1.0с: TTS щойно відіграло → ехо повертається в SIP-мікрофон.
+                # Блокує input_transcription від ехо-тексту (як у Module 1).
+                _interrupted_pause_until[0] = time.time() + 1.0
                 _greeting_done.set()
 
                 _, _sh_cache_w = _build_slots_hint(_call_cache.get("__raw_slots"))
@@ -1083,7 +1090,7 @@ class RepeatReminderAgent:
                 enable_noise_profiling()
                 _activity[0] = time.time()
                 logger.info("[AGENT 2.1] Стрімінг розпочато (warmup/TTS path)")
-                _schedule_silence_timer()
+                # _schedule_silence_timer()  # вимкнено в Module 2
             else:
                 # Cold path: без TTS буфера
                 if "3.1" in GEMINI_MODEL:
