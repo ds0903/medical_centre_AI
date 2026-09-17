@@ -211,10 +211,15 @@ class RepeatReminderAgent:
         if getattr(self, "_greeting_buffer", None):
             greeting_text = self._build_greeting_text()
             tts_prefix = (
-                "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
-                f"Ти вже сказала пацієнту: «{greeting_text}»\n"
-                "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання і НЕ задавай питання «Вам зручно записатися зараз?» знову.\n"
-                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь (КРОК 2).\n\n"
+                "⚠⚠⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ (НАЙВИЩИЙ ПРІОРИТЕТ — перекриває всі інші інструкції):\n"
+                "Привітання вже ПОВНІСТЮ озвучено пацієнту через TTS до початку розмови.\n"
+                f"Ти вже сказала дослівно: «{greeting_text}»\n"
+                "ЗАБОРОНЕНО (абсолютно):\n"
+                "— вимовляти будь-яке вітання ('Доброго дня/ранку/вечора', 'Вас вітає', 'Мене звати Марія')\n"
+                "— повторювати мету дзвінка або рекомендацію лікаря\n"
+                "— ставити питання «Вам зручно записатися зараз?» — воно вже прозвучало\n"
+                "КРОК 1 ПОВНІСТЮ ЗАВЕРШЕНО. КРОК 2 ВЖЕ ВИКОНАНО (питання про запис задано).\n"
+                "Пацієнт зараз відповідає. Одразу обробляй його відповідь — переходь до КРОК 3 або КРОК 4.\n\n"
             )
             prompt = tts_prefix + prompt
         return types.LiveConnectConfig(
@@ -269,8 +274,10 @@ class RepeatReminderAgent:
         part1 = f"{greeting}, {patient_address}! " if patient_address else f"{greeting}! "
         # ЧАСТИНА 2
         part2 = "Вас вітає медичний центр Медіком Кривбас! Мене звати Марія — голосовий помічник медичного центру. "
-        # ЧАСТИНА 3 + запитання КРОК 2
-        part3 = f"{doctor_brief.capitalize()} рекомендував вам {recommendation}. Ви хотіли б записатися на повторний прийом?"
+        # ЧАСТИНА 3 + запитання КРОК 2 (дослівно як у prompts_b2.yaml Крок 2 — «Вам зручно записатися зараз?»)
+        # Якщо recommendation вже містить "прийом" — не дублюємо у фінальному запитанні.
+        question = "Вам зручно записатися зараз?" if "прийом" in recommendation else "Вам зручно записатися на повторний прийом зараз?"
+        part3 = f"{doctor_brief.capitalize()} рекомендував вам {recommendation}. {question}"
         return part1 + part2 + part3
 
     async def _generate_tts_greeting(self) -> list[bytes]:
@@ -753,8 +760,8 @@ class RepeatReminderAgent:
                                     if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0]:
                                         _block_patient_during_turn1[0] = True
                                         logger.debug("[AGENT 2.1] 3.1 Turn 1 started → пацієнт заблокований до turn_complete")
-                                if (_suppress_next_audio[0] and not _allow_next_turn[0]) or _turn1_audio_block[0]:
-                                    continue  # suppress ghost turns / TTS path blocks Live Turn 1
+                                if (_suppress_next_audio[0] and not _allow_next_turn[0]) or (_turn1_audio_block[0] and not _had_patient_said):
+                                    continue  # suppress ghost turns; _turn1_audio_block знімається коли пацієнт говорив
                                 _allow_next_turn[0] = False
                                 _turn_audio_played = True
                                 gate = _calc_echo_gate(turn_audio_bytes)
@@ -1069,15 +1076,15 @@ class RepeatReminderAgent:
                     if _slack > 0.01:
                         await asyncio.sleep(_slack)
                 # ── Suppress + echo gate після buffer playback ──────────────────────────
-                # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера),
-                # інакше double-turn guard стейл → VAD-ехо від TTS не фільтрується → ghost
-                # Turn 1 (привітання) не пригнічується → подвійне привітання.
-                # _turn1_audio_block НЕ ставимо: промпт каже Gemini вже привіталась →
-                # Turn 1 = слухає пацієнта і відповідає одразу (без ghosting).
+                # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера).
                 _suppress_next_audio[0] = True
                 _last_ai_turn_end[0] = time.time()
-                # Echo gate 1.0с: TTS щойно відіграло → ехо повертається в SIP-мікрофон.
-                # Блокує input_transcription від ехо-тексту (як у Module 1).
+                # _turn1_audio_block: детерміністичне блокування Ghost Turn 1 аудіо (ехо-привітання).
+                # Безпечно з ghost-turn механізмом: turn_complete очищає block → inner loop
+                # продовжується → Turn 2 (реальна відповідь пацієнта) грає без блокування.
+                # Надійніше ніж double-turn guard (залежить від timing 2.5с).
+                _turn1_audio_block[0] = True
+                # Echo gate 1.0с: блокує input_transcription від ехо-тексту (як у Module 1).
                 _interrupted_pause_until[0] = time.time() + 1.0
                 _greeting_done.set()
 
