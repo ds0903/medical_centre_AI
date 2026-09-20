@@ -214,7 +214,7 @@ class RepeatReminderAgent:
                 "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
                 f"Ти вже сказала пацієнту: «{greeting_text}»\n"
                 "КРОК 1 ПРОПУЩЕНО — НЕ повторюй привітання і НЕ задавай питання «Вам зручно записатися зараз?» знову.\n"
-                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь (КРОК 3 або КРОК 4).\n\n"
+                "Пацієнт зараз відповідає на це питання. Одразу обробляй відповідь (КРОК 2).\n\n"
             )
             prompt = tts_prefix + prompt
         return types.LiveConnectConfig(
@@ -344,7 +344,7 @@ class RepeatReminderAgent:
             _interrupted_pause_until = [0.0]
             _suppress_next_audio = [False]
             _suppress_set_at = [0.0]
-            _turn1_audio_block = [False]      # TTS path: блокує Live Turn 1 аудіо (вже зіграло TTS)
+            _turn1_audio_block = [False]      # cold path 3.1: блокує Turn 1 аудіо якщо Gemini грає (не TTS)
             _block_patient_during_turn1 = [False]  # 3.1 path: блокує аудіо пацієнта під час Turn 1
             _ai_turn_active = [False]
             _ai_turn_started_at = [0.0]
@@ -735,8 +735,11 @@ class RepeatReminderAgent:
                                 binotel_call.flush_audio()
                                 _interrupted_pause_until[0] = 0.0
                                 _turn_was_interrupted = True
-                                # _turn1_audio_block НЕ знімаємо на interrupt — тільки на turn_complete.
-                                # Інакше trailing ghost-аудіо після interrupt грає (greeting).
+                                # Turn 1 interrupted (TTS path): знімаємо _turn1_audio_block →
+                                # Turn 2 (відповідь) може грати. suppress залишається → захист від ще одного greeting.
+                                if _turn1_audio_block[0] and _turn_counter[0] == 1:
+                                    _turn1_audio_block[0] = False
+                                    logger.info("[AGENT 2.1] Turn 1 interrupted → _turn1_audio_block знято")
                                 _block_patient_during_turn1[0] = False
                                 _patient_spoke.set()
                                 if _timer_task and not _timer_task.done():
@@ -1092,16 +1095,15 @@ class RepeatReminderAgent:
                 # ── Suppress + echo gate після buffer playback ──────────────────────────
                 # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера).
                 _suppress_next_audio[0] = True
-                # Не ставимо _turn1_audio_block (як Module 1): КРОК 2 тепер пасивний ("МОВЧКИ ЧЕКАЙ") →
-                # Gemini Turn 1 = тиша (нема що генерувати) → suppress блокує.
                 _last_ai_turn_end[0] = time.time()
+                _turn1_audio_block[0] = True  # блокує Turn 1 аудіо: Gemini 3.1 ігнорує tts_prefix → greeting
                 # Echo gate 1.0с: блокує input_transcription від ехо-тексту (як у Module 1).
                 _interrupted_pause_until[0] = time.time() + 1.0
                 _greeting_done.set()
 
                 # Primer: ін'єктуємо greeting у session history.
                 # Gemini отримує user-turn «ти вже привіталась» → генерує короткий ack (Turn 1)
-                # → _turn1_audio_block блокує ack → turn_complete знімає блок → Turn 2 = реальна відповідь без привітання.
+                # → suppress блокує ack → Turn 2 = реальна відповідь без привітання.
                 if "3.1" not in GEMINI_MODEL and _live_session[0] is not None:
                     try:
                         _primer_text = self._build_greeting_text()
@@ -1126,6 +1128,21 @@ class RepeatReminderAgent:
                 enable_noise_profiling()
                 _activity[0] = time.time()
                 logger.info("[AGENT 2.1] Стрімінг розпочато (warmup/TTS path)")
+                # Для 3.1: Gemini Turn 1 = greeting (ігнорує tts_prefix), але _turn1_audio_block блокує аудіо.
+                # Примусовий EOT через 0.3с → Turn 1 interrupted → _turn1_audio_block знято → Turn 2 = відповідь.
+                # Без цього Turn 1 = 15-16с greeting (заблоковано) → пацієнт чекає ~16с.
+                if "3.1" in GEMINI_MODEL:
+                    async def _force_turn1_eot():
+                        await asyncio.sleep(0.3)
+                        if _live_session[0] is not None and not self._end_event.is_set():
+                            try:
+                                await _live_session[0].send_realtime_input(
+                                    activity_end=types.ActivityEnd()
+                                )
+                                logger.debug("[AGENT 2.1] Примусовий EOT → Turn 1 interrupt")
+                            except Exception:
+                                pass
+                    asyncio.create_task(_force_turn1_eot())
                 # _schedule_silence_timer()  # вимкнено в Module 2
             else:
                 # Cold path: без TTS буфера
