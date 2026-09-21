@@ -1145,7 +1145,7 @@ class RepeatReminderAgent:
             else:
                 # Cold path: без TTS буфера
                 if "3.1" in GEMINI_MODEL:
-                    # send_client_content → 1007 на 3.1. Gemini почне Turn 1 сама.
+                    # Gemini 3.1 генерує Turn 1 після першого аудіо від пацієнта.
                     # _block_patient_during_turn1 встановиться динамічно при першому аудіо Turn 1.
                     _greeting_done.set()
                 else:
