@@ -208,7 +208,10 @@ class RepeatReminderAgent:
         if not hasattr(self, "_cached_prompt"):
             self._cached_prompt = build_system_prompt(self.visit)
         prompt = self._cached_prompt
-        if getattr(self, "_greeting_buffer", None):
+        if getattr(self, "_greeting_buffer", None) and "3.1" not in GEMINI_MODEL:
+            # Non-3.1: tts_prefix говорить Gemini що КРОК 1 вже виконано → Turn 1 = ack без привітання.
+            # 3.1: tts_prefix НЕ потрібен — Gemini сама генерує Turn 1 (ghost, до greeting_done).
+            # Turn 1 записується в history Gemini → Turn 2 (реальна відповідь пацієнта) без привітання.
             greeting_text = self._build_greeting_text()
             tts_prefix = (
                 "⚠ СИСТЕМНЕ ПОВІДОМЛЕННЯ: Привітання вже озвучено пацієнту автоматично (TTS).\n"
@@ -344,8 +347,9 @@ class RepeatReminderAgent:
             _interrupted_pause_until = [0.0]
             _suppress_next_audio = [False]
             _suppress_set_at = [0.0]
-            _turn1_audio_block = [False]      # cold path 3.1: блокує Turn 1 аудіо якщо Gemini грає (не TTS)
-            _block_patient_during_turn1 = [False]  # 3.1 path: блокує аудіо пацієнта під час Turn 1
+            _turn1_audio_block = [False]      # warmup+cold 3.1: блокує Turn 1 аудіо (TTS вже зіграло)
+            _turn1_patient_spoke = [False]    # True якщо пацієнт говорив під час заблокованого Turn 1
+            _block_patient_during_turn1 = [False]  # cold path 3.1: блокує аудіо пацієнта під час Turn 1
             _ai_turn_active = [False]
             _ai_turn_started_at = [0.0]
             _last_patient_said_text = [""]
@@ -752,7 +756,7 @@ class RepeatReminderAgent:
                                     _turn_first_audio_logged = True
                                     _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
                                     logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
-                                    if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0]:
+                                    if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0] and not greeting_buffer:
                                         _block_patient_during_turn1[0] = True
                                         logger.debug("[AGENT 2.1] 3.1 Turn 1 started → пацієнт заблокований до turn_complete")
                                 if (_suppress_next_audio[0] and not _allow_next_turn[0]) or _turn1_audio_block[0]:
@@ -791,6 +795,8 @@ class RepeatReminderAgent:
                                         _last_patient_said_time[0] = _it_now
                                         _suppress_next_audio[0] = False
                                         _suppress_set_at[0] = 0.0
+                                        if _turn1_audio_block[0]:
+                                            _turn1_patient_spoke[0] = True
                                         _had_patient_said = True
                                         _patient_said_count[0] += 1
                                         _real_vad_pending[0] = False
@@ -840,12 +846,19 @@ class RepeatReminderAgent:
                                             logger.debug("[AGENT] Double-turn guard: _real_vad_pending скинуто (шум між турами)")
                                     if ((not _suppress_next_audio[0]) or _had_patient_said
                                             or _allow_next_turn[0] or _real_vad_pending[0]):
-                                        if _allow_next_turn[0] and not _had_patient_said:
-                                            _allow_next_turn[0] = False
-                                        if _real_vad_pending[0] and not _had_patient_said:
-                                            _suppress_next_audio[0] = False
-                                            _real_vad_pending[0] = False
-                                        break
+                                        # Pre-warmup ghost: TTS ще грає → greeting_done не встановлено.
+                                        # Gemini вже згенерував Turn 1 проактивно (привітання).
+                                        # НЕ breakимо → Turn 1 залишається в history Gemini.
+                                        # Після greeting_done пацієнт говорить → Turn 2 = відповідь без привітання.
+                                        if not _greeting_done.is_set() and not _had_patient_said:
+                                            pass  # fall through to ghost reset
+                                        else:
+                                            if _allow_next_turn[0] and not _had_patient_said:
+                                                _allow_next_turn[0] = False
+                                            if _real_vad_pending[0] and not _had_patient_said:
+                                                _suppress_next_audio[0] = False
+                                                _real_vad_pending[0] = False
+                                            break
                                     # Ghost тур: reset + continue inner loop
                                     # if turn_had_audio and _greeting_done.is_set():
                                     #     _schedule_silence_timer(audio_delay=0.0)
@@ -1006,6 +1019,11 @@ class RepeatReminderAgent:
                             if not _turn_was_interrupted:
                                 if _suppress_timeout_fired[0]:
                                     _suppress_timeout_fired[0] = False
+                                elif _turn1_patient_spoke[0]:
+                                    # Turn 1 був заблокований але пацієнт говорив →
+                                    # suppress вже знято input_transcription → Turn 2 одразу open.
+                                    _turn1_patient_spoke[0] = False
+                                    logger.info("[AGENT 2.1] Turn 1 blocked + patient spoke → suppress stays clear for Turn 2")
                                 else:
                                     _suppress_next_audio[0] = True
                                     _suppress_set_at[0] = time.time()
@@ -1092,8 +1110,7 @@ class RepeatReminderAgent:
                 # ВАЖЛИВО: _suppress і _last_ai_turn_end мають бути свіжими (після буфера).
                 _suppress_next_audio[0] = True
                 _last_ai_turn_end[0] = time.time()
-                # _turn1_audio_block не ставимо — як Module 1. suppress блокує Turn 1 ghost.
-                # Echo gate 1.0с: блокує input_transcription від ехо-тексту (як у Module 1).
+                # Echo gate 1.0с: блокує input_transcription від ехо-тексту.
                 _interrupted_pause_until[0] = time.time() + 1.0
                 _greeting_done.set()
 
