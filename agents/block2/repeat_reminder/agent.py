@@ -756,7 +756,7 @@ class RepeatReminderAgent:
                                     _turn_first_audio_logged = True
                                     _lag = time.time() - _eot_sent_at[0] if _eot_sent_at[0] > 0 else -1.0
                                     logger.info(f"[LATENCY] Turn {_turn_counter[0]}: перший аудіо {_lag:.3f}с після EOT")
-                                    if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0] and not greeting_buffer:
+                                    if "3.1" in GEMINI_MODEL and _turn_counter[0] == 1 and not _block_patient_during_turn1[0]:
                                         _block_patient_during_turn1[0] = True
                                         logger.debug("[AGENT 2.1] 3.1 Turn 1 started → пацієнт заблокований до turn_complete")
                                 if (_suppress_next_audio[0] and not _allow_next_turn[0]) or _turn1_audio_block[0]:
@@ -1294,8 +1294,8 @@ class RepeatReminderAgent:
 
     async def warmup(self) -> None:
         """
-        Підключитись до Gemini Live (TCP warmup) + згенерувати привітання через TTS заздалегідь.
-        Паралельно: prefetch слотів лікаря.
+        Підключитись до Gemini Live (TCP warmup). Паралельно: prefetch слотів лікаря.
+        Привітання генерується Gemini Live в реальному часі (як у Block1).
         """
         self._greeting_buffer: list[bytes] = []
         self._greeting_duration: float = 0.0
@@ -1318,21 +1318,6 @@ class RepeatReminderAgent:
                 logger.debug(f"[AGENT 2.1] Warmup prefetch failed: {_e!r}")
 
         prefetch_task = asyncio.create_task(_warmup_prefetch(), name="b21_warmup_prefetch")
-
-        # Генеруємо TTS привітання паралельно (не через Live — уникаємо 1007 на 3.1)
-        async def _gen_tts() -> None:
-            try:
-                chunks = await self._generate_tts_greeting()
-                self._greeting_buffer = chunks
-                self._greeting_duration = sum(len(c) for c in chunks) / 48000
-                logger.info(
-                    f"[AGENT 2.1] TTS greeting: {len(chunks)} chunks ({self._greeting_duration:.1f}с)"
-                )
-            except Exception as _te:
-                logger.warning(f"[AGENT 2.1] TTS greeting failed: {_te!r} — cold path")
-                self._greeting_buffer = []
-
-        tts_task = asyncio.create_task(_gen_tts(), name="b21_warmup_tts")
 
         def _start_monitor(initial_session, initial_cm) -> asyncio.Task:
             async def _monitor_loop() -> None:
@@ -1395,19 +1380,18 @@ class RepeatReminderAgent:
             return asyncio.create_task(_monitor_loop(), name="b21_warmup_monitor")
 
         try:
-            # Відкриваємо Gemini Live з'єднання (TCP warmup) + чекаємо TTS
+            # Відкриваємо Gemini Live з'єднання (TCP warmup)
             _warmup_cm = self.client.aio.live.connect(
                 model=GEMINI_MODEL, config=self._build_config()
             )
             warmup_session = await _warmup_cm.__aenter__()
 
-            # Чекаємо TTS і prefetch паралельно
-            await asyncio.gather(tts_task, asyncio.shield(prefetch_task), return_exceptions=True)
+            # Чекаємо prefetch
+            await asyncio.shield(prefetch_task)
 
             logger.info(
-                f"[AGENT 2.1] Warmup готовий: {len(self._greeting_buffer)} TTS chunks"
-                f" ({self._greeting_duration:.1f}с)"
-                + (f", {len(self._prefetched_raw_slots)} слотів" if self._prefetched_raw_slots else "")
+                "[AGENT 2.1] Warmup готовий (TCP + prefetch)"
+                + (f": {len(self._prefetched_raw_slots)} слотів" if self._prefetched_raw_slots else "")
             )
             self._warmup_cm = _warmup_cm
             self._warmup_session = warmup_session
@@ -1416,7 +1400,6 @@ class RepeatReminderAgent:
             self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
         except Exception as e:
             logger.warning(f"[AGENT 2.1] Warmup помилка: {e} — retry...")
-            self._greeting_buffer = []
             self._warmup_session = None
             self._warmup_cm = None
             if _warmup_cm is not None:
@@ -1431,20 +1414,14 @@ class RepeatReminderAgent:
                     model=GEMINI_MODEL, config=self._build_config()
                 )
                 warmup_session = await _warmup_cm.__aenter__()
-                if not tts_task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(tts_task), timeout=3.0)
-                    except Exception:
-                        pass
                 self._warmup_cm = _warmup_cm
                 self._warmup_session = warmup_session
                 self._warmup_time = time.time()
                 _warmup_cm = None
-                logger.info(f"[AGENT 2.1] Warmup retry успішний: {len(self._greeting_buffer)} TTS chunks")
+                logger.info("[AGENT 2.1] Warmup retry успішний")
                 self._monitor_task = _start_monitor(warmup_session, self._warmup_cm)
             except Exception as e2:
                 logger.warning(f"[AGENT 2.1] Warmup retry провалився: {e2} — cold path")
-                self._greeting_buffer = []
                 self._warmup_session = None
                 self._warmup_cm = None
         finally:
@@ -1455,8 +1432,6 @@ class RepeatReminderAgent:
                     pass
             if not prefetch_task.done():
                 prefetch_task.cancel()
-            if not tts_task.done():
-                tts_task.cancel()
 
     # ------------------------------------------------------------------
     # Класифікація останньої фрази (SIP drop fallback)
