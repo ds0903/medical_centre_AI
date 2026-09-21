@@ -13,7 +13,7 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -84,23 +84,15 @@ async def _run_listener() -> None:
 # ------------------------------------------------------------------
 
 def _setup_email_scheduler(scheduler: AsyncIOScheduler) -> None:
-    from services.email_reporter import EmailReporter
-    reporter = EmailReporter()
+    from services.email_reporter import send_weekly_report, send_monthly_report
 
     async def _weekly():
-        until = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        since = until - timedelta(days=7)
-        logger.info(f"[B3] Email: тижневий звіт {since.date()}–{until.date()}")
-        await reporter.send_weekly_report(since, until)
+        logger.info("[B3] Email: тижневий звіт")
+        await send_weekly_report()
 
     async def _monthly():
-        today = datetime.now()
-        # Звіт за ПОПЕРЕДНІЙ місяць
-        first_this = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        last_month_end = first_this
-        last_month_start = (first_this - timedelta(days=1)).replace(day=1)
-        logger.info(f"[B3] Email: місячний звіт {last_month_start.year}-{last_month_start.month:02d}")
-        await reporter.send_monthly_report(last_month_start.year, last_month_start.month)
+        logger.info("[B3] Email: місячний звіт")
+        await send_monthly_report()
 
     scheduler.add_job(_weekly,  "cron", day_of_week="mon", hour=9, minute=0, id="weekly_report")
     scheduler.add_job(_monthly, "cron", day=1,             hour=9, minute=0, id="monthly_report")

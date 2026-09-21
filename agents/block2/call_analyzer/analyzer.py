@@ -30,9 +30,8 @@ from agents.block2.call_analyzer.scorer_prompt import (
     parse_scoring_response,
 )
 from config import (
+    GEMINI_API_KEY,
     GEMINI_FLASH_MODEL,
-    VERTEX_PROJECT,
-    VERTEX_LOCATION,
     B2_MONITORED_LINES,
     B2_EXCLUDED_LINES,
 )
@@ -97,11 +96,7 @@ class CallAnalyzer:
         """
         self.sheets = sheets_writer
         self.config = config_reader
-        self._gemini = genai.Client(
-            vertexai=True,
-            project=VERTEX_PROJECT,
-            location=VERTEX_LOCATION,
-        )
+        self._gemini = genai.Client(api_key=GEMINI_API_KEY)
 
     def _is_monitored(self, line: str) -> bool:
         line = str(line).strip()
