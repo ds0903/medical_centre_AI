@@ -7,21 +7,26 @@
   Рядок 1: заголовки (генеруються автоматично)
   Рядок 2+: результати дзвінків
 
-Фіксовані колонки (A–J):
+Фіксовані колонки (A–K):
   A: ID дзвінка     — Binotel generalCallID
   B: Дата/час       — дата та час дзвінка
   C: Лінія          — внутрішній номер оператора
-  D: Оператор       — ім'я оператора
-  E: Напрям         — вхідний / вихідний
-  F: Тривалість (с) — тривалість розмови
-  G: Оцінка (%)     — загальна оцінка у відсотках
-  H: AI коментар    — короткий коментар AI
-  I: Маркери (є)    — використані фрази-маркери
-  J: Маркери (немає)— відсутні фрази-маркери
+  D: Номер телефону — номер клієнта
+  E: Оператор       — ім'я оператора
+  F: Напрям         — вхідний / вихідний
+  G: Тривалість (с) — тривалість розмови
+  H: Оцінка (%)     — загальна оцінка у відсотках
+  I: AI коментар    — короткий коментар AI
+  J: Маркери (є)    — використані фрази-маркери
+  K: Маркери (немає)— відсутні фрази-маркери
 
-Динамічні колонки (K+):
+Динамічні колонки (L+):
   Один стовпець на кожен критерій (з аркуша «Конфігурація»)
   Значення: «✓» (виконано) або «✗» (не виконано)
+
+Якщо структура _FIXED_HEADERS змінюється (додається нова колонка) —
+ensure_headers() сама вставляє фізичну колонку в Sheets (insertDimension),
+що зсуває ВСІ існуючі рядки — старі дані не з'їжджають під новий заголовок.
 """
 
 import asyncio
@@ -33,6 +38,7 @@ _FIXED_HEADERS = [
     "ID дзвінка",
     "Дата/час",
     "Лінія",
+    "Номер телефону",
     "Оператор",
     "Напрям",
     "Тривалість (с)",
@@ -116,6 +122,7 @@ class SheetsWriter:
             result.call_id,
             result.call_datetime,
             result.operator_line,
+            result.client_phone,
             result.operator_name,
             direction_ua,
             result.duration_sec,
@@ -154,6 +161,18 @@ class SheetsWriter:
         self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         return self._service
 
+    def _get_sheet_id_sync(self) -> int | None:
+        service = self._get_service()
+        meta = service.spreadsheets().get(
+            spreadsheetId=self.spreadsheet_id,
+            fields="sheets.properties",
+        ).execute()
+        for sheet in meta.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == self.sheet_name:
+                return props.get("sheetId")
+        return None
+
     def _ensure_headers_sync(self, expected: list[str]) -> None:
         service = self._get_service()
         result = (
@@ -171,6 +190,36 @@ class SheetsWriter:
             logger.debug("[SHEETS] Заголовки актуальні")
             return
 
+        # Якщо current — підпослідовність expected (тільки додано нові колонки,
+        # нічого не перейменовано/не видалено) — вставляємо фізичні колонки,
+        # щоб зсунути ВСІ існуючі рядки і не поламати старі дані.
+        insert_positions = self._diff_insertions(current, expected)
+        if insert_positions is not None and insert_positions:
+            sheet_id = self._get_sheet_id_sync()
+            if sheet_id is not None:
+                requests = [
+                    {
+                        "insertDimension": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "dimension": "COLUMNS",
+                                "startIndex": idx,
+                                "endIndex": idx + 1,
+                            },
+                            "inheritFromBefore": False,
+                        }
+                    }
+                    for idx in insert_positions
+                ]
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={"requests": requests},
+                ).execute()
+                logger.info(
+                    f"[SHEETS] Вставлено {len(insert_positions)} нових колонок "
+                    f"(старі рядки зсунуто, дані збережено)"
+                )
+
         service.spreadsheets().values().update(
             spreadsheetId=self.spreadsheet_id,
             range=f"{self.sheet_name}!A1",
@@ -178,6 +227,31 @@ class SheetsWriter:
             body={"values": [expected]},
         ).execute()
         logger.info(f"[SHEETS] Заголовки оновлено ({len(expected)} колонок)")
+
+    @staticmethod
+    def _diff_insertions(current: list[str], expected: list[str]) -> list[int] | None:
+        """
+        Якщо current — підпослідовність expected (тільки вставки, без
+        перейменувань/видалень/реордеру) — повертає індекси (0-based, у
+        порядку зліва направо) куди треба вставити нові колонки.
+        Інакше — None (falls back до простого overwrite заголовків).
+
+        ВАЖЛИВО: індекси рахуються послідовно — insertDimension фізично
+        зсуває існуючі колонки, тож вставка по одному індексу за раз
+        зліва направо коректно відкриває місце для кожної нової колонки.
+        """
+        insertions: list[int] = []
+        ci = 0
+        for ei, name in enumerate(expected):
+            if ci < len(current) and current[ci] == name:
+                ci += 1
+            else:
+                insertions.append(ei)
+        if ci != len(current):
+            # current має щось, чого немає (в тому ж порядку) в expected —
+            # перейменування/видалення/реордер — небезпечно автоматично рухати.
+            return None
+        return insertions
 
     def _append_row_sync(self, row: list) -> int:
         service = self._get_service()

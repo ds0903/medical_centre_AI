@@ -72,6 +72,7 @@ class CallAnalysisResult:
     operator_name:    str
     call_datetime:    str
     duration_sec:     int
+    client_phone:     str
     direction:        str                    # "inbound" / "outbound"
     transcript:       str                    # повний транскрипт
     ai_comment:       str                    # вільний коментар AI
@@ -257,12 +258,21 @@ class CallAnalyzer:
             from datetime import datetime as _dt
             raw_dt = _dt.fromtimestamp(int(call_meta["startTime"])).strftime("%Y-%m-%d %H:%M:%S")
 
+        client_phone = str(
+            call_meta.get("externalNumber")
+            or call_meta.get("numberFrom")
+            or call_meta.get("numberTo")
+            or call_meta.get("clientNumber")
+            or ""
+        )
+
         return CallAnalysisResult(
             call_id          = str(call_meta.get("generalCallID", call_meta.get("callId", ""))),
             operator_line    = str(call_meta.get("internalNumber", call_meta.get("operatorLine", ""))),
             operator_name    = op_name,
             call_datetime    = raw_dt,
             duration_sec     = int(call_meta.get("billsec", call_meta.get("duration", 0))),
+            client_phone     = client_phone,
             direction        = direction,
             transcript       = transcript,
             ai_comment       = scored.get("ai_comment", ""),
