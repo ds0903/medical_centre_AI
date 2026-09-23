@@ -9,9 +9,9 @@
 
 Фіксовані колонки (A–K):
   A: ID дзвінка     — Binotel generalCallID
-  B: Дата/час       — дата та час дзвінка
-  C: Лінія          — внутрішній номер оператора
-  D: Номер телефону — номер клієнта
+  B: Номер телефону — номер клієнта
+  C: Дата/час       — дата та час дзвінка
+  D: Лінія          — внутрішній номер оператора
   E: Оператор       — ім'я оператора
   F: Напрям         — вхідний / вихідний
   G: Тривалість (с) — тривалість розмови
@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 _FIXED_HEADERS = [
     "ID дзвінка",
+    "Номер телефону",
     "Дата/час",
     "Лінія",
-    "Номер телефону",
     "Оператор",
     "Напрям",
     "Тривалість (с)",
@@ -118,11 +118,15 @@ class SheetsWriter:
         markers_ok  = ", ".join(result.marker_used)        or "—"
         markers_bad = ", ".join(result.marker_violations)  or "—"
 
+        # Апостроф форсить текстовий формат у Sheets (USER_ENTERED інакше
+        # сприймає номер як число і губить ведучий нуль).
+        phone_cell = f"'{result.client_phone}" if result.client_phone else ""
+
         fixed = [
             result.call_id,
+            phone_cell,
             result.call_datetime,
             result.operator_line,
-            result.client_phone,
             result.operator_name,
             direction_ua,
             result.duration_sec,
@@ -188,6 +192,18 @@ class SheetsWriter:
 
         if current == expected:
             logger.debug("[SHEETS] Заголовки актуальні")
+            return
+
+        if not current:
+            # Порожній аркуш (нема заголовків взагалі) — просто пишемо, без
+            # insertDimension (нема що зсувати, нема старих даних).
+            service.spreadsheets().values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{self.sheet_name}!A1",
+                valueInputOption="RAW",
+                body={"values": [expected]},
+            ).execute()
+            logger.info(f"[SHEETS] Заголовки створено ({len(expected)} колонок, порожній аркуш)")
             return
 
         # Якщо current — підпослідовність expected (тільки додано нові колонки,

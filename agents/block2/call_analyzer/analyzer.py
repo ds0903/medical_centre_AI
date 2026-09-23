@@ -124,7 +124,12 @@ class CallAnalyzer:
         rec_url  = call_meta.get("recordingUrl", call_meta.get("recording", ""))
 
         if not self._is_monitored(line):
-            logger.debug(f"[ANALYZER] Лінія {line} — пропускаємо")
+            logger.info(
+                f"[ANALYZER] ДІАГНОСТИКА: лінія='{line}' не моніторується. "
+                f"Ключі call_meta: {list(call_meta.keys())} | "
+                f"internalNumber={call_meta.get('internalNumber')!r} "
+                f"operatorLine={call_meta.get('operatorLine')!r}"
+            )
             return None
 
         if not rec_url:
