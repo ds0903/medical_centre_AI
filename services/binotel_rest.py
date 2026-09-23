@@ -264,14 +264,18 @@ class BinotelRestClient:
         Binotel endpoint: stats/calls-for-period
         Параметри: startDate / stopDate — Unix timestamp (int)
         """
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         def _to_ts(s: str) -> int:
+            # Рядок приходить з listener.py як datetime.now(timezone.utc) без
+            # tzinfo в форматованому рядку. Якщо парсити наївно і викликати
+            # .timestamp() — Python інтерпретує його як ЛОКАЛЬНИЙ час сервера,
+            # що дає неправильний epoch якщо сервер не в UTC. Явно ставимо UTC.
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
                 try:
-                    return int(_dt.strptime(s, fmt).timestamp())
+                    return int(_dt.strptime(s, fmt).replace(tzinfo=_tz.utc).timestamp())
                 except ValueError:
                     pass
-            return int(_dt.now().timestamp())
+            return int(_dt.now(_tz.utc).timestamp())
 
         params: dict = {
             "startTime": _to_ts(date_from),

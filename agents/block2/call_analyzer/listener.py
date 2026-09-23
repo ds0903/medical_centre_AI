@@ -78,7 +78,12 @@ class CallAnalyzerListener:
         date_from = since.strftime("%Y-%m-%d %H:%M:%S")
         date_to   = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        logger.info(f"[LISTENER] Polling Binotel: {date_from} → {date_to}")
+        from zoneinfo import ZoneInfo
+        _kyiv = ZoneInfo("Europe/Kyiv")
+        logger.info(
+            f"[LISTENER] Polling Binotel (Київ): {since.astimezone(_kyiv).strftime('%Y-%m-%d %H:%M:%S')} "
+            f"→ {now.astimezone(_kyiv).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
         binotel = self._get_binotel()
         try:

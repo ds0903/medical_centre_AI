@@ -257,11 +257,15 @@ class CallAnalyzer:
             call_meta.get("operatorName")
             or (call_meta.get("employeeData") or {}).get("name", "")
         )
-        # Дата/час дзвінка: Binotel повертає startTime (Unix ts)
+        # Дата/час дзвінка: Binotel повертає startTime (Unix ts, UTC).
+        # Конвертуємо в Київ явно — fromtimestamp() без tz бере локальний час
+        # СЕРВЕРА (може бути UTC), а показувати треба завжди в Київському часі.
         raw_dt = call_meta.get("dateTime") or call_meta.get("callDate") or ""
         if not raw_dt and call_meta.get("startTime"):
-            from datetime import datetime as _dt
-            raw_dt = _dt.fromtimestamp(int(call_meta["startTime"])).strftime("%Y-%m-%d %H:%M:%S")
+            from datetime import datetime as _dt, timezone as _tz
+            from zoneinfo import ZoneInfo
+            _utc_dt = _dt.fromtimestamp(int(call_meta["startTime"]), tz=_tz.utc)
+            raw_dt = _utc_dt.astimezone(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d %H:%M:%S")
 
         client_phone = str(
             call_meta.get("externalNumber")

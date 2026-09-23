@@ -270,23 +270,51 @@ class SheetsWriter:
         return insertions
 
     def _append_row_sync(self, row: list) -> int:
+        """
+        Вставляє новий рядок одразу під заголовком (рядок 2), а не в кінець —
+        свіжі дзвінки завжди зверху, старіші зсуваються вниз автоматично.
+        """
         service = self._get_service()
-        resp = (
-            service.spreadsheets()
-            .values()
-            .append(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheet_name}!A:A",
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body={"values": [row]},
+        sheet_id = self._get_sheet_id_sync()
+        if sheet_id is None:
+            # Fallback: sheetId не знайдено — дописуємо в кінець як раніше.
+            resp = (
+                service.spreadsheets()
+                .values()
+                .append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f"{self.sheet_name}!A:A",
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": [row]},
+                )
+                .execute()
             )
-            .execute()
-        )
-        updated_range = resp.get("updates", {}).get("updatedRange", "")
-        try:
-            row_part = updated_range.split("!")[1]
-            row_num = int("".join(c for c in row_part if c.isdigit())[:6])
-        except Exception:
-            row_num = -1
-        return row_num
+            updated_range = resp.get("updates", {}).get("updatedRange", "")
+            try:
+                row_part = updated_range.split("!")[1]
+                return int("".join(c for c in row_part if c.isdigit())[:6])
+            except Exception:
+                return -1
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={"requests": [{
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": 1,   # одразу після заголовка (0-based)
+                        "endIndex": 2,
+                    },
+                    "inheritFromBefore": False,
+                }
+            }]},
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"{self.sheet_name}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        ).execute()
+        return 2
