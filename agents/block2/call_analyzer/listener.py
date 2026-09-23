@@ -107,6 +107,11 @@ class CallAnalyzerListener:
         new_calls = await self._filter_not_analyzed(calls_with_rec)
         logger.info(f"[LISTENER] Нових (не аналізованих): {len(new_calls)}")
 
+        # Сортуємо від найстарішого до найновішого: кожен результат вставляється
+        # в рядок 2 (одразу під заголовком) — останнім вставленим (і зверху)
+        # має бути реально найновіший дзвінок, а не залежати від порядку Binotel API.
+        new_calls.sort(key=lambda c: int(c.get("startTime", 0) or 0))
+
         # Аналіз
         for call_meta in new_calls:
             await self._process_one(call_meta)
