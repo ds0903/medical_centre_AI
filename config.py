@@ -89,6 +89,8 @@ SCHEDULER_EVENING_CALL_END_HOUR = int(os.getenv("SCHEDULER_EVENING_CALL_END_HOUR
 MAX_CALL_ATTEMPTS = int(os.getenv("MAX_CALL_ATTEMPTS", "3"))
 PAUSE_BETWEEN_CALLS_SEC = int(os.getenv("PAUSE_BETWEEN_CALLS_SEC", "30"))
 CALL_TIMEOUT_SEC = int(os.getenv("CALL_TIMEOUT_SEC", "300"))   # таймаут одного дзвінка (5 хв)
+# Сторож зависання: якщо generalCallID не отримано за стільки секунд після початку initiate_call — перезапуск процесу
+CONNECT_WATCHDOG_SEC = int(os.getenv("CONNECT_WATCHDOG_SEC", "180"))
 
 # Whitelist номерів: якщо задано — дзвонимо тільки цим номерам (для тестування)
 _raw = os.getenv("ALLOWED_PHONES", "")

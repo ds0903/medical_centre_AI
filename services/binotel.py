@@ -18,7 +18,14 @@ Binotel сервіс — єдина точка входу для production ре
 
 import asyncio
 import logging
+import os
+import tempfile
 from typing import AsyncGenerator, Optional
+
+try:
+    import fcntl as _fcntl  # Linux (VPS). На Windows (локальна розробка) недоступний.
+except ImportError:
+    _fcntl = None
 
 from config import (
     BINOTEL_INTERNAL_NUMBER,
@@ -27,8 +34,10 @@ from config import (
     BINOTEL_SIP_PORT,
     BINOTEL_SIP_SERVER,
     BINOTEL_SIP_USERNAME,
+    CONNECT_WATCHDOG_SEC,
     DEBUG,
 )
+from services import watchdog as _watchdog
 from services.audio_bridge import apply_plc_decay, generate_fadeout_g711, gemini_output_to_sip, reset_state, sip_to_gemini_input
 from services import opus_codec as _opus_codec
 from services.binotel_rest import BinotelRestClient
@@ -42,6 +51,53 @@ _rest = BinotelRestClient()
 _ws: Optional[BinotelWebSocket] = None
 _sip: Optional[BinotelSipClient] = None
 _active_call: Optional["BinotelCall"] = None  # активний дзвінок (щоб shutdown не вбивав SIP під час прощання)
+
+# Міжпроцесний замок на SIP. Модулі 1 і 2 — окремі systemd-сервіси, але обидва
+# біндять локальний UDP-порт 5060 і реєструють одного SIP-extension. Одночасно
+# працювати не можуть → без замка другий падає з "[Errno 98] Address already in use".
+_SIP_LOCK_PATH = os.path.join(tempfile.gettempdir(), "medical_ai_sip.lock")
+_SIP_LOCK_WAIT_SEC = 150  # має бути < CALL_TIMEOUT_SEC (startup() виконується всередині його таймауту)
+_sip_lock_fd: Optional[int] = None
+
+
+async def _acquire_sip_lock() -> None:
+    global _sip_lock_fd
+    if _fcntl is None or _sip_lock_fd is not None:
+        return
+    fd = os.open(_SIP_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _SIP_LOCK_WAIT_SEC
+    warned = False
+    while True:
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            _sip_lock_fd = fd
+            if warned:
+                logger.info("[BINOTEL] SIP-замок отримано")
+            return
+        except OSError:
+            if not warned:
+                logger.warning("[BINOTEL] SIP зайнятий іншим модулем — чекаємо своєї черги...")
+                warned = True
+            if loop.time() >= deadline:
+                os.close(fd)
+                raise RuntimeError(
+                    f"SIP зайнятий іншим модулем довше {_SIP_LOCK_WAIT_SEC}с — дзвінок не розпочато"
+                )
+            await asyncio.sleep(0.5)
+
+
+def _release_sip_lock() -> bool:
+    global _sip_lock_fd
+    if _sip_lock_fd is None:
+        return False
+    try:
+        _fcntl.flock(_sip_lock_fd, _fcntl.LOCK_UN)
+        os.close(_sip_lock_fd)
+    except OSError:
+        pass
+    _sip_lock_fd = None
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -89,18 +145,25 @@ async def startup() -> None:
     # Очистити залишки якщо є
     await shutdown()
 
-    # SIP клієнт — реєструємось як extension
-    _sip = BinotelSipClient(
-        server=BINOTEL_SIP_SERVER,
-        port=BINOTEL_SIP_PORT,
-        username=BINOTEL_SIP_USERNAME,
-        password=BINOTEL_SIP_PASSWORD,
-    )
-    _sip.start()
+    # Один SIP на весь VPS: чекаємо поки інший модуль завершить свій дзвінок
+    await _acquire_sip_lock()
+    try:
+        # SIP клієнт — реєструємось як extension
+        _sip = BinotelSipClient(
+            server=BINOTEL_SIP_SERVER,
+            port=BINOTEL_SIP_PORT,
+            username=BINOTEL_SIP_USERNAME,
+            password=BINOTEL_SIP_PASSWORD,
+        )
+        _sip.start()
 
-    # WebSocket — підписуємось на події
-    _ws = BinotelWebSocket()
-    await _ws.connect()
+        # WebSocket — підписуємось на події
+        _ws = BinotelWebSocket()
+        await _ws.connect()
+    except BaseException:
+        # Не тримаємо замок якщо підняти сервіси не вдалось
+        _release_sip_lock()
+        raise
 
     logger.info("[BINOTEL] Сервіси запущено (SIP + WebSocket)")
 
@@ -139,6 +202,10 @@ async def shutdown() -> None:
         except Exception:
             pass
     logger.info("[BINOTEL] Сервіси зупинено")
+    if _release_sip_lock():
+        # Пауза > інтервалу опитування замка (0.5с): дає іншому модулю шанс забрати чергу,
+        # інакше цей процес одразу перехопить замок у наступному startup().
+        await asyncio.sleep(1.5)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +408,11 @@ async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optio
 
     logger.info(f"[BINOTEL] Дзвінок → {patient_name} ({phone})")
 
+    # Сторож: до отримання generalCallID усе має вкластись у CONNECT_WATCHDOG_SEC.
+    # Якщо завис (event loop чи Binotel) — дамп стеків + перезапуск процесу.
+    # Після generalCallID дзвінок уже пішов — далі його страхує звичайний CALL_TIMEOUT_SEC.
+    _watchdog.arm("connect (до generalCallID)", CONNECT_WATCHDOG_SEC)
+
     # Крок 1: Чекаємо поки наш SIP extension стане Online в Binotel
     logger.info(f"[BINOTEL] Чекаємо статус Онлайн для extension {BINOTEL_INTERNAL_NUMBER}...")
     online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=15)
@@ -349,10 +421,14 @@ async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optio
         logger.warning(
             f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} офлайн — перепідключаємо SIP..."
         )
+        # startup() може чекати SIP-замок до 150с — на цей час сторож вимкнено
+        _watchdog.disarm()
         await shutdown()
         await startup()
+        _watchdog.arm("connect (до generalCallID)", CONNECT_WATCHDOG_SEC)
         online = await _rest.wait_for_extension_online(BINOTEL_INTERNAL_NUMBER, timeout=10)
         if not online:
+            _watchdog.disarm()
             logger.error(
                 f"[BINOTEL] Extension {BINOTEL_INTERNAL_NUMBER} все ще офлайн після перепідключення — "
                 f"пропускаємо дзвінок, спробуємо пізніше."
@@ -386,15 +462,20 @@ async def initiate_call(phone: str, patient_name: str, _retry: int = 0) -> Optio
                 f"чекаємо підтвердження SIP з'єднання..."
             )
         else:
+            _watchdog.disarm()
             sip_wait_task.cancel()
             _sip._expecting_call = False
             logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
             return None
     except Exception as e:
+        _watchdog.disarm()
         sip_wait_task.cancel()
         _sip._expecting_call = False
         logger.error(f"[BINOTEL] Помилка ініціації дзвінка: {e}")
         return None
+
+    # REST відповів (generalCallID отримано або error 150) — фаза підключення пройдена.
+    _watchdog.disarm()
 
     # Крок 4: Чекаємо INVITE та відповідаємо на нього.
     # Якщо SIP впав (fatalCallback → _phone=None → is_ready()=False) під час очікування

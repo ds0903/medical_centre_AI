@@ -14,6 +14,7 @@ Binotel SIP клієнт — аудіо-міст між Binotel та Gemini Live
 """
 
 import asyncio
+import errno
 import logging
 import random
 import string
@@ -526,15 +527,29 @@ class BinotelSipClient:
                 _pyVoIP.SIPCompatibleMethods.append("OPTIONS")
                 logger.info("[SIP] Додано OPTIONS до SIPCompatibleMethods")
 
-            self._phone = VoIPPhone(
-                server=self._server,
-                port=self._port,
-                username=self._username,
-                password=self._password,
-                callCallback=self._on_incoming_call,
-                myIP=public_ip if public_ip else None,
-            )
-            self._phone.start()
+            # bind може тимчасово провалитись (EADDRINUSE), якщо сокет попереднього
+            # VoIPPhone ще не закрився — кілька спроб із паузою замість миттєвого краху.
+            for _attempt in range(1, 4):
+                self._phone = VoIPPhone(
+                    server=self._server,
+                    port=self._port,
+                    username=self._username,
+                    password=self._password,
+                    callCallback=self._on_incoming_call,
+                    myIP=public_ip if public_ip else None,
+                )
+                try:
+                    self._phone.start()
+                    break
+                except OSError as _be:
+                    if _be.errno != errno.EADDRINUSE or _attempt == 3:
+                        raise
+                    logger.warning(f"[SIP] Порт зайнятий (спроба {_attempt}/3) — повтор через 2с")
+                    try:
+                        self._phone.stop()
+                    except Exception:
+                        pass
+                    time.sleep(2)
 
             # Патч: ігноруємо pyVoIP fatalCallback під час активного дзвінка.
             # pyVoIP може фейлити re-REGISTER якщо Binotel ротував на інший SIP-сервер

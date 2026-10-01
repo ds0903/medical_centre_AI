@@ -272,6 +272,14 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
     logger.info("[B2 CALLS] Обдзвін завершено")
 
 
+async def _mark_repeat_in_progress(task: RepeatCallTask) -> None:
+    """Позначити задачу in_progress і збільшити лічильник спроб."""
+    async with get_session() as session:
+        db_task = await session.get(RepeatCallTask, task.id)
+        db_task.status = RepeatCallStatus.in_progress
+        db_task.attempts += 1
+
+
 async def _execute_repeat_call(task: RepeatCallTask, max_retry: int) -> None:
     """Виконати один дзвінок щодо повторного візиту."""
     from config import DEBUG
@@ -291,15 +299,10 @@ async def _execute_repeat_call(task: RepeatCallTask, max_retry: int) -> None:
         "idpoint":             task.idpoint or 0,
     }
 
-    # Позначаємо як in_progress перед ініціацією дзвінка
-    async with get_session() as session:
-        db_task = await session.get(RepeatCallTask, task.id)
-        db_task.status = RepeatCallStatus.in_progress
-        db_task.attempts += 1
-
     from agents.block2.repeat_reminder.agent import RepeatReminderAgent
 
     if DEBUG:
+        await _mark_repeat_in_progress(task)
         agent = RepeatReminderAgent(visit_context)
         call_result = await agent.run()
         call_duration = agent.call_duration
@@ -318,6 +321,10 @@ async def _execute_repeat_call(task: RepeatCallTask, max_retry: int) -> None:
 
         try:
             binotel_call = await call_task
+            # Як у модулі 1: спробу рахуємо ПІСЛЯ відповіді initiate_call (generalCallID отримано).
+            # Якщо процес впаде/буде перезапущений сторожем до цього моменту — задача лишається
+            # pending (attempts=0) і буде повторена, а не стане failed без дзвінка.
+            await _mark_repeat_in_progress(task)
             if binotel_call is None:
                 warmup_task.cancel()
                 try:
