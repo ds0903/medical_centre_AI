@@ -65,6 +65,8 @@ CLINIC_API_KEY = os.getenv("CLINIC_API_KEY", "")
 SKIP_FETCH = os.getenv("SKIP_FETCH", "false").lower() == "true"
 SKIP_SCHEDULER = os.getenv("SKIP_SCHEDULER", "false").lower() == "true"
 SKIP_POST = os.getenv("SKIP_POST", "false").lower() == "true"  # не надсилати POST-запити до API клініки (update_state, reschedule)
+# true — пропускати перевірку ai_checkstate перед дзвінком (завжди дзвонимо); false — перевірка працює (ENABLED=0 → не дзвонимо)
+SKIP_ENABLED = os.getenv("SKIP_ENABLED", "false").lower() == "true"
 
 # Захист від помилкових дзвінків: вимикає (1) дзвінки в суботу/неділю
 # і (2) дзвінки по задачах створених не сьогодні (залишки з попереднього дня).

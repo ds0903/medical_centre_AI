@@ -19,7 +19,7 @@ from typing import Optional
 
 import aiohttp
 
-from config import CLINIC_API_URL, CLINIC_API_KEY, DEBUG, SKIP_POST
+from config import CLINIC_API_URL, CLINIC_API_KEY, DEBUG, SKIP_POST, SKIP_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +159,12 @@ async def get_upcoming_visits(shift: int) -> list[dict]:
 async def check_call_enabled(visit_id: str) -> bool:
     """POST /bridge/call/ai_checkstate → ENABLED: 0=не дзвонити, 1=дзвонити.
     На помилці — fallback True (краще зателефонувати ніж пропустити).
+    SKIP_ENABLED=true → перевірка пропускається, завжди True.
     """
-    if DEBUG or SKIP_POST:
+    if DEBUG:
+        return True
+    if SKIP_ENABLED:
+        logger.info(f"[API] ai_checkstate (SKIP_ENABLED): visit={visit_id} → перевірку пропущено")
         return True
     async with aiohttp.ClientSession() as http:
         try:
