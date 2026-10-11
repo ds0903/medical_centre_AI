@@ -1054,7 +1054,8 @@ class RepeatReminderAgent:
                         from services import clinic_api as _capi
                         doctor_name = self.visit.get("doctor_name", "")
                         idpoint     = int(self.visit.get("idpoint", 0))
-                        _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
+                        ondate      = self.visit.get("repeat_visit_date", "")
+                        _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint, ondate)
                         _call_cache["__raw_slots"] = _raw if _raw is not None else []
                         logger.debug(f"[AGENT] Cold prefetch: {len(_call_cache['__raw_slots'])} слотів")
                     except Exception as _e:
@@ -1170,8 +1171,9 @@ class RepeatReminderAgent:
                             from services import clinic_api as _capi2
                             doctor_name = self.visit.get("doctor_name", "")
                             idpoint     = int(self.visit.get("idpoint", 0))
+                            ondate      = self.visit.get("repeat_visit_date", "")
                             raw = await asyncio.wait_for(
-                                _capi2.get_doctor_slots_b2(doctor_name, idpoint), timeout=2.0
+                                _capi2.get_doctor_slots_b2(doctor_name, idpoint, ondate), timeout=2.0
                             )
                             _call_cache["__raw_slots"] = raw if raw is not None else []
                         except Exception:
@@ -1311,7 +1313,8 @@ class RepeatReminderAgent:
                 from services import clinic_api as _capi
                 doctor_name = self.visit.get("doctor_name", "")
                 idpoint     = int(self.visit.get("idpoint", 0))
-                _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
+                ondate      = self.visit.get("repeat_visit_date", "")
+                _raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint, ondate)
                 self._prefetched_raw_slots = _raw if _raw is not None else []
                 logger.debug(f"[AGENT 2.1] Warmup prefetch: {len(self._prefetched_raw_slots)} слотів")
             except Exception as _e:

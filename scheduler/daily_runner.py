@@ -128,7 +128,7 @@ async def fetch_and_schedule_calls(shift: int) -> None:
     logger.info(f"[FETCH] Отримуємо записи (shift={shift})")
 
     try:
-        await clinic_api.update_statuses()
+        await clinic_api.update_statuses(shift)
         visits = await clinic_api.get_upcoming_visits(shift)
     except Exception as e:
         logger.error(f"[FETCH] Помилка отримання візитів: {e}")

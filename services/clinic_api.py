@@ -55,22 +55,27 @@ def _make_headers() -> dict:
 # Отримання даних
 # ---------------------------------------------------------------------------
 
-async def update_statuses() -> None:
-    """POST /bridge/call/updatestatuses — оновити статуси перед fetch."""
+async def update_statuses(mode: int) -> None:
+    """
+    POST /bridge/call/updatestatuses — оновити статуси перед fetch.
+
+    mode — той самий параметр Ранок/Вечір, що й shift у listextractor:
+      0 — ранкова сесія, 1 — вечірня сесія.
+    """
     if DEBUG:
-        logger.debug("[DEBUG] update_statuses: пропускаємо")
+        logger.debug(f"[DEBUG] update_statuses(mode={mode}): пропускаємо")
         return
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/updatestatuses",
             headers=_make_headers(),
-            json={"fields": []},
+            json={"fields": [mode]},
         ) as resp:
             if resp.status >= 400:
                 body = await resp.text()
-                logger.warning(f"[API] updatestatuses HTTP {resp.status}: {body[:200]}")
+                logger.warning(f"[API] updatestatuses(mode={mode}) HTTP {resp.status}: {body[:200]}")
             else:
-                logger.info("[API] updatestatuses → ok")
+                logger.info(f"[API] updatestatuses(mode={mode}) → ok")
 
 
 async def get_upcoming_visits(shift: int) -> list[dict]:
@@ -311,12 +316,28 @@ async def cancel_visit(visit_id: str, reason: Optional[str] = None) -> bool:
 # Блок 2 — Модуль 2.1: повторні візити
 # ---------------------------------------------------------------------------
 
-async def get_doctor_slots_b2(doctor_name: str, idpoint: int) -> list[dict]:
+def _format_ondate(ondate) -> str:
+    """
+    ONDATE для doctorslots2 у тому вигляді, в якому його віддав /followup_appts
+    ("YYYY-MM-DD HH:MM:SS"). У БД дата лежить як DateTime, а в visit_context — як
+    isoformat з "T", тому повертаємо оригінальний формат.
+    """
+    if not ondate:
+        return ""
+    if isinstance(ondate, (datetime, date)):
+        if isinstance(ondate, datetime):
+            return ondate.strftime("%Y-%m-%d %H:%M:%S")
+        return ondate.strftime("%Y-%m-%d")
+    return str(ondate).strip().replace("T", " ", 1)
+
+
+async def get_doctor_slots_b2(doctor_name: str, idpoint: int, ondate=None) -> list[dict]:
     """
     Отримати вільні слоти лікаря для повторного запису (Модуль 2.1).
 
     API: POST /bridge/call/doctorslots2
-    Параметри: ["DOCTORNAME", IDPOINT]
+    Параметри: ["DOCTORNAME", IDPOINT, ONDATE]
+      ONDATE — значення з попереднього виклику /followup_appts (repeat_visit_date).
     Повертає: [{ID, START_E}, ...]
     """
     if DEBUG:
@@ -331,16 +352,29 @@ async def get_doctor_slots_b2(doctor_name: str, idpoint: int) -> list[dict]:
             ])
         return slots[:15]
 
+    fields: list = [doctor_name, idpoint]
+    ondate_str = _format_ondate(ondate)
+    if ondate_str:
+        fields.append(ondate_str)
+    else:
+        logger.warning(
+            f"[API] doctorslots2: ONDATE порожній для {doctor_name} IDPOINT={idpoint} — "
+            f"викликаємо лише з 2 параметрами"
+        )
+
     async with aiohttp.ClientSession() as http:
         async with http.post(
             f"{CLINIC_API_URL}/bridge/call/doctorslots2",
             headers=_make_headers(),
-            json={"fields": [doctor_name, idpoint]},
+            json={"fields": fields},
         ) as resp:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
             slots = data if isinstance(data, list) else data.get("slots", data.get("SLOTS", []))
-            logger.info(f"[API] doctorslots2 → {len(slots)} слотів для {doctor_name} IDPOINT={idpoint}")
+            logger.info(
+                f"[API] doctorslots2 → {len(slots)} слотів для {doctor_name} "
+                f"IDPOINT={idpoint} ONDATE={ondate_str or '-'}"
+            )
             return slots
 
 

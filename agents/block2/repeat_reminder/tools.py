@@ -216,7 +216,8 @@ async def handle_tool_call(
                 from services import clinic_api as _capi
                 doctor_name = visit_context.get("doctor_name", "")
                 idpoint     = int(visit_context.get("idpoint", 0))
-                raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint)
+                ondate      = visit_context.get("repeat_visit_date", "")
+                raw = await _capi.get_doctor_slots_b2(doctor_name, idpoint, ondate)
                 call_cache["__raw_slots"] = raw if raw is not None else []
             except Exception as e:
                 logger.error(f"[TOOL] get_doctor_slots_b2 помилка: {e!r}")
