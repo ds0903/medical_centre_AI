@@ -172,30 +172,38 @@ class _CallLogWriter:
         self._sheet_id = sheet_id
         self._ready = True
 
-    def _write_sync(self, row: list) -> None:
-        if not self._ready:
-            self._ensure_sheet_sync()
+    def _append_sync(self, row: list) -> None:
         svc = self._get_service()
         sid = B1_LOG_SHEETS_ID
-        try:
-            # Новий рядок одразу під заголовком — найсвіжіші дзвінки зверху.
-            svc.spreadsheets().batchUpdate(
-                spreadsheetId=sid,
-                body={"requests": [{"insertDimension": {
-                    "range": {"sheetId": self._sheet_id, "dimension": "ROWS",
-                              "startIndex": 1, "endIndex": 2},
-                    "inheritFromBefore": False,
-                }}]},
-            ).execute()
-            svc.spreadsheets().values().update(
-                spreadsheetId=sid,
-                range=f"{self._quoted}!A2",
-                valueInputOption="RAW",
-                body={"values": [row]},
-            ).execute()
-        except Exception:
-            self._ready = False   # наступного разу перевіримо аркуш заново (могли видалити)
-            raise
+        # Новий рядок одразу під заголовком — найсвіжіші дзвінки зверху.
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=sid,
+            body={"requests": [{"insertDimension": {
+                "range": {"sheetId": self._sheet_id, "dimension": "ROWS",
+                          "startIndex": 1, "endIndex": 2},
+                "inheritFromBefore": False,
+            }}]},
+        ).execute()
+        svc.spreadsheets().values().update(
+            spreadsheetId=sid,
+            range=f"{self._quoted}!A2",
+            valueInputOption="RAW",
+            body={"values": [row]},
+        ).execute()
+
+    def _write_sync(self, row: list) -> None:
+        # Друга спроба потрібна, якщо аркуш видалили вже після старту:
+        # перевіряємо/створюємо його заново і дописуємо рядок, а не губимо.
+        for attempt in (1, 2):
+            try:
+                if not self._ready:
+                    self._ensure_sheet_sync()
+                self._append_sync(row)
+                return
+            except Exception:
+                self._ready = False
+                if attempt == 2:
+                    raise
 
     # ----------------------------------------------------------------- async
 
@@ -210,6 +218,23 @@ _pending: set[asyncio.Task] = set()
 
 def is_enabled() -> bool:
     return bool(B1_LOG_SHEETS_ID) and not DEBUG
+
+
+async def ensure_ready() -> None:
+    """
+    Викликається при старті сервісу: перевіряє, що аркуш є, і створює його, якщо ні.
+    Ніколи не кидає виняток — збій Sheets не повинен зупиняти бота.
+    """
+    if not is_enabled():
+        return
+    try:
+        async with _writer._lock:
+            await asyncio.wait_for(
+                asyncio.to_thread(_writer._ensure_sheet_sync), timeout=_WRITE_TIMEOUT_SEC
+            )
+        logger.info(f"[CALL LOG] Аркуш «{B1_LOG_SHEET_NAME}» готовий")
+    except Exception as e:
+        logger.warning(f"[CALL LOG] Не вдалось перевірити аркуш при старті: {e!r}")
 
 
 async def _safe_write(row: list) -> None:

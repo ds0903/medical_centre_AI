@@ -79,6 +79,10 @@ async def run_production() -> None:
     await init_db()
     await load_services_catalog()
 
+    # Журнал дзвінків у Google Sheets: перевірити/створити аркуш одразу при старті
+    from services import call_log_sheets
+    await call_log_sheets.ensure_ready()
+
     if SKIP_FETCH:
         # Пропускаємо fetch — одразу дзвонимо по тому що є в БД (ручний режим)
         logger.info("[MAIN] SKIP_FETCH=true — пропускаємо fetch, йдемо одразу дзвонити")
