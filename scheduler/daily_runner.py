@@ -39,7 +39,7 @@ from config import (
 )
 from db.database import get_session
 from db.models import CallHistory, CallResult, CallStatus, CallTask
-from services import clinic_api
+from services import call_log_sheets, clinic_api
 from services.binotel import initiate_call
 
 logger = logging.getLogger(__name__)
@@ -505,29 +505,37 @@ async def _save_result(task: CallTask, result_str: str, duration: float, comment
         db_task.call_duration = duration
         db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db_task.commentary = commentary[:512] if commentary else None
+        attempts = db_task.attempts
     logger.info(f"[CALLS] Результат збережено: {result_str} ({duration:.0f}с)")
 
     api_status = _STATUS_API_MAP.get(result_str)
     if api_status is not None:
         await clinic_api.update_event_status(task.visit_id, api_status, commentary)
 
+    # Журнал у Google Sheets — в кінці, щоб збій таблиці не затримав оновлення статусу в клініці
+    call_log_sheets.log_call(task, result_str, duration, attempts=attempts)
+
 
 async def _handle_no_answer(task: CallTask) -> bool:
     """Повертає True якщо буде retry, False якщо спроби вичерпано."""
     async with get_session() as session:
         db_task = await session.get(CallTask, task.id)
-        if db_task.attempts >= MAX_CALL_ATTEMPTS:
+        attempts = db_task.attempts
+        if attempts >= MAX_CALL_ATTEMPTS:
             db_task.status = CallStatus.failed
             db_task.result = CallResult.no_answer
             db_task.commentary = "Пацієнт не підняв трубку."
             db_task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
             logger.warning(f"[CALLS] Вичерпано спроби для {task.patient_name}")
             await clinic_api.update_event_status(task.visit_id, 4, "Пацієнт не підняв трубку.")
-            return False
+            will_retry = False
         else:
             db_task.status = CallStatus.pending  # Спробуємо ще раз наступного разу
-            logger.info(f"[CALLS] Спроба {db_task.attempts}/{MAX_CALL_ATTEMPTS} для {task.patient_name}")
-            return True
+            logger.info(f"[CALLS] Спроба {attempts}/{MAX_CALL_ATTEMPTS} для {task.patient_name}")
+            will_retry = True
+
+    call_log_sheets.log_call(task, "no_answer", None, attempts=attempts)
+    return will_retry
 
 
 async def _save_error(task: CallTask, error_msg: str) -> None:
@@ -536,6 +544,9 @@ async def _save_error(task: CallTask, error_msg: str) -> None:
         db_task.status = CallStatus.failed
         db_task.result = CallResult.no_result
         db_task.error_message = error_msg[:500]  # Обрізаємо щоб не переповнити поле
+        attempts = db_task.attempts
+
+    call_log_sheets.log_call(task, "error", None, attempts=attempts)
 
 
 async def _skip_by_checkstate(task: CallTask) -> None:

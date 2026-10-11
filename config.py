@@ -161,6 +161,11 @@ B2_CONFIG_SHEETS_ID   = os.getenv("B2_CONFIG_SHEETS_ID", "")
 # Шлях до service account credentials (default: credentials.json у корені)
 B2_CREDENTIALS_PATH   = os.getenv("B2_CREDENTIALS_PATH", "credentials.json")
 
+# Журнал дзвінків Модуля 1 (нагадування) → окремий аркуш у тій самій Google-таблиці.
+# ID таблиці за замовчуванням той самий, що й у Модуля 2.2 (B2_RESULT_SHEETS_ID).
+B1_LOG_SHEETS_ID  = os.getenv("B1_LOG_SHEETS_ID", "") or B2_RESULT_SHEETS_ID
+B1_LOG_SHEET_NAME = os.getenv("B1_LOG_SHEET_NAME", "Модуль 1 - Дзвінки")
+
 # Як часто опитувати Binotel на нові завершені дзвінки (хвилини, default: 30)
 B2_POLL_INTERVAL_MIN  = int(os.getenv("B2_POLL_INTERVAL_MIN", "30"))
 
