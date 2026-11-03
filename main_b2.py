@@ -45,6 +45,10 @@ async def main() -> None:
 
     await init_db()
 
+    # Аркуш «Запуск» (команди Старт/Стоп для модулів): створити, якщо його ще немає
+    from services import run_control
+    await run_control.ensure_ready()
+
     scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
     setup_b21_scheduler(scheduler)
     scheduler.start()

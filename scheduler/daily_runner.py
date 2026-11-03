@@ -39,7 +39,7 @@ from config import (
 )
 from db.database import get_session
 from db.models import CallHistory, CallResult, CallStatus, CallTask
-from services import call_log_sheets, clinic_api
+from services import call_log_sheets, clinic_api, run_control
 from services.binotel import initiate_call
 
 logger = logging.getLogger(__name__)
@@ -284,6 +284,19 @@ async def process_pending_calls(call_end_hour: int, archive: bool = False) -> No
                 stopped_by_time = True
                 break
 
+            # Команда з аркуша «Запуск»: «Старт» — дзвонимо, інакше чекаємо на місці.
+            # Задачі лишаються pending, а не йдуть в архів — після «Старт» продовжимо з цього ж місця.
+            if not await run_control.wait_for_start(
+                run_control.MODULE_1,
+                lambda: not SKIP_SCHEDULER and datetime.now(_kyiv).hour >= call_end_hour,
+            ):
+                logger.info(
+                    f"[CALLS] Кінець робочого часу ({call_end_hour}:00) під час паузи. "
+                    f"Залишилось: {len(tasks) - i}. Зупиняємось."
+                )
+                stopped_by_time = True
+                break
+
             linked = linked_map.get(task.id, [])
             if linked:
                 names = ", ".join(t.patient_name for t in linked)
@@ -397,6 +410,13 @@ async def _execute_call(task: CallTask, visit_context: dict, linked_tasks: list 
         # Повний рестарт перед кожним дзвінком — extension одразу онлайн, warmup завжди свіжий
         await _binotel.shutdown()
         await _binotel.startup()
+
+        # startup() може довго чекати SIP-замок іншого модуля — «Стоп» могли поставити за цей час.
+        # Спробу не рахуємо: задача лишається pending і піде в повторний прохід.
+        if not await run_control.is_running(run_control.MODULE_1):
+            logger.info(f"[CALLS] Команда не «Старт» перед набором — дзвінок не розпочато: {task.patient_name}")
+            await _binotel.shutdown()
+            return
 
         # Запускаємо warmup і initiate_call паралельно поки пацієнт чує гудки
         agent = Block1Agent(visit_context)

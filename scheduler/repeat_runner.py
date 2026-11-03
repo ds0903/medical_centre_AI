@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from db.database import get_session
 from db.models import RepeatCallTask, RepeatCallHistory, RepeatCallStatus, RepeatCallResult
+from services import run_control
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,18 @@ async def process_repeat_calls(max_retry: int = 2) -> None:
                 )
                 break
 
+            # Команда з аркуша «Запуск»: «Старт» — дзвонимо, інакше чекаємо на місці
+            # (задачі лишаються pending, SIP відпускається для іншого модуля).
+            if not await run_control.wait_for_start(
+                run_control.MODULE_2,
+                lambda: not SKIP_SCHEDULER and datetime.now(_KYIV).hour >= B2_CALL_END_HOUR,
+            ):
+                logger.info(
+                    f"[B2 CALLS] Кінець робочого часу ({B2_CALL_END_HOUR}:00) під час паузи. "
+                    f"Залишилось: {len(tasks) - i}. Зупиняємось."
+                )
+                break
+
             logger.info(f"[B2 CALLS] [{i+1}/{len(tasks)}] {task.patient_name}")
 
             from services import clinic_api as _capi
@@ -315,6 +328,13 @@ async def _execute_repeat_call(task: RepeatCallTask, max_retry: int) -> None:
         from services import binotel as _binotel
         await _binotel.shutdown()
         await _binotel.startup()
+
+        # startup() може довго чекати SIP-замок іншого модуля — «Стоп» могли поставити за цей час.
+        # Спробу не рахуємо: задача лишається pending і піде в повторний прохід.
+        if not await run_control.is_running(run_control.MODULE_2):
+            logger.info(f"[B2 CALLS] Команда не «Старт» перед набором — дзвінок не розпочато: {task.patient_name}")
+            await _binotel.shutdown()
+            return
 
         agent = RepeatReminderAgent(visit_context)
         call_task    = asyncio.create_task(_binotel.initiate_call(task.patient_phone, task.patient_name))

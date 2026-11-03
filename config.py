@@ -166,6 +166,14 @@ B2_CREDENTIALS_PATH   = os.getenv("B2_CREDENTIALS_PATH", "credentials.json")
 B1_LOG_SHEETS_ID  = os.getenv("B1_LOG_SHEETS_ID", "") or B2_RESULT_SHEETS_ID
 B1_LOG_SHEET_NAME = os.getenv("B1_LOG_SHEET_NAME", "Модуль 1 - Дзвінки")
 
+# Керування запуском з Google Sheets: аркуш «Запуск», рядки «Модуль 1» / «Модуль 2»,
+# команда «Старт» — дзвонимо, «Стоп» або порожньо — ні. Перевіряється перед кожним дзвінком.
+# ID таблиці за замовчуванням той самий, що й у журналу дзвінків.
+RUN_CONTROL_SHEETS_ID  = os.getenv("RUN_CONTROL_SHEETS_ID", "") or B1_LOG_SHEETS_ID
+RUN_CONTROL_SHEET_NAME = os.getenv("RUN_CONTROL_SHEET_NAME", "Запуск")
+# Як часто перечитувати команду, поки дзвінки на паузі (секунди)
+RUN_CONTROL_POLL_SEC   = int(os.getenv("RUN_CONTROL_POLL_SEC", "15"))
+
 # Як часто опитувати Binotel на нові завершені дзвінки (хвилини, default: 30)
 B2_POLL_INTERVAL_MIN  = int(os.getenv("B2_POLL_INTERVAL_MIN", "30"))
 
